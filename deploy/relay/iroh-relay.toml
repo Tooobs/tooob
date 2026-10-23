@@ -1,0 +1,10 @@
+# Stock iroh-relay for tooob. Edit `hostname` and `contact`, then `docker compose up -d`.
+http_bind_addr = "[::]:80"          # ACME HTTP challenge + captive-portal check
+enable_quic_addr_discovery = true   # UDP 7842: lets native endpoints learn their public address (v2 hole punching)
+enable_metrics = false
+
+[tls]
+hostname = "relay.example.com"
+cert_mode = "LetsEncrypt"
+cert_dir = "/certs"
+contact = "you@example.com"

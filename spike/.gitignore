@@ -1,0 +1,8 @@
+target/
+check/node_modules/
+www/__tooob/pkg/
+testsite/*.jpg
+testsite/*.mp4
+*.key
+check/ha-tokens.json
+check/ha.png

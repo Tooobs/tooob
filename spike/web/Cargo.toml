@@ -1,0 +1,15 @@
+[package]
+name = "web"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+console_error_panic_hook = "0.1.7"
+iroh = { version = "1", default-features = false, features = ["tls-ring"] }
+js-sys = "0.3.106"
+wasm-bindgen = "0.2.129"
+wasm-bindgen-futures = "0.4.79"
+
+[lib]
+crate-type = ["cdylib"]

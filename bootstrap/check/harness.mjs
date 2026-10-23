@@ -1,0 +1,376 @@
+// The real pieces on this machine, on free ports: a Relay (stock iroh-relay), a stand-in Site, the
+// Bootstrap (www/), and Hosts (`tooob add` + `tooob run`) from host/. Headless Chrome then opens real Invite Links.
+import { execFileSync, spawn } from 'node:child_process';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { connect, createServer as createTcpServer } from 'node:net';
+import { tmpdir } from 'node:os';
+import { extname, join } from 'node:path';
+import puppeteer from 'puppeteer-core';
+
+const ROOT = new URL('../..', import.meta.url).pathname;
+const TOOOB = join(ROOT, 'host/target/debug/tooob');
+const children = [];
+const servers = [];
+const sockets = []; // proxied connections: a server can't close while they're open
+
+export function buildHost() {
+  execFileSync('cargo', ['build', '-q', '--manifest-path', join(ROOT, 'host/Cargo.toml')], { stdio: 'inherit' });
+}
+
+function listen(server) {
+  servers.push(server);
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
+}
+
+async function freePort() {
+  const server = createServer();
+  const port = await new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
+  await new Promise((r) => server.close(r));
+  return port;
+}
+
+async function until(check, what, ms = 15000) {
+  const start = Date.now();
+  for (;;) {
+    if (await check().catch(() => false)) return;
+    if (Date.now() - start > ms) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
+function start(cmd, args, env = process.env) {
+  const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], env });
+  let out = '';
+  child.stdout.on('data', (d) => (out += d));
+  child.stderr.on('data', (d) => (out += d));
+  children.push(child);
+  return { child, output: () => out };
+}
+
+export async function startRelay() {
+  const port = await freePort();
+  const config = join(mkdtempSync(join(tmpdir(), 'relay-')), 'relay.toml');
+  writeFileSync(config, `http_bind_addr = "127.0.0.1:${port}"\nenable_metrics = false\n`);
+  start('iroh-relay', ['--dev', '--config-path', config]);
+  const url = `http://127.0.0.1:${port}/`;
+  await until(async () => (await fetch(url + 'healthz')).ok, 'the relay');
+  return url;
+}
+
+/**
+ * A TCP proxy in front of a Relay, for the browser only. `silence()` makes every connection open
+ * so far go quiet both ways while staying open, as a phone's network does to the flows it had
+ * when it comes out of deep sleep; connections made afterwards work.
+ */
+export async function startRelayProxy(relayUrl) {
+  const relay = new URL(relayUrl);
+  const open = new Set();
+  const server = createTcpServer((client) => {
+    const upstream = connect(Number(relay.port), relay.hostname);
+    const pair = { client, upstream, quiet: false };
+    open.add(pair);
+    sockets.push(client, upstream);
+    client.on('data', (d) => pair.quiet || upstream.write(d));
+    upstream.on('data', (d) => pair.quiet || client.write(d));
+    const end = () => (open.delete(pair), client.destroy(), upstream.destroy());
+    client.on('close', end).on('error', end);
+    upstream.on('close', end).on('error', end);
+  });
+  const port = await listen(server);
+  return {
+    url: `http://127.0.0.1:${port}/`,
+    silence: () => open.forEach((pair) => (pair.quiet = true)),
+  };
+}
+
+/**
+ * Tell the shell its page was hidden and is visible again, as when a phone wakes. Only the news
+ * is forged: whatever the shell does about it runs for real.
+ */
+export async function wake(page) {
+  await page.evaluate(() => {
+    for (const state of ['hidden', 'visible']) {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });
+      document.dispatchEvent(new Event('visibilitychange'));
+    }
+    delete document.visibilityState;
+  });
+}
+
+/** A stand-in Site: answers every path with what reached it, and counts requests. */
+export async function startSite() {
+  const site = { requests: 0 };
+  const server = createServer((req, res) => {
+    site.requests++;
+    const size = /^\/bytes\/(\d+)/.exec(req.url)?.[1]; // a big response, like a photo
+    if (size) return res.end(Buffer.alloc(Number(size), 7));
+    if (req.method === 'POST') { // an upload: say how much arrived
+      let received = 0;
+      req.on('data', (c) => (received += c.length));
+      return req.on('end', () => res.end(`received ${received}`));
+    }
+    res.setHeader('content-type', 'text/html');
+    res.end(`<!doctype html><p id="site">site ${req.url} label=${req.headers['x-tooob-label'] ?? '-'}</p>`);
+  });
+  site.addr = `127.0.0.1:${await listen(server)}`;
+  return site;
+}
+
+const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'application/wasm' };
+
+/** The Bootstrap: www/ as static files, as any Bootstrap serves them. */
+export async function startBootstrap() {
+  const www = join(ROOT, 'bootstrap/www');
+  const server = createServer((req, res) => {
+    const path = new URL(req.url, 'http://x').pathname;
+    try {
+      const body = readFileSync(join(www, path === '/' ? 'index.html' : path));
+      res.setHeader('content-type', TYPES[extname(path)] ?? 'text/html');
+      res.setHeader('cache-control', 'no-store');
+      res.end(body);
+    } catch {
+      res.statusCode = 404;
+      res.end();
+    }
+  });
+  return `http://localhost:${await listen(server)}/`;
+}
+
+// Every Host made here lives under a TOOOB_HOME of its own, never the Owner's real one.
+const HOME = mkdtempSync(join(tmpdir(), 'tooob-home-'));
+const ENV = { ...process.env, TOOOB_HOME: HOME };
+let hosts = 0;
+
+/** A Host for a Site's web app, through a Relay, its links opening a Bootstrap, running; `name`
+ * runs one made earlier again. */
+export async function startHost(site, relay, bootstrap, name) {
+  if (!name) {
+    name = `site-${++hosts}`;
+    tooob(['add', name, site.addr, '--relay', relay, '--bootstrap', bootstrap]);
+  }
+  return runHost(name);
+}
+
+/** A Host sharing PATH (a Shared Folder, or a single file), through a Relay, running. */
+export async function startShare(path, relay, bootstrap) {
+  const name = `share-${++hosts}`;
+  tooob(['add', name, path, '--relay', relay, '--bootstrap', bootstrap]);
+  return runHost(name);
+}
+
+/** `tooob run NAME`, once it's serving. */
+async function runHost(name) {
+  const host = start(TOOOB, ['run', name], ENV);
+  await until(async () => host.output().includes('serving'), `tooob run ${name}`);
+  return {
+    name,
+    stop: () => new Promise((r) => { host.child.once('exit', r); host.child.kill(); }),
+    // Freeze the Host: nothing it holds answers, so the browser's ICE checks go unanswered.
+    pause: () => host.child.kill('SIGSTOP'),
+    resume: () => host.child.kill('SIGCONT'),
+  };
+}
+
+export function tooob(args) {
+  return execFileSync(TOOOB, args, { encoding: 'utf8', env: ENV }).trim();
+}
+
+export async function launchBrowser() {
+  return puppeteer.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
+}
+
+/** A fresh browser profile: its own storage, so its own Visitor Key. */
+export async function newVisitor(browser) {
+  const context = await browser.createBrowserContext();
+  return context.newPage();
+}
+
+/**
+ * Downloads in `page`'s browser profile, as the browser saves them. `next()` waits for the next one
+ * to finish: the name the browser saved it under, and its bytes.
+ */
+export async function watchDownloads(page) {
+  const dir = mkdtempSync(join(tmpdir(), 'downloads-'));
+  const cdp = await page.browser().target().createCDPSession();
+  await cdp.send('Browser.setDownloadBehavior', {
+    behavior: 'allowAndName', downloadPath: dir, browserContextId: page.browserContext().id, eventsEnabled: true,
+  });
+  const names = new Map();
+  cdp.on('Browser.downloadWillBegin', (e) => names.set(e.guid, e.suggestedFilename));
+  return {
+    next: (ms = 20000) => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('no download finished')), ms);
+      const done = (e) => {
+        if (e.state !== 'completed') return;
+        cdp.off('Browser.downloadProgress', done);
+        clearTimeout(timer);
+        resolve({ name: names.get(e.guid), bytes: readFileSync(join(dir, e.guid)) });
+      };
+      cdp.on('Browser.downloadProgress', done);
+    }),
+  };
+}
+
+/** The status line the shell shows the Visitor. */
+export async function statusText(page) {
+  return page.$eval('#status', (el) => el.textContent);
+}
+
+/** Wait until the status line matches `re`. */
+export async function pillSays(page, re, ms) {
+  await page.waitForFunction((src) => new RegExp(src).test(document.getElementById('status').textContent), { timeout: ms }, re.source);
+}
+
+/** Wait until the Site has loaded in the shell's iframe; return its text. */
+export async function siteText(page, ms = 20000) {
+  const handle = await page.waitForSelector('iframe', { timeout: ms });
+  const frame = await handle.contentFrame();
+  await frame.waitForSelector('#site', { timeout: ms }).catch(async (e) => {
+    const inner = await frame.evaluate(() => document.documentElement.outerHTML.slice(0, 300)).catch((x) => String(x));
+    console.log('the Site never loaded. shell:', await statusText(page), '| iframe:', inner);
+    throw e;
+  });
+  return frame.$eval('#site', (el) => el.textContent);
+}
+
+/**
+ * What a script of the Site's own can find in the storage it shares with the shell (same origin):
+ * localStorage, the private keys in IndexedDB (by algorithm), and the formats any of them exported to.
+ */
+export async function whatTheSiteCanReach(page) {
+  const frame = await (await page.$('iframe')).contentFrame();
+  return frame.evaluate(async () => {
+    const records = [];
+    for (const { name } of await indexedDB.databases()) {
+      const db = await new Promise((ok, fail) => Object.assign(indexedDB.open(name), { onsuccess: (e) => ok(e.target.result), onerror: fail }));
+      for (const store of db.objectStoreNames) {
+        const all = db.transaction(store).objectStore(store).getAll();
+        records.push(...(await new Promise((ok) => (all.onsuccess = () => ok(all.result)))));
+      }
+      db.close();
+    }
+    const keys = records.flatMap((r) => (r instanceof CryptoKey ? [r] : Object.values(r ?? {}).filter((v) => v instanceof CryptoKey)));
+    const privateKeys = keys.filter((k) => k.type === 'private');
+    const exported = [];
+    for (const k of privateKeys) {
+      for (const format of ['pkcs8', 'jwk', 'raw']) {
+        await crypto.subtle.exportKey(format, k).then(() => exported.push(format), () => {});
+      }
+    }
+    return { localStorage: { ...localStorage }, privateKeys: privateKeys.map((k) => k.algorithm.name), exported };
+  });
+}
+
+/**
+ * The device sleeps, as a phone does with its screen off: every process of the browser stops, so
+ * nothing it holds answers, then carries on as if nothing happened. Stops every page in `browser`.
+ */
+export async function sleepBrowser(browser, seconds) {
+  const tree = (pid) => {
+    const children = execFileSync('pgrep', ['-P', String(pid)], { encoding: 'utf8' }).split(/\s+/).filter(Boolean);
+    return [pid, ...children.flatMap((c) => { try { return tree(c); } catch { return [c]; } })]; // pgrep fails when there are none
+  };
+  let pids;
+  try { pids = tree(browser.process().pid); } catch { pids = [browser.process().pid]; }
+  pids.forEach((p) => process.kill(Number(p), 'SIGSTOP'));
+  await new Promise((r) => setTimeout(r, seconds * 1000));
+  pids.reverse().forEach((p) => process.kill(Number(p), 'SIGCONT'));
+}
+
+/** Fetch `path` from inside the Site's iframe, as a link on the Site would: "<status> <bytes>". */
+export async function siteFetch(page, path) {
+  const frame = await (await page.$('iframe')).contentFrame();
+  return frame.evaluate(async (path) => {
+    const r = await fetch(path);
+    return `${r.status} ${(await r.arrayBuffer()).byteLength}`;
+  }, path);
+}
+
+/**
+ * Make the page's first `attempts` Direct Path attempts fail (all of them by default): the browser
+ * gathers no ICE candidates.
+ */
+export async function breakDirectPath(page, attempts = Infinity) {
+  await page.evaluateOnNewDocument((attempts) => {
+    const Real = RTCPeerConnection;
+    let made = 0;
+    window.RTCPeerConnection = function (config) {
+      return attempts === null || made++ < attempts ? new Real({ iceTransportPolicy: 'relay', iceServers: [] }) : new Real(config);
+    };
+  }, Number.isFinite(attempts) ? attempts : null); // Infinity doesn't survive the trip into the page
+}
+
+/** Keep hold of the page's peer connections, so failDirectPath can reach them. */
+export async function watchDirectPath(page) {
+  await page.evaluateOnNewDocument(() => {
+    const Real = RTCPeerConnection;
+    window.__peers = [];
+    window.RTCPeerConnection = function (config) {
+      const pc = new Real(config);
+      window.__peers.push(pc);
+      return pc;
+    };
+  });
+}
+
+/**
+ * Tell the shell its Direct Path failed, as the browser does when the network changes under it.
+ * Only the news is forged: the connection itself stays up, so whatever the shell does next runs
+ * for real against the Host.
+ */
+export async function failDirectPath(page) {
+  await page.evaluate(() => {
+    const pc = window.__peers.at(-1);
+    Object.defineProperty(pc, 'connectionState', { configurable: true, get: () => 'failed' });
+    pc.dispatchEvent(new Event('connectionstatechange'));
+    delete pc.connectionState;
+  });
+}
+
+/**
+ * Someone else answering on the Direct Path: the certificate it presents won't hash to the
+ * fingerprint the Host sent over iroh. Simulated by changing that fingerprint as the browser
+ * applies the answer.
+ */
+export async function forgeDirectFingerprint(page) {
+  await page.evaluateOnNewDocument(() => {
+    const real = RTCPeerConnection.prototype.setRemoteDescription;
+    RTCPeerConnection.prototype.setRemoteDescription = function (desc) {
+      const sdp = desc.sdp.replace(/(a=fingerprint:sha-256 )([0-9A-F]{2})/gi, (_, k, b) => k + (b === '00' ? '01' : '00'));
+      return real.call(this, { type: desc.type, sdp });
+    };
+  });
+}
+
+/**
+ * A Direct Path punched through NAT, as from a phone on 5G: the browser's stats say the Host's end
+ * of every candidate pair is a STUN-discovered public address (a documentation one).
+ */
+export async function forgeNatPunched(page) {
+  await page.evaluateOnNewDocument(() => {
+    const real = RTCPeerConnection.prototype.getStats;
+    RTCPeerConnection.prototype.getStats = async function (...args) {
+      const report = await real.apply(this, args);
+      const forged = (s) => (s.type === 'remote-candidate' ? { ...s, candidateType: 'srflx', address: '203.0.113.7' } : s);
+      return new Map([...report].map(([id, s]) => [id, forged(s)]));
+    };
+  });
+}
+
+/** Reload the Site in the shell's iframe; the Site bytes each path carried meanwhile. */
+export async function bytesForReload(page) {
+  return page.evaluate(async () => {
+    const s = window.__tooobStats;
+    const before = { ...s.bytes };
+    const f = document.querySelector('iframe');
+    await new Promise((res) => { f.onload = res; f.contentWindow.location.href = '/?again=' + Date.now(); });
+    return { direct: s.bytes.direct - before.direct, relay: s.bytes.relay - before.relay };
+  });
+}
+
+export function stopAll() {
+  for (const child of children) child.kill();
+  for (const socket of sockets) socket.destroy();
+  for (const server of servers) server.close();
+}

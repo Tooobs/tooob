@@ -1,0 +1,9 @@
+[workspace]
+members = ["web"]
+resolver = "2"
+
+# Small WASM: size-optimized, fat LTO.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1

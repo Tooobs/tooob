@@ -1,0 +1,4 @@
+# Stock iroh-relay behind Fly's proxy: Fly terminates TLS for <app>.fly.dev and forwards plain
+# HTTP (incl. the WebSocket upgrade relay clients use) to port 8080. No [tls] section = plain HTTP.
+http_bind_addr = "[::]:8080"
+enable_metrics = false

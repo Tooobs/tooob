@@ -1,0 +1,34 @@
+# Your own Relay: stock iroh-relay on Fly.io, at https://<app>.fly.dev/ (the URL you give
+# `tooob add --relay`). First time: set `app` to a name of your own, then
+# `fly launch --copy-config --no-deploy` to claim it. After that, `fly deploy`.
+app = "your-relay-app"
+primary_region = "sjc"
+
+[build]
+  image = "n0computer/iroh-relay:v1.3.0"
+
+[experimental]
+  cmd = ["--config-path", "/etc/iroh-relay.toml"]
+
+[[files]]
+  guest_path = "/etc/iroh-relay.toml"
+  local_path = "iroh-relay.toml"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Relay connections are long-lived WebSockets; a stopped machine would drop every Host.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    path = "/healthz"
+    timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

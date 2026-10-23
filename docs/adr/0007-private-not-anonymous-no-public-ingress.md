@@ -1,0 +1,3 @@
+# Private, not anonymous; no public ingress, no exit
+
+Traffic is end-to-end encrypted and invite-only, but Relays see which keys talk, when, how much, and from which IPs, and we say so. Sites are never reachable from the public internet, and tooob never carries traffic to the open internet. Those three limits are what keep tooob useless for phishing, malware hosting and open proxying, and keep a Relay a mere conduit, whose only abuse lever is refusing to relay for a Host Key. We rejected onion-style anonymity (large cost in speed and complexity for a product aimed at sharing with family) and optional public URLs (that's Cloudflare Tunnel, with its abuse).
