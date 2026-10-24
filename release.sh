@@ -137,7 +137,10 @@ cargo update -q --workspace --offline
 git add host/Cargo.toml bootstrap/web/Cargo.toml Cargo.lock bootstrap/Cargo.lock CHANGELOG.md
 git commit -q -m "Release $RELEASE"
 git tag -a "v$RELEASE" -m "Release $RELEASE"
-git push -q --atomic origin HEAD:main "v$RELEASE"
+# main first, then the tag on its own: pushed together, GitHub starts no workflow for the tag.
+git push -q origin HEAD:main
+git push -q origin "v$RELEASE" ||
+  refuse "main is pushed, but its tag isn't: push it with git push origin v$RELEASE"
 
 cat <<MSG
 release.sh: pushed Release $RELEASE (tag v$RELEASE). The release workflow builds and publishes it:

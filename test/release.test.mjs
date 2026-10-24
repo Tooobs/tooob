@@ -23,7 +23,7 @@ function aClone(t, { changelog = UNRELEASED, browserTest = "test('stub', () => {
   const dir = mkdtempSync(join(tmpdir(), 'tooob-release-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const [bare, work] = [join(dir, 'origin.git'), join(dir, 'work')];
-  execFileSync('git', ['clone', '-q', '--bare', '--no-local', REPO, bare]);
+  execFileSync('git', ['clone', '-q', '--bare', '--no-local', '--no-tags', REPO, bare]); // this repo's Releases aren't the clone's
   execFileSync('git', ['clone', '-q', bare, work]);
   git(work, 'config', 'user.email', 'release-test@example.invalid');
   git(work, 'config', 'user.name', 'release test');
