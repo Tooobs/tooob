@@ -35,6 +35,7 @@ const USAGE: &str = "usage:
   tooob visitors NAME [--json] | invites NAME [--json]
   tooob block NAME KEY | approve NAME KEY | unblock NAME KEY   KEY: a unique prefix is enough
   tooob revoke NAME INVITE-ID
+  tooob --version                                 the Release and Protocol Version
 NAME is a Host Name, what the Host serves, or a Host Key prefix. Owner commands work whether the
 Host is running or not. There's no default Relay or Bootstrap: deploy/ shows how to run your own.";
 
@@ -64,7 +65,20 @@ fn terminal() -> bool {
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
 
+/// The Release and the Protocol Version: `tooob 0.1.0 (tooob/0)`.
+fn release_and_protocol_version() -> String {
+    format!(
+        "tooob {} ({})",
+        env!("CARGO_PKG_VERSION"),
+        tooob::PROTOCOL_VERSION
+    )
+}
+
 async fn run() -> Result<()> {
+    if std::env::args().skip(1).eq(["--version"]) {
+        println!("{}", release_and_protocol_version());
+        return Ok(());
+    }
     let (words, flags, invitees) = parse(std::env::args().skip(1))?;
     let home = Home::from_env()?;
     let arg = |i: usize| {
@@ -565,6 +579,7 @@ async fn serve_here(
         Network::Relay(url) => format!("Relay {url}"),
         Network::Default => "n0's Relays".to_string(),
     };
+    eprintln!("tooob: {name}: starting {}", release_and_protocol_version());
     let running = Host::start(HostConfig {
         site,
         data_dir: host.state_dir.clone(),

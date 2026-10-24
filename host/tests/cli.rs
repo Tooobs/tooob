@@ -27,6 +27,26 @@ fn serve(home: &Home, site: &TestSite) -> Running {
     home.start("site")
 }
 
+/// What `--version` and a starting Host say: the Release, from Cargo.toml, and the Protocol Version.
+fn release_and_protocol_version() -> String {
+    format!("tooob {} (tooob/0)", env!("CARGO_PKG_VERSION"))
+}
+
+#[test]
+fn version_prints_the_release_and_the_protocol_version() {
+    let out = Home::new().tooob(&["--version"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out).trim(), release_and_protocol_version());
+}
+
+#[tokio::test]
+async fn a_starting_host_logs_the_release_and_the_protocol_version() {
+    let site = TestSite::start().await;
+    let home = Home::new();
+    let serving = serve(&home, &site);
+    serving.until_it_says(&release_and_protocol_version());
+}
+
 #[tokio::test]
 async fn invite_prints_a_link_for_the_running_host() {
     let site = TestSite::start().await;

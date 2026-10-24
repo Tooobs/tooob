@@ -5,13 +5,16 @@ use anyhow::{Result, bail};
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-pub const ALPN: &[u8] = b"tooob/0";
+/// The Protocol Version this Host speaks: a Bootstrap must speak the same one (ADR 0017).
+pub const PROTOCOL_VERSION: &str = "tooob/0";
+pub const ALPN: &[u8] = PROTOCOL_VERSION.as_bytes();
 
 /// What a hello signs with the Visitor Key: the protocol, the Host, and the one connection it
 /// vouches for (so a copied hello is useless on any other connection).
 pub fn hello_message(host_key: &iroh::EndpointId, connection: &iroh::EndpointId) -> Vec<u8> {
     [
-        b"tooob/0 hello".as_slice(),
+        PROTOCOL_VERSION.as_bytes(),
+        b" hello",
         host_key.as_bytes(),
         connection.as_bytes(),
     ]

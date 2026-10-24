@@ -24,7 +24,7 @@ cd host && cargo build --release            # the tooob command: host/target/rel
 cd ../bootstrap && ./build.sh               # the Bootstrap's WASM into bootstrap/www
 ```
 
-`build.sh` needs the `wasm32-unknown-unknown` target, `wasm-bindgen-cli` at exactly the `wasm-bindgen` version in `bootstrap/web/Cargo.toml`, and a clang that can target wasm (set `LLVM=` to its `bin/`; on macOS, Homebrew's `llvm`).
+`build.sh` needs the `wasm32-unknown-unknown` target, `wasm-bindgen-cli` at exactly the `wasm-bindgen` version in `bootstrap/web/Cargo.toml`, a clang that can target wasm (set `LLVM=` to its `bin/`; on macOS, Homebrew's `llvm`), and Node, which writes the Bootstrap Bundle's manifest, `www/__tooob/version.json`: its Release, its Protocol Version and every file's SHA-256. `node bootstrap/manifest.mjs --check bootstrap/www` says what no longer matches it, and `--hash` prints the Bundle's hash: its manifest's SHA-256.
 
 ## Use
 

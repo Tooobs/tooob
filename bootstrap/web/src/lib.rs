@@ -6,7 +6,10 @@ use iroh::{
 };
 use wasm_bindgen::prelude::*;
 
-const ALPN: &[u8] = b"tooob/0";
+/// The Protocol Version this Bootstrap speaks: a Host must speak the same one (ADR 0017).
+/// bootstrap/manifest.mjs reads it from this line.
+const PROTOCOL_VERSION: &str = "tooob/0";
+const ALPN: &[u8] = PROTOCOL_VERSION.as_bytes();
 
 fn err(e: impl std::fmt::Display) -> JsError {
     JsError::new(&e.to_string())
@@ -44,7 +47,8 @@ impl Tooob {
     /// bytes as `hello_message` in host/src/wire.rs. JS signs it with the Visitor Key.
     pub fn hello_message(&self) -> Vec<u8> {
         [
-            b"tooob/0 hello".as_slice(),
+            PROTOCOL_VERSION.as_bytes(),
+            b" hello",
             self.host_key.as_bytes(),
             self.ep.id().as_bytes(),
         ]

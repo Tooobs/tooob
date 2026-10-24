@@ -9,6 +9,8 @@ mod shared_folder;
 pub mod visit;
 mod wire;
 
+pub use wire::PROTOCOL_VERSION;
+
 use anyhow::Result;
 use iroh::{Endpoint, RelayMode, RelayUrl, SecretKey, endpoint::presets};
 use std::{
