@@ -37,3 +37,6 @@ axum = { version = "0.8.9", features = ["ws"] }
 expectrl = "0.9.0"
 getrandom = "0.4.3"
 tempfile = "3.27.0"
+
+[target.'cfg(target_env = "musl")'.dependencies]
+mimalloc = { version = "0.1.52", default-features = false }

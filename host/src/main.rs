@@ -18,6 +18,12 @@ use tooob::hosts::{Entry, Home, NO_RELAY, RUN_YOUR_OWN, check_bootstrap, check_r
 
 mod ask;
 
+// musl's own allocator costs ~22% more CPU per byte served than glibc's (measured in #59), so
+// Linux Releases, which are static musl builds, use mimalloc.
+#[cfg(target_env = "musl")]
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 const USAGE: &str = "usage:
   tooob add NAME TARGET (--relay URL | --local) --bootstrap URL
                                                   make a Host; TARGET is a folder or file to share
