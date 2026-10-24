@@ -9,7 +9,7 @@ import { extname, join } from 'node:path';
 import puppeteer from 'puppeteer-core';
 
 const ROOT = new URL('../..', import.meta.url).pathname;
-const TOOOB = join(ROOT, 'host/target/debug/tooob');
+const TOOOB = join(ROOT, 'target/debug/tooob');
 const children = [];
 const servers = [];
 const sockets = []; // proxied connections: a server can't close while they're open

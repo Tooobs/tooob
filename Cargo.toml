@@ -1,0 +1,6 @@
+# The root workspace: the Host's crate, and where `dist` builds Releases from (#59). bootstrap/ and
+# spike/ stay workspaces of their own: the Bootstrap's WASM wants its own size-optimized profile.
+[workspace]
+members = ["host"]
+exclude = ["bootstrap", "spike"]
+resolver = "3"

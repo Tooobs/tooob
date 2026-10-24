@@ -1,7 +1,7 @@
 .DS_Store
 deploy/relay/.env
 spike/vps-host/
-host/target/
+/target/
 .envrc
 CLAUDE.md
 .claude/

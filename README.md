@@ -20,7 +20,7 @@ For a try on one network only, skip the Relay with `--local`. You still need a B
 ## Build
 
 ```sh
-cd host && cargo build --release            # the tooob command: host/target/release/tooob
+cd host && cargo build --release            # the tooob command: target/release/tooob
 cd ../bootstrap && ./build.sh               # the Bootstrap's WASM into bootstrap/www
 ```
 

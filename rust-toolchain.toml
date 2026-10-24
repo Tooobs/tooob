@@ -1,0 +1,6 @@
+# One toolchain for the whole repo (the Host, the Bootstrap, CI), so a Release builds the same
+# wherever it's built (#59, #60).
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]
