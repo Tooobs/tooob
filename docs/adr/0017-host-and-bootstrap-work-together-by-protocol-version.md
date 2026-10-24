@@ -1,0 +1,10 @@
+# A Host and a Bootstrap work together by Protocol Version, not by Release
+
+A Host and a Bootstrap work together when they speak the same Protocol Version (`tooob/0`), whatever their Releases. Each Release still carries one version number for everything it makes (the `tooob` command, the Bootstrap Bundle, the container image), and a Release that changes the Protocol Version is a minor Release in 0.x (`0.1.3` → `0.2.0`, never `0.1.4`) and says so at the top of its notes. Owners upgrade their Hosts and Bootstrap Operators upgrade their Bootstraps at different times, so matching Releases can't be the rule. We rejected versioning the Bootstrap separately: one repo, one tag and one changelog are simpler, and the Protocol Version, not the number, is what decides whether they connect. We also rejected, for 0.x, a Bootstrap that speaks the current and the previous Protocol Version: it costs code before anyone needs it, while most Owners run their own Bootstrap. That's #53, before Normal people.
+
+Within one Protocol Version the protocol only grows: a message may gain a field and the protocol may gain a message kind, but none is removed, renamed or given a new meaning, and each side ignores what it doesn't know. Anything else (what the hello signs, the framing, the order of streams, what a field means) is a new Protocol Version. We rejected protobuf for now: it would replace the three hand-written copies of the messages (the Host, the Bootstrap's shell and its WASM) with one schema, and `buf breaking` would catch removed fields, but the JSON lines already tolerate added fields, most breaking changes are ones a schema can't see, and switching would itself be a new Protocol Version and add a decoder to the Bootstrap. Each Release is instead tested against the Release before it, in both directions. Revisit when the protocol grows many messages (the admin API over tooob) or gets a second implementation (v2's native visitor app).
+
+## Consequences
+
+- Changing the Protocol Version cuts off every Visitor whose Bootstrap hasn't been upgraded, until #53.
+- `./release.sh` refuses a patch Release that changes the Protocol Version.

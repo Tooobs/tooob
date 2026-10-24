@@ -28,6 +28,10 @@ _Avoid_: username, nickname, alias
 Whoever runs a Relay: the Owner themselves, or someone the Owner chooses to trust with their traffic's metadata.
 _Avoid_: operator (unqualified), provider, admin
 
+**Bootstrap Operator**:
+Whoever serves a Bootstrap: the Owner themselves, or someone the Owner chooses to trust with their Visitors' browsers.
+_Avoid_: operator (unqualified), host (for the server), CDN
+
 **Agent**:
 An AI assistant acting for an Owner through the Owner's tools.
 _Avoid_: bot, AI, assistant (unqualified)
@@ -131,5 +135,19 @@ Traffic between a Visitor's browser and a Host that goes straight between them, 
 _Avoid_: p2p connection, peer-to-peer link
 
 **Bootstrap**:
-The static page a Visitor's browser loads first, from wherever its Host's settings say, which then connects to the Host. Visitors trust whoever serves it.
+The static page a Visitor's browser loads first, from wherever its Host's settings say, which then connects to the Host. Visitors trust its Bootstrap Operator.
 _Avoid_: loader, launcher, web client
+
+**Protocol Version**:
+Which version of tooob's protocol a Host or a Bootstrap speaks (`tooob/0`). A Host and a Bootstrap work together when they speak the same Protocol Version, whatever their Releases.
+_Avoid_: wire version, API version, ALPN
+
+## Releases
+
+**Release**:
+A numbered version of tooob (`0.1.0`): the `tooob` command for each platform, the Bootstrap Bundle and the Host's container image, all made from one tag.
+_Avoid_: build, drop, version (unqualified)
+
+**Bootstrap Bundle**:
+The files a Bootstrap is made of, as one Release publishes them, identified by the hash of its manifest, which lists every other file's hash. A Bootstrap Operator serves a Bootstrap Bundle, and anyone can check which.
+_Avoid_: www, dist, the build
