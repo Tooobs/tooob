@@ -1,6 +1,6 @@
 # tooob
 
-A semi-private web: people and their Agents run Sites and let the people and Agents they invite reach them, from an ordinary browser or the command line, through Relays that can't read the traffic.
+A semi-private web: people and their Agents run Sites and let the people and Agents they invite reach them in an ordinary browser, through Relays that can't read the traffic.
 
 ## People
 
@@ -9,7 +9,7 @@ The person who runs a Host and decides who can reach its Site. Always a person: 
 _Avoid_: admin, operator, user, host (for the person)
 
 **Visitor**:
-One browser, or one Agent, on one device that has used an Invite for a Host, identified by its Visitor Key: allowed in, awaiting approval, or blocked. A person with a phone and a laptop is two Visitors; so are two Agents on one box.
+One browser on one device that has used an Invite for a Host (a person's, or an Agent's headless one), identified by its Visitor Key: allowed in, awaiting approval, or blocked. A person with a phone and a laptop is two Visitors; so are two Agents' browser profiles on one box.
 _Avoid_: guest, friend, user, client
 
 **Standing**:
@@ -33,7 +33,7 @@ Whoever serves a Bootstrap: the Owner themselves, or someone the Owner chooses t
 _Avoid_: operator (unqualified), host (for the server), CDN
 
 **Agent**:
-An AI program acting for a person: running a Host for its Owner, managing one, or reaching Sites as a Visitor.
+An AI program acting for a person: running a Host for its Owner, managing one, or reaching Sites as a Visitor, through a browser like anyone else.
 _Avoid_: bot, AI, assistant (unqualified)
 
 **Agent Account**:
