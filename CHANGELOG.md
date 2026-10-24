@@ -1,9 +1,9 @@
 # Changelog
 
 Each Release of tooob: the `tooob` command, the Bootstrap Bundle and the Host's container image,
-all at one version (ADR 0017). Versions follow [SemVer](https://semver.org); while they're `0.x`,
-expect the commands to change. Add to "Unreleased" as part of each change; `./release.sh` turns it
-into the next Release's section.
+all with one Release number (ADR 0017). Release numbers follow [SemVer](https://semver.org); while
+they're `0.x`, expect the commands to change. Add to "Unreleased" as part of each change;
+`./release.sh` turns it into the next Release's section.
 
 ## Unreleased
 

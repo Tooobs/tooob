@@ -2,9 +2,9 @@
 members = ["cargo:."]
 
 # Config for `dist`, which builds and publishes a Release when a vX.Y.Z tag is pushed (#59). Like
-# envstow's: GitHub Releases and the shell installer only, no Homebrew tap, nothing on crates.io.
+# jhnhnsn/envstow's: GitHub Releases and the shell installer only, no Homebrew tap, nothing on crates.io.
 [dist]
-# Must match the dist that runs `dist plan`/`dist generate` here (envstow's too).
+# Must match the dist that runs `dist plan`/`dist generate` here (jhnhnsn/envstow pins it too).
 cargo-dist-version = "0.32.0"
 ci = "github"
 installers = ["shell"]

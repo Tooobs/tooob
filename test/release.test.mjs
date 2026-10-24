@@ -133,8 +133,9 @@ test("a Release keeps the earlier Releases' sections below its own", (t) => {
   assert.match(changelog, /- Something new\.\n\n## 0\.1\.0 — 2026-01-01\n\n- Old\.\n$/);
 });
 
-/** A browser test that fails the first `times` runs, then passes: it counts in a file outside the clone. */
-function failing(t, times) {
+/** The source of a browser test that fails its first `times` runs, then passes: it counts runs in a
+ *  file outside the clone. */
+function aFlakyBrowserTest(t, times) {
   const count = join(mkdtempSync(join(tmpdir(), 'tooob-flaky-')), 'runs');
   t.after(() => rmSync(dirname(count), { recursive: true, force: true }));
   return `import { existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -147,7 +148,7 @@ test('steady', () => {});`;
 }
 
 test('a browser test that fails once is rerun, and the Release goes ahead', (t) => {
-  const { work, bare } = aClone(t, { browserTest: failing(t, 1) });
+  const { work, bare } = aClone(t, { browserTest: aFlakyBrowserTest(t, 1) });
   const result = release(work, '0.2.0');
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /rerunning the tests that failed, once/);
@@ -155,7 +156,7 @@ test('a browser test that fails once is rerun, and the Release goes ahead', (t) 
 });
 
 test('a browser test that fails twice stops the Release', (t) => {
-  const { work, bare } = aClone(t, { browserTest: failing(t, 2) });
+  const { work, bare } = aClone(t, { browserTest: aFlakyBrowserTest(t, 2) });
   const result = release(work, '0.2.0');
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /failed twice/);
@@ -170,4 +171,14 @@ test('a test Release leaves the changelog for the Release it tests', (t) => {
   assert.equal(readFileSync(join(work, 'CHANGELOG.md'), 'utf8'), UNRELEASED);
   assert.equal(packageVersion(work, 'host/Cargo.toml'), '0.2.0-rc.1');
   assert.equal(git(bare, 'tag', '-l'), 'v0.2.0-rc.1');
+});
+
+test("a tag whose Release was never published doesn't block the next Release", (t) => {
+  const { work, bare } = aClone(t);
+  git(work, 'tag', 'v0.1.0'); // its release workflow failed: no GitHub Release
+  git(work, 'push', '-q', 'origin', 'v0.1.0');
+  const result = release(work, '0.1.1');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /cross-Release check: skipped, no earlier Release is published/);
+  assert.equal(git(bare, 'tag', '-l').split('\n').sort().join(' '), 'v0.1.0 v0.1.1');
 });

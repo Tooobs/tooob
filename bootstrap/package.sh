@@ -15,6 +15,10 @@ if [ -z "${LLVM:-}" ] && [ "$(uname)" = Linux ]; then
   for dir in $(ls -d /usr/lib/llvm-*/bin 2>/dev/null | sort -t- -k2 -n -r); do
     if [ -x "$dir/clang" ] && [ -x "$dir/llvm-ar" ]; then LLVM=$dir && break; fi
   done
+  if [ -z "${LLVM:-}" ]; then
+    sudo apt-get update -qq && sudo apt-get install -y -qq clang llvm
+    LLVM=/usr/bin
+  fi
   export LLVM
 fi
 

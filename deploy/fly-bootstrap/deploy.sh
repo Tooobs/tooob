@@ -1,7 +1,7 @@
 #!/bin/sh
 # Deploy a Bootstrap to Fly.io: a Release's Bootstrap Bundle, checked against its checksum, or
 # bootstrap/www as built here (#59).
-#   ./deploy.sh [VERSION]   that Release's Bundle, e.g. 0.1.0 (default: the newest Release)
+#   ./deploy.sh [RELEASE]   that Release's Bundle, e.g. 0.1.0 (default: the newest Release)
 #   ./deploy.sh --local     bootstrap/www, built first with bootstrap/build.sh
 #   --dry-run               do everything but `fly deploy`
 # TOOOB_RELEASES points at another repo's Releases (a fork's), as GitHub lays them out.
@@ -9,13 +9,13 @@ set -eu
 cd "$(dirname "$0")"
 RELEASES=${TOOOB_RELEASES:-https://github.com/Tooobs/tooob/releases}
 
-dry_run=no version="" local=no
+dry_run=no release="" local=no
 for arg in "$@"; do
   case $arg in
     --dry-run) dry_run=yes ;;
     --local) local=yes ;;
-    -*) echo "usage: ./deploy.sh [VERSION | --local] [--dry-run]" >&2 && exit 1 ;;
-    *) version=$arg ;;
+    -*) echo "usage: ./deploy.sh [RELEASE | --local] [--dry-run]" >&2 && exit 1 ;;
+    *) release=$arg ;;
   esac
 done
 
@@ -29,7 +29,7 @@ if [ $local = yes ]; then
   cp -R "$www" "$ctx/www"
   what="bootstrap/www as built here"
 else
-  if [ -n "$version" ]; then from="$RELEASES/download/v${version#v}"; else from="$RELEASES/latest/download"; fi
+  if [ -n "$release" ]; then from="$RELEASES/download/v${release#v}"; else from="$RELEASES/latest/download"; fi
   for file in tooob-bootstrap.tar.xz tooob-bootstrap.tar.xz.sha256; do
     curl -fsSL -o "$ctx/$file" "$from/$file" || { echo "deploy.sh: couldn't download $from/$file" >&2 && exit 1; }
   done
