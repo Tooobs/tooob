@@ -1,0 +1,8 @@
+#!/bin/sh
+# Run ./check.sh before every push; a failure stops the push (`git push --no-verify` skips this).
+# Turn it on once per clone: git config core.hooksPath .githooks
+root=$(git rev-parse --show-toplevel)
+if [ -n "$(git -C "$root" status --porcelain --untracked-files=no)" ]; then
+  echo "pre-push: checking the working tree, which has uncommitted changes" >&2
+fi
+exec "$root/check.sh"

@@ -40,7 +40,7 @@ tooob block photos <key prefix>
 
 ## Develop
 
-- `cd host && cargo test`
+- `./check.sh`: formatting, clippy, `cargo test`, the Bootstrap's build and the Bootstrap Bundle's manifest tests; `git config core.hooksPath .githooks` (once per clone) runs it before every push.
 - `cd bootstrap && ./build.sh && cd check && npm install && node --test`: end-to-end tests in headless Chrome against real Hosts and a local Relay (`cargo install iroh-relay --features server --version 1.3.0`).
 - `GLOSSARY.md` is the vocabulary, `DESIGN.md` the plan, and `docs/adr/` the decisions that are hard to reverse. `CLAUDE.md` is how we work, with or without an agent.
 
