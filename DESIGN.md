@@ -6,6 +6,8 @@ _Status: decided 2026-10-18. Working title was relay4all; product, repo and CLI 
 
 Turn home infrastructure into web infrastructure for normal people. Run something at home — Home Assistant, Jellyfin, Immich, a NAS, a static site on a Pi — and let the people you choose reach it from an ordinary browser. No port forwarding, no public URL, nothing the relay can read.
 
+**And for their agents** _(added 2026-10-24)_. An AI agent runs a Host for its Owner, or reaches Sites as a Visitor: a status dashboard, a dev preview or an MCP server, shared with people (in a browser) and with other agents (through `tooob visit`, a local proxy). The access model is the same: every Host has a person as its Owner, and every new device an Agent invites waits for that person's approval (ADR 0018). tooob is only the transport: how agents tell each other a link exists (a chat, robofinger, anything) is theirs to choose (ADR 0019).
+
 **Private, not anonymous.** Content is end-to-end encrypted and access is invite-only. The relay still sees which keys talk, when, how much, and from which IPs. We say so plainly and keep that metadata minimal.
 
 ## How it works
@@ -54,11 +56,12 @@ Turn home infrastructure into web infrastructure for normal people. Run somethin
 - **Relays are stock iroh-relay.** tooob adds nothing to them, so any iroh-relay of the right version will do.
 
 ### Scope
-- **v1 users**: technical early adopters. **Normal people** is the named next milestone, and every v1 choice is checked against it.
+- **v1 users**: technical early adopters. **Agents** is the next milestone, then **Normal people**; every v1 choice is checked against Normal people.
 - **v1 protocol scope**: HTTP request/response, streaming bodies, range requests (video seeking), WebSockets via shim.
 - **Host platforms**: Linux (arm64, x86_64) and macOS. **Packaging**: Docker image plus Home Assistant add-on first. Docker covers Umbrel, CasaOS, Unraid and Synology. Bare CLI for tinkerers. Desktop tray app later (laptops sleep).
 - **Management**: one **admin API** on the host. The **web UI** (v1, minimal: invite, list visitors, block, bandwidth) is served as an owner-only tooob site, and first run pairs the owner's browser from a LAN setup page. The CLI is for scripting.
-- **AI front door**: an **MCP server** that is a thin client of the admin API. Local first (beside Claude Desktop/Code, reaching the host over tooob with an owner key). Remote MCP with OAuth at the normal-people milestone. The agent may read, block and revoke directly. Invites, unblocks and allowlist changes become **pending requests the owner approves** in the web UI or by push. Agent-made invites default to approve-on-first-visit. The web UI stays the baseline.
+- **Agents** _(milestone after v1, before Normal people)_: Agents host with the CLI, from an Agent Account a person names on a Host they made (ADR 0018), and visit with `tooob visit LINK [--as NAME] [--listen 127.0.0.1:PORT | unix:PATH]`. First use case: an agent's status dashboard, opened by people in a browser and by other agents through `tooob visit`.
+- **AI front door**: an **MCP server** that is a thin client of the admin API. Local first (beside Claude Desktop/Code, reaching the host over tooob with an owner key). Remote MCP with OAuth at the normal-people milestone. The agent may read, block and revoke directly, and make invites that need approval on first visit (ADR 0018). Unblocks, allowlist changes and invites without that approval become **pending requests the owner approves** in the web UI. The web UI stays the baseline.
 - **v1 also**: the direct WebRTC path for browsers (above), proven first by spike 2.
 - **v2**: native visitor app or extension (iroh's own hole punching, no WebRTC needed), friendly names, device linking.
 
@@ -70,7 +73,7 @@ Turn home infrastructure into web infrastructure for normal people. Run somethin
 | Isolation between sites | Same as github.io | Per-key subdomain plus Public Suffix List |
 | Home IP visible on direct paths | Same as self-hosting | A "relay only" option (skip WebRTC and native hole punching) for hosts who want their IP hidden |
 | Service worker / WASM / WebSocket-shim plumbing | New | **The spike** |
-| Prompt injection via the AI front door | New | Agent can only subtract; grants need owner approval |
+| Prompt injection via the AI front door, or via what an agent reads | New | An agent can't let anyone in unseen: its invites need the owner's approval on first visit, enforced through Agent Accounts (ADR 0018) |
 
 ## First step: the spike
 

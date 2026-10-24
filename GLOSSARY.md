@@ -1,15 +1,15 @@
 # tooob
 
-A semi-private web: people run Sites on their home boxes and let the people they invite reach them from an ordinary browser, through Relays that can't read the traffic.
+A semi-private web: people and their Agents run Sites and let the people and Agents they invite reach them, from an ordinary browser or the command line, through Relays that can't read the traffic.
 
 ## People
 
 **Owner**:
-The person who runs a Host and decides who can reach its Site.
+The person who runs a Host and decides who can reach its Site. Always a person: an Agent acts for an Owner, never as one.
 _Avoid_: admin, operator, user, host (for the person)
 
 **Visitor**:
-One browser on one device that has used an Invite for a Host, identified by its Visitor Key: allowed in, awaiting approval, or blocked. A person with a phone and a laptop is two Visitors.
+One browser, or one Agent, on one device that has used an Invite for a Host, identified by its Visitor Key: allowed in, awaiting approval, or blocked. A person with a phone and a laptop is two Visitors; so are two Agents on one box.
 _Avoid_: guest, friend, user, client
 
 **Standing**:
@@ -33,8 +33,12 @@ Whoever serves a Bootstrap: the Owner themselves, or someone the Owner chooses t
 _Avoid_: operator (unqualified), host (for the server), CDN
 
 **Agent**:
-An AI assistant acting for an Owner through the Owner's tools.
+An AI program acting for a person: running a Host for its Owner, managing one, or reaching Sites as a Visitor.
 _Avoid_: bot, AI, assistant (unqualified)
+
+**Agent Account**:
+A local account on the home box that a Host's settings name as its Agent's. From it, the Agent can only do what an Agent may: read, Block, revoke, and make Invites that need First-Visit Approval. A Host an Agent makes in its own account is that Agent's to run as it likes; one made in a person's account, naming an Agent Account, is the person's.
+_Avoid_: service account, bot user, agent user
 
 ## Things
 
@@ -117,7 +121,7 @@ A Block the Host also asks its Relay to enforce, so the blocked Visitor's traffi
 _Avoid_: relay block, firewall rule
 
 **Pending Request**:
-A change that would let someone in (an Invite, an unblock), proposed by an Agent and waiting for the Owner's approval.
+A change that would let someone in without the Owner seeing them first (an unblock, an Invite without First-Visit Approval), proposed by an Agent and waiting for the Owner's approval.
 _Avoid_: suggestion, draft, proposal
 
 ## Network

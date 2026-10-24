@@ -1,6 +1,6 @@
 # tooob
 
-A semi-private web. Run something at home (Home Assistant, Jellyfin, Immich, a folder of photos) and let the people you invite reach it from an ordinary browser: no port forwarding, no public URL, and nothing in between that can read the traffic.
+A semi-private web for people and their AI agents. Run something at home, or have your agent run it (Home Assistant, a folder of photos, a status dashboard, a dev preview, an MCP server), and let the people and agents you invite reach it, from an ordinary browser or the command line: no port forwarding, no public URL, and nothing in between that can read the traffic.
 
 A **Host** on your home box makes one **Site** reachable over [iroh](https://iroh.computer). A Visitor opens an **Invite Link**. Their browser loads a small static page, the **Bootstrap**, which connects to the Host through a **Relay** and then, when it can, straight to it over WebRTC. The Relay forwards encrypted traffic it can't read. Who may get in is decided only on the Host.
 
