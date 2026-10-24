@@ -56,7 +56,13 @@ test('the check passes on a Bundle as built, and names a file changed since', (t
   assert.doesNotMatch(changed.stderr, /index\.html/);
 });
 
-test('build.sh leaves a Bootstrap Bundle whose manifest matches it', () => {
+// With TOOOB_WWW, the browser suite runs on another Bundle (a published one, or the previous Release's
+// in release.sh's cross-Release check): this local build isn't what's under test.
+const OTHER_BUNDLE = process.env.TOOOB_WWW
+  ? `the browser suite is on another Bootstrap Bundle (TOOOB_WWW=${process.env.TOOOB_WWW})`
+  : false;
+
+test('build.sh leaves a Bootstrap Bundle whose manifest matches it', { skip: OTHER_BUNDLE }, () => {
   const www = join(BOOTSTRAP, 'www');
   const result = check(www);
   assert.equal(result.status, 0, `run bootstrap/build.sh first\n${result.stderr}`);
