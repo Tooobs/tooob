@@ -4,3 +4,8 @@
 members = ["host"]
 exclude = ["bootstrap", "spike"]
 resolver = "3"
+
+# The profile `dist` builds Releases with.
+[profile.dist]
+inherits = "release"
+lto = "thin"

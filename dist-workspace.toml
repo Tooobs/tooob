@@ -1,0 +1,30 @@
+[workspace]
+members = ["cargo:."]
+
+# Config for `dist`, which builds and publishes a Release when a vX.Y.Z tag is pushed (#59). Like
+# envstow's: GitHub Releases and the shell installer only, no Homebrew tap, nothing on crates.io.
+[dist]
+# Must match the dist that runs `dist plan`/`dist generate` here (envstow's too).
+cargo-dist-version = "0.32.0"
+ci = "github"
+installers = ["shell"]
+# Linux builds are fully static musl.
+targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"]
+# The XDG user-binary folder, Rust-agnostic; services name tooob by this path (#27).
+install-path = "~/.local/bin"
+install-updater = false
+install-success-msg = "tooob installed. Open a new terminal (or run: source ~/.local/bin/env), then check it with: tooob --version"
+# CI runs only for a tagged Release: checks on every push are local (#58).
+pr-run-mode = "skip"
+# cargo test for each target, before it's built.
+github-build-setup = "../build-setup.yml"
+# Appends the published Bootstrap Bundle's manifest hash to the Release's notes.
+post-announce-jobs = ["./bundle-hash"]
+
+[dist.github-custom-job-permissions]
+bundle-hash = { contents = "write" }
+
+# The Bootstrap Bundle, with a checksum of its own: dist gives extra artifacts none.
+[[dist.extra-artifacts]]
+artifacts = ["target/bootstrap/tooob-bootstrap.tar.xz", "target/bootstrap/tooob-bootstrap.tar.xz.sha256"]
+build = ["bootstrap/package.sh"]

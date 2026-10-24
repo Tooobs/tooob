@@ -1,0 +1,12 @@
+# Steps dist runs in each build job before building (#59): the Host's tests, on the target that
+# job builds, so CI tests what ships. Linux targets are musl, which needs musl-tools and the target
+# first (dist installs them only later in the job).
+- name: cargo test (the target this job builds)
+  shell: bash
+  run: |
+    target="${{ join(matrix.targets, ' ') }}"
+    if [[ $target == *-linux-musl ]]; then
+      sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+      rustup target add "$target"
+    fi
+    cargo test --locked --target "$target"

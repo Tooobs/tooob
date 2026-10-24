@@ -1,0 +1,34 @@
+# After dist announces a Release (#59): check the published Bootstrap Bundle against its manifest
+# at the tag, then append its hash (the manifest's SHA-256) to the Release's notes, so anyone can
+# check a live Bootstrap against it. CI builds the published Bundle, so CI says its hash.
+name: bundle-hash
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+jobs:
+  bundle-hash:
+    runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ fromJson(inputs.plan).announcement_tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ fromJson(inputs.plan).announcement_tag }}
+          persist-credentials: false
+      - name: Append the Bootstrap Bundle's hash to the Release's notes
+        shell: bash
+        run: |
+          gh release download "$TAG" --dir published --pattern 'tooob-bootstrap.tar.xz*'
+          (cd published && sha256sum -c tooob-bootstrap.tar.xz.sha256)
+          tar -xJf published/tooob-bootstrap.tar.xz -C published
+          node bootstrap/manifest.mjs --check published/tooob-bootstrap
+          hash=$(node bootstrap/manifest.mjs --hash published/tooob-bootstrap)
+          gh release view "$TAG" --json body --jq .body > notes.md
+          printf '\nBootstrap Bundle: `%s`, the SHA-256 of its manifest. Check a live Bootstrap with `curl -s https://<bootstrap>/__tooob/version.json | shasum -a 256`.\n' "$hash" >> notes.md
+          gh release edit "$TAG" --notes-file notes.md
