@@ -62,6 +62,10 @@ pub async fn next_line(
 ) -> Result<Option<Value>> {
     loop {
         if let Some(i) = buf.iter().position(|&b| b == b'\n') {
+            // However it arrived: one read can bring in a whole line past the limit (#62).
+            if i > MAX_HEADER_LINE {
+                bail!("header line too long");
+            }
             let line = serde_json::from_slice(&buf[..i]);
             buf.drain(..=i);
             return Ok(Some(line?));
@@ -109,6 +113,14 @@ pub fn take_frame(buf: &mut Vec<u8>) -> Option<(u8, Vec<u8>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_header_line_over_the_limit_is_refused_even_when_it_arrives_in_one_read() {
+        let mut buf = format!("{{\"pad\":\"{}\"}}\n", "x".repeat(100 * 1024)).into_bytes();
+        let mut nothing_more: &[u8] = &[];
+        let line = next_line(&mut nothing_more, &mut buf).await;
+        assert!(line.is_err(), "accepted a 100 KiB header line");
+    }
 
     #[test]
     fn frames_come_back_whole_and_partial_ones_wait() {
