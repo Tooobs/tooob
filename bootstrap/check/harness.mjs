@@ -9,12 +9,15 @@ import { extname, join } from 'node:path';
 import puppeteer from 'puppeteer-core';
 
 const ROOT = new URL('../..', import.meta.url).pathname;
-const TOOOB = join(ROOT, 'target/debug/tooob');
+// TOOOB_BIN and TOOOB_WWW swap in another Release's tooob or Bootstrap Bundle: release.sh's
+// cross-Release check (ADR 0017).
+const TOOOB = process.env.TOOOB_BIN || join(ROOT, 'target/debug/tooob');
 const children = [];
 const servers = [];
 const sockets = []; // proxied connections: a server can't close while they're open
 
 export function buildHost() {
+  if (process.env.TOOOB_BIN) return;
   execFileSync('cargo', ['build', '-q', '--manifest-path', join(ROOT, 'host/Cargo.toml')], { stdio: 'inherit' });
 }
 
@@ -121,7 +124,7 @@ const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'applic
 
 /** The Bootstrap: www/ as static files, as any Bootstrap serves them. */
 export async function startBootstrap() {
-  const www = join(ROOT, 'bootstrap/www');
+  const www = process.env.TOOOB_WWW || join(ROOT, 'bootstrap/www');
   const server = createServer((req, res) => {
     const path = new URL(req.url, 'http://x').pathname;
     try {

@@ -1,6 +1,6 @@
 #!/bin/sh
-# The fast checks, run before every push (.githooks/pre-push) and, once it exists, by release.sh
-# (#59): formatting, clippy, the Host's tests, the Bootstrap's build and its Bundle's manifest
+# The fast checks, run before every push (.githooks/pre-push) and by release.sh: formatting,
+# clippy, the Host's tests, the Bootstrap's build, its Bundle's manifest tests and release.sh's
 # tests. Stops at the first that fails and says which. The browser suite isn't here: it runs at the
 # end of each issue and before a Release.
 set -u
@@ -24,4 +24,5 @@ step "cargo clippy (Host)" host cargo clippy --all-targets --quiet -- -D warning
 step "cargo test (Host)" host cargo test --quiet
 step "bootstrap/build.sh" bootstrap ./build.sh
 step "manifest tests" bootstrap/check node --test manifest.test.mjs
+step "release.sh tests" test node --test release.test.mjs
 echo "check.sh: all passed"
