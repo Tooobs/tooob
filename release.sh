@@ -108,7 +108,8 @@ set_version host/Cargo.toml
 set_version bootstrap/web/Cargo.toml
 cargo update -q --workspace --offline
 (cd bootstrap && cargo update -q --workspace --offline)
-stamp_changelog
+# A test Release's notes are "Unreleased", which stays for the Release it's testing.
+[[ $VERSION == *-rc.* ]] || stamp_changelog
 
 git add host/Cargo.toml bootstrap/web/Cargo.toml Cargo.lock bootstrap/Cargo.lock CHANGELOG.md
 git commit -q -m "Release $VERSION"

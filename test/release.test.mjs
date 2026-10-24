@@ -162,3 +162,12 @@ test('a browser test that fails twice stops the Release', (t) => {
   assert.equal(git(bare, 'tag', '-l'), '');
   assert.equal(git(work, 'status', '--porcelain'), '');
 });
+
+test('a test Release leaves the changelog for the Release it tests', (t) => {
+  const { work, bare } = aClone(t);
+  const result = release(work, '0.2.0-rc.1');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(join(work, 'CHANGELOG.md'), 'utf8'), UNRELEASED);
+  assert.equal(packageVersion(work, 'host/Cargo.toml'), '0.2.0-rc.1');
+  assert.equal(git(bare, 'tag', '-l'), 'v0.2.0-rc.1');
+});
