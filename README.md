@@ -15,8 +15,6 @@ tooob names no Relay or Bootstrap of its own ([ADR 0015](docs/adr/0015-no-defaul
 - **A Relay**: stock [iroh-relay](https://github.com/n0-computer/iroh) 1.3.0. Use `deploy/relay/` (any VPS with Docker; `wizard.sh` walks through it) or `deploy/fly-relay/` (Fly.io). As shipped, a Relay lets anyone use it: see `access` in its config before you share it.
 - **A Bootstrap**: a Release's Bootstrap Bundle (`tooob-bootstrap.tar.xz`), served over HTTPS (browsers only run its service worker on a secure origin). `deploy/fly-bootstrap/deploy.sh [RELEASE]` deploys one to Fly.io, checked against its checksum, and prints its hash to compare with the Release's notes; or serve it from any static host.
 
-For a try on one network only, skip the Relay with `--local`. You still need a Bootstrap.
-
 ## Install
 
 On macOS (Apple Silicon) or Linux (arm64, x86_64), a prebuilt `tooob`:

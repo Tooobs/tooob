@@ -15,7 +15,7 @@ Turn home infrastructure into web infrastructure for normal people. Run somethin
 ```
  visitor's browser                          relay (iroh-relay)              home box
  ┌──────────────────────────────┐          ┌────────────────┐          ┌──────────────────┐
- │ <key>.<bootstrap domain>     │          │ forwards        │          │ tooob host        │
+ │ <key>.<relay domain>         │          │ forwards        │          │ tooob host        │
  │  shell page: iroh (WASM)  ───┼── WSS ──▶│ encrypted QUIC  │◀── QUIC ─┤  (reverse proxy)  │
  │  iframe: the actual site     │          │ by endpoint key │          │        │          │
  │  service worker: fetch → shell│          └────────────────┘          │        ▼          │
@@ -25,7 +25,7 @@ Turn home infrastructure into web infrastructure for normal people. Run somethin
 ```
 
 1. The Owner adds a Host (`tooob add`) and runs it (`tooob run`): an iroh endpoint that reverse-proxies to a local HTTP server, or serves a Shared Folder itself. Its endpoint key is its address.
-2. A visitor opens an Invite Link, which starts with the Bootstrap the Host's settings name and carries the Host Key and the Invite in its fragment. The Bootstrap is only a static page; the fragment never leaves the browser.
+2. A visitor opens an Invite Link, the Host's Key Address on its Relay's domain (`https://<key>.<relay domain>/#invite=…`), where the Relay serves the Bootstrap (ADR 0020). The Bootstrap is only a static page; the Invite after the `#` never leaves the browser.
 3. The bootstrap loads iroh compiled to WASM, generates a visitor key (kept in browser storage), and dials the host through the relay.
 4. A service worker intercepts the site's requests and hands them to the shell page, which carries them over iroh. Service workers can't intercept WebSockets, so an injected shim replaces `WebSocket` and tunnels it the same way.
 5. The host checks the visitor key against its allowlist, then proxies to the local server.
@@ -38,7 +38,7 @@ Turn home infrastructure into web infrastructure for normal people. Run somethin
 - **Built on iroh 1.x** (MIT/Apache, wire-stable across v1). Hole punching is the hardest part and iroh has it. We don't write our own transport.
 - **Open source**, `MIT OR Apache-2.0` (ADR 0016).
 - **Self-hosted by design**: tooob names no Relay or Bootstrap of its own, and every Host's settings name both (ADR 0015). That's stock iroh-relay plus the static Bootstrap; `deploy/` has both.
-- **Addresses are key subdomains** (`<base32 key>.<bootstrap domain>`, 52 chars, fits a DNS label). Each site gets its own origin. **Friendly names** are a v2 feature. The Bootstrap's domain goes on the Public Suffix List.
+- **Addresses are key subdomains** (`<base32 key>.<relay domain>`, 52 chars, fits a DNS label). Each site gets its own origin. **Friendly names** are a v2 feature. The Relay's domain goes on the Public Suffix List. A Key Address lasts as long as its Relay: switching Relay means new Invites for everyone (ADR 0020).
 
 ### Access control
 - **The allowlist lives only on the host.** Relays and Bootstraps never learn who your visitors are.
@@ -53,7 +53,7 @@ Turn home infrastructure into web infrastructure for normal people. Run somethin
 
 ### Infrastructure
 - **Browsers go direct when they can.** iroh in the browser is relay-only (pages can't open raw UDP), so the shell also negotiates a **WebRTC data channel** with the host. The signaling runs over the already-authenticated iroh connection, so there's no separate signaling server. The DTLS fingerprint arrives over that channel too, which binds the direct path to the host's key. **iroh's relay is the TURN fallback**, so there's no TURN server to run. Only connections that can't hole-punch cost relay bandwidth. _(Revised 2026-10-18; the first plan was relay-only browsers in v1.)_ Longer term, WebRTC as an iroh custom transport would move the path switching into iroh itself. That API is unstable, and the one existing attempt (`iroh-webrtc-transport`) targets pre-1.0 iroh.
-- **Relays are stock iroh-relay.** tooob adds nothing to them, so any iroh-relay of the right version will do.
+- **Relays are stock iroh-relay, and serve their Bootstrap beside it** (ADR 0020): one web server hands iroh's paths to iroh-relay and serves a Release's Bootstrap Bundle for the rest, on the Relay's domain and every Key Address under it. tooob adds nothing to iroh-relay itself, so any of the right version will do. **Relay finder** _(milestone)_: Owners pick a Relay from a public list, or a trusted site with each Relay's stats and terms.
 
 ### Scope
 - **v1 users**: technical early adopters. **Agents** is the next milestone, then **Normal people**; every v1 choice is checked against Normal people.
@@ -69,7 +69,7 @@ Turn home infrastructure into web infrastructure for normal people. Run somethin
 
 | Risk | Compared to the open web | Mitigation |
 |---|---|---|
-| Visitors trust bootstrap JS from whoever serves the Bootstrap | Same as any web app; better than a TLS-terminating CDN | Versioned, reproducible bootstrap; the Owner chooses (or runs) it; v2 extension |
+| Visitors trust bootstrap JS from the Relay Operator who serves it | Same as any web app; better than a TLS-terminating CDN | Versioned, reproducible bootstrap; the Owner chooses (or runs) the Relay; a Relay audit for the Relay finder; v2 extension |
 | Isolation between sites | Same as github.io | Per-key subdomain plus Public Suffix List |
 | Home IP visible on direct paths | Same as self-hosting | A "relay only" option (skip WebRTC and native hole punching) for hosts who want their IP hidden |
 | Service worker / WASM / WebSocket-shim plumbing | New | **The spike** |

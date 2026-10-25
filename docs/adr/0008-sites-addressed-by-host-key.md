@@ -1,3 +1,7 @@
+---
+status: amended by ADR 0015 and ADR 0020
+---
+
 # Sites are addressed by their Host Key
 
 _Amended by ADR 0015: the domain is the Bootstrap's, whoever runs it; tooob names none._

@@ -25,12 +25,8 @@ The name an Owner gives a Visitor ("mom", "Dave's phone"). Several Visitors can 
 _Avoid_: username, nickname, alias
 
 **Relay Operator**:
-Whoever runs a Relay: the Owner themselves, or someone the Owner chooses to trust with their traffic's metadata.
-_Avoid_: operator (unqualified), provider, admin
-
-**Bootstrap Operator**:
-Whoever serves a Bootstrap: the Owner themselves, or someone the Owner chooses to trust with their Visitors' browsers.
-_Avoid_: operator (unqualified), host (for the server), CDN
+Whoever runs a Relay, and so serves its Bootstrap: the Owner themselves, or someone the Owner chooses to trust with their traffic's metadata and their Visitors' browsers.
+_Avoid_: operator (unqualified), provider, admin, Bootstrap Operator
 
 **Agent**:
 An AI program acting for a person: running a Host for its Owner, managing one, or reaching Sites as a Visitor, through a browser like anyone else.
@@ -59,7 +55,7 @@ A Site the Host serves itself, read-only, from a folder or a single file on the 
 _Avoid_: share (as a noun), drive, bucket
 
 **Host Settings**:
-What a Host serves, which Relay it uses and which Bootstrap its Invite Links open, in a file the Owner edits by hand (`tooob show` prints where). A Host runs as its settings say, however it's started. The Owner always names the Relay and the Bootstrap: there are no defaults.
+What a Host serves and which Relay it uses, in a file the Owner edits by hand (`tooob show` prints where). A Host runs as its settings say, however it's started. The Owner always names the Relay, and its Bootstrap comes with it: there are no defaults.
 _Avoid_: config (unqualified), options, preferences
 
 **Host State**:
@@ -75,11 +71,11 @@ The key a Visitor's browser generates and keeps; the Host recognizes the Visitor
 _Avoid_: session, token, cookie
 
 **Key Address**:
-The URL form of a Host Key: the Host Key as a subdomain of its Bootstrap's domain (`<host key>.<bootstrap domain>`). Free, permanent, unreadable.
+The URL form of a Host Key: the Host Key as a subdomain of its Relay's domain (`<host key>.<relay domain>`). Each is an origin of its own in the browser, walled off from every other Host's. Free, unreadable, and as lasting as the Relay.
 _Avoid_: subdomain, link
 
 **Friendly Name**:
-A human-readable address for a Host, in place of its Host Key (`john.<bootstrap domain>`).
+A human-readable address for a Host, in place of its Host Key (`john.<relay domain>`).
 _Avoid_: domain, vanity URL, handle, Host Name (that's private to the Owner)
 
 ## Access
@@ -105,7 +101,7 @@ An option on an Invite: the device that uses it waits for the Owner's approval b
 _Avoid_: manual approval, moderation
 
 **Invite Link**:
-The URL that carries an Invite. Opening it is how a device becomes a Visitor.
+The URL that carries an Invite: its Host's Key Address, with the Invite after the `#`. Opening it is how a device becomes a Visitor.
 _Avoid_: share link, magic link
 
 **Allowlist**:
@@ -127,7 +123,7 @@ _Avoid_: suggestion, draft, proposal
 ## Network
 
 **Relay**:
-A server that forwards encrypted traffic between keys without being able to read it.
+A server that forwards encrypted traffic between keys without being able to read it, and serves the Bootstrap for the Hosts that use it.
 _Avoid_: server, proxy, TURN server, tunnel
 
 **Relayed Path**:
@@ -139,7 +135,7 @@ Traffic between a Visitor's browser and a Host that goes straight between them, 
 _Avoid_: p2p connection, peer-to-peer link
 
 **Bootstrap**:
-The static page a Visitor's browser loads first, from wherever its Host's settings say, which then connects to the Host. Visitors trust its Bootstrap Operator.
+The static page a Visitor's browser loads first, from its Host's Relay, which then connects to the Host. Visitors trust its Relay Operator.
 _Avoid_: loader, launcher, web client
 
 **Protocol Version**:
@@ -153,5 +149,5 @@ A numbered version of tooob (`0.1.0`): the `tooob` command for each platform, th
 _Avoid_: build, drop, version (unqualified)
 
 **Bootstrap Bundle**:
-The files a Bootstrap is made of, as one Release publishes them, identified by the hash of its manifest, which lists every other file's hash. A Bootstrap Operator serves a Bootstrap Bundle, and anyone can check which.
+The files a Bootstrap is made of, as one Release publishes them, identified by the hash of its manifest, which lists every other file's hash. A Relay serves a Bootstrap Bundle, and anyone can check which.
 _Avoid_: www, dist, the build
