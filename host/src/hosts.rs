@@ -345,20 +345,34 @@ impl Entry {
 
     /// Take the lock on its state, which a running Host holds as long as it runs: one process per
     /// Host, and nothing else writes its state meanwhile. Refused, with the pid, while it's held.
-    /// A command changing a stopped Host's state holds the lock for a moment; that's waited out.
+    /// A command changing a stopped Host's state holds the lock for a moment; that's waited out,
+    /// even when several take turns at it (#65): only one process holding it for a whole second is
+    /// a running Host.
     pub fn lock(&self) -> Result<Lock> {
-        let started = std::time::Instant::now();
+        use std::time::{Duration, Instant};
+        let started = Instant::now();
+        let mut holder: Option<(u32, Instant)> = None;
         let lock = loop {
             if let Some(lock) = try_lock(&self.state_dir)? {
                 break lock;
             }
-            if started.elapsed() > std::time::Duration::from_secs(1) {
-                match self.running() {
-                    Some(pid) => bail!("{} is already running (pid {pid})", self.name),
-                    None => bail!("{} is already running", self.name),
+            holder = match (holder, self.running()) {
+                (Some((was, since)), Some(pid)) if was == pid => {
+                    if since.elapsed() > Duration::from_secs(1) {
+                        bail!("{} is already running (pid {pid})", self.name);
+                    }
+                    Some((was, since))
                 }
+                (_, Some(pid)) => Some((pid, Instant::now())),
+                (_, None) => None,
+            };
+            if started.elapsed() > Duration::from_secs(10) {
+                bail!(
+                    "{} is busy: other commands keep taking turns at its lock",
+                    self.name
+                );
             }
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(Duration::from_millis(20));
         };
         // `rm` may have deleted it while this waited to open the lock file.
         if !self.settings_file.exists() {
@@ -408,8 +422,19 @@ impl Entry {
             std::process::id()
         ));
         std::fs::rename(&self.state_dir, &doomed)?;
-        std::fs::remove_dir_all(&doomed)?;
-        Ok(())
+        // A command waiting for the lock may still make a `lock` file in it: it found the state
+        // folder just before the rename (#65). It finds that path gone next, and makes no more.
+        let mut tries = 0;
+        loop {
+            match std::fs::remove_dir_all(&doomed) {
+                Ok(()) => return Ok(()),
+                Err(e) if e.raw_os_error() == Some(libc::ENOTEMPTY) && tries < 20 => {
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
     }
 
     /// Whether `wanted` names this Host: its Host Name, what it serves, or a prefix of its Host
