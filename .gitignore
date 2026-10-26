@@ -1,5 +1,6 @@
 .DS_Store
 deploy/relay/.env
+deploy/relay/image/www/
 spike/vps-host/
 /target/
 .envrc

@@ -1,7 +1,0 @@
-# The Bootstrap's files change on every deploy and the pages are small: make browsers recheck them
-# each time (cheap 304s), so a redeploy reaches phones immediately instead of after a cache expiry.
-:8080 {
-	root * /srv
-	header Cache-Control "no-cache"
-	file_server
-}

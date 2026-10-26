@@ -10,10 +10,7 @@ It's **private, not anonymous**: a Relay still sees which keys talk, when, how m
 
 ## What you need
 
-tooob names no Relay or Bootstrap of its own ([ADR 0015](docs/adr/0015-no-default-relay-or-bootstrap.md)). Each Host's settings name both, so you run them or use ones run by someone you trust. `deploy/` has both:
-
-- **A Relay**: stock [iroh-relay](https://github.com/n0-computer/iroh) 1.3.0. Use `deploy/relay/` (any VPS with Docker; `wizard.sh` walks through it) or `deploy/fly-relay/` (Fly.io). As shipped, a Relay lets anyone use it: see `access` in its config before you share it.
-- **A Bootstrap**: a Release's Bootstrap Bundle (`tooob-bootstrap.tar.xz`), served over HTTPS (browsers only run its service worker on a secure origin). `deploy/fly-bootstrap/deploy.sh [RELEASE]` deploys one to Fly.io, checked against its checksum, and prints its hash to compare with the Release's notes; or serve it from any static host.
+**A Relay.** tooob names none of its own ([ADR 0015](docs/adr/0015-no-default-relay-or-bootstrap.md)), so you run one, or use one run by someone you trust. A Relay serves the Bootstrap too, so it's all a Host needs. [`deploy/`](deploy/README.md) has two setups, a VPS with Docker (`wizard.sh` walks through it) and Fly.io, and lists what a Relay needs: a domain of its own with a wildcard DNS record, an API token for that DNS, TCP 443 and generous bandwidth. As shipped, a Relay lets anyone use it: see `access` in its config before you share it.
 
 ## Install
 

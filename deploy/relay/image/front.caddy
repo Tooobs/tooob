@@ -1,0 +1,13 @@
+# What a Relay serves on its domain and on every Key Address under it (ADR 0020): iroh's paths go to
+# iroh-relay (iroh-relay.toml), and everything else is the Bootstrap Bundle.
+@iroh path /relay /ping /generate_204 /healthz
+handle @iroh {
+	reverse_proxy 127.0.0.1:3340
+}
+handle {
+	root * /srv
+	# The Bundle's files change with every upgrade and the pages are small: make browsers recheck
+	# them each time (cheap 304s), so an upgrade reaches phones at once, not after a cache expiry.
+	header Cache-Control "no-cache"
+	file_server
+}

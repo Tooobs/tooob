@@ -37,7 +37,7 @@ Turn home infrastructure into web infrastructure for normal people. Run somethin
 - **v1 is tooob web**: a home box serving a site to invited visitors in ordinary browsers.
 - **Built on iroh 1.x** (MIT/Apache, wire-stable across v1). Hole punching is the hardest part and iroh has it. We don't write our own transport.
 - **Open source**, `MIT OR Apache-2.0` (ADR 0016).
-- **Self-hosted by design**: tooob names no Relay or Bootstrap of its own, and every Host's settings name both (ADR 0015). That's stock iroh-relay plus the static Bootstrap; `deploy/` has both.
+- **Self-hosted by design**: tooob names no Relay of its own, and every Host's settings name one (ADR 0015). A Relay is stock iroh-relay behind Caddy, which also serves a Release's Bootstrap Bundle (ADR 0020); `deploy/` sets one up on a VPS or Fly.io.
 - **Addresses are key subdomains** (`<base32 key>.<relay domain>`, 52 chars, fits a DNS label). Each site gets its own origin. **Friendly names** are a v2 feature. The Relay's domain goes on the Public Suffix List. A Key Address lasts as long as its Relay: switching Relay means new Invites for everyone (ADR 0020).
 
 ### Access control

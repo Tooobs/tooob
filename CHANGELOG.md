@@ -20,4 +20,9 @@ The first Release, for technical early adopters on Linux and macOS.
   Links are `https://<host key>.<relay domain>/#invite=<token>`, so no Site's scripts can reach
   another's browser storage or Visitor Key. A Host's settings name only its Relay, which serves
   the Bootstrap (ADR 0020); Host Keys are written in z-base-32, short enough to be a hostname's label.
+- **Relay setups** (`deploy/`): one container, stock iroh-relay behind Caddy, which gets a
+  wildcard certificate through a DNS challenge and serves a Release's Bootstrap Bundle, checked
+  against its checksum, on the Relay's domain and every Key Address. Run it on a VPS
+  (`deploy/relay/`, with a wizard) or on Fly.io (`deploy/fly-relay/`). `deploy/fly-bootstrap/` is
+  gone: a Relay is all a Host needs.
 - **`tooob --version`** prints the Release and the Protocol Version; a starting Host logs them.

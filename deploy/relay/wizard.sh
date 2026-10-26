@@ -200,26 +200,25 @@ finish() {
 
 run_wizard() {
 
-# Run from deploy/relay so .env, compose.yaml and iroh-relay.toml resolve here.
+# Run from deploy/relay so .env and deploy.sh resolve here.
 cd "$(dirname "$0")"
-SPIKE="$(cd ../../spike && pwd)"
-TOTAL_STAGES=7
+TOTAL_STAGES=8
 
-# ssh/scp to the VPS without an interactive host-key prompt on first contact (fresh server: trust on first use).
+# ssh to the VPS without an interactive host-key prompt on first contact (fresh server: trust on first use).
 SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
 vps() { ssh "${SSH_OPTS[@]}" "$SSH_USER@$VPS_IP" "$@"; }
 
-banner "tooob: self-hosted relay on a Hetzner VPS"
+banner "tooob: your own Relay on a Hetzner VPS"
 
 # ── 1 ─────────────────────────────────────────────────────────────────────
 stage "Hetzner: create the server"
-say "A small Ubuntu box in the US. Every byte browser visitors load passes through it."
+say "A small Ubuntu box. Every byte Visitors load passes through it, so mind its traffic allowance."
 if [[ -f "$HOME/.ssh/id_ed25519.pub" ]]; then
   pbcopy < "$HOME/.ssh/id_ed25519.pub" 2>/dev/null && note "Your SSH public key (~/.ssh/id_ed25519.pub) is on the clipboard."
 fi
 open_url "https://console.hetzner.cloud/"
 step "Open (or create) a project, then click 'Add Server'."
-step "Location: Ashburn, VA or Hillsboro, OR. Image: Ubuntu 24.04."
+step "Location: near your Hosts and Visitors. Image: Ubuntu 24.04."
 step "Type: the smallest shared-vCPU plan is plenty (names change; ~2 GB RAM)."
 step "Networking: keep Public IPv4 on."
 step "SSH keys: 'Add SSH key' and paste the clipboard. Then 'Create & Buy now'."
@@ -239,46 +238,67 @@ printf '  %s✓ SSH works%s\n' "$GREEN" "$RESET"
 pause
 
 # ── 2 ─────────────────────────────────────────────────────────────────────
-stage "DNS: point a hostname at the server"
-say "stoaf.com's DNS is at Network Solutions, and it has a wildcard (*.stoaf.com)"
-say "pointing at your existing server. An explicit record overrides the wildcard for"
-say "that one name only, so nothing else changes."
-ask RELAY_HOST "Relay hostname (Enter for relay.stoaf.com):"
-RELAY_HOST=${RELAY_HOST:-relay.stoaf.com}
-write_env RELAY_HOST "$RELAY_HOST"
-open_url "https://www.networksolutions.com/my-account/login"
-note "Menu names below are approximate; Network Solutions moves them around."
-step "My Domain Names → stoaf.com → Manage → Advanced DNS records (or 'Edit DNS')."
-step "Add an A record: host '${RELAY_HOST%%.*}', points to $VPS_IP, lowest TTL offered."
-step "Don't add an AAAA record (there's no IPv6 wildcard to override)."
-pause "Saved it? Press Enter and I'll wait for it to resolve…"
-printf '  waiting for %s → %s ' "$RELAY_HOST" "$VPS_IP"
-for _ in $(seq 120); do
-  [[ "$(dig +short A "$RELAY_HOST" @1.1.1.1 | tail -n1)" == "$VPS_IP" ]] && break
-  printf '.'; sleep 5
+stage "DNS: the Relay's domain and every name under it"
+say "The Relay's domain is where Hosts reach it, and every Host's Key Address is a name under it:"
+say "<host key>.<relay domain>. So it needs two records: the domain, and a wildcard."
+note "Use a domain of its own (e.g. relay.example.com), not one other sites live under."
+ask RELAY_DOMAIN "Relay domain (e.g. relay.example.com):"
+write_env RELAY_DOMAIN "$RELAY_DOMAIN"
+step "At your DNS provider, add an A record: '$RELAY_DOMAIN' → $VPS_IP."
+step "Add another A record: '*.$RELAY_DOMAIN' → $VPS_IP."
+step "On Cloudflare, set both to 'DNS only' (grey cloud): the Relay terminates TLS itself."
+pause "Saved them? Press Enter and I'll wait for them to resolve…"
+for name in "$RELAY_DOMAIN" "check.$RELAY_DOMAIN"; do
+  printf '  waiting for %s → %s ' "$name" "$VPS_IP"
+  for _ in $(seq 120); do
+    [[ "$(dig +short A "$name" @1.1.1.1 | tail -n1)" == "$VPS_IP" ]] && break
+    printf '.'; sleep 5
+  done
+  printf '\n'
+  if [[ "$(dig +short A "$name" @1.1.1.1 | tail -n1)" == "$VPS_IP" ]]; then
+    printf '  %s✓ %s resolves to %s%s\n' "$GREEN" "$name" "$VPS_IP" "$RESET"
+  else
+    warn "$name still doesn't resolve to $VPS_IP after 10 minutes."
+    confirm "Continue anyway?" || { finish; exit 1; }
+  fi
 done
-printf '\n'
-if [[ "$(dig +short A "$RELAY_HOST" @1.1.1.1 | tail -n1)" == "$VPS_IP" ]]; then
-  printf '  %s✓ %s resolves to %s%s\n' "$GREEN" "$RELAY_HOST" "$VPS_IP" "$RESET"
-else
-  warn "still not resolving to $VPS_IP after 10 minutes; Let's Encrypt will fail until it does."
-  confirm "Continue anyway?" || { finish; exit 1; }
-fi
 pause
 
 # ── 3 ─────────────────────────────────────────────────────────────────────
+stage "DNS: an API token for the certificates"
+say "Browsers need a certificate for every Key Address, so the Relay gets a wildcard one from"
+say "Let's Encrypt. Proving it owns *.$RELAY_DOMAIN means adding a DNS record, which takes a token"
+say "for your DNS provider's API. It stays in .env here and on the server."
+ask DNS_PROVIDER "DNS provider, as caddy-dns names it (Enter for cloudflare):"
+DNS_PROVIDER=${DNS_PROVIDER:-cloudflare}
+write_env DNS_PROVIDER "$DNS_PROVIDER"
+if [[ "$DNS_PROVIDER" == cloudflare ]]; then
+  open_url "https://dash.cloudflare.com/profile/api-tokens"
+  step "'Create Token' → the 'Edit zone DNS' template."
+  step "Zone Resources: Include → Specific zone → the zone $RELAY_DOMAIN is in. Then create it."
+else
+  note "See github.com/caddy-dns/$DNS_PROVIDER for the token it needs (one token, nothing else)."
+fi
+ask_secret DNS_API_TOKEN "API token:"
+write_env DNS_API_TOKEN "$DNS_API_TOKEN"
+say "Let's Encrypt needs a real contact email (it rejects example.com)."
+ask ACME_EMAIL "Contact email for the certificates:"
+write_env ACME_EMAIL "$ACME_EMAIL"
+pause
+
+# ── 4 ─────────────────────────────────────────────────────────────────────
 stage "Hetzner: firewall"
-say "Hetzner servers start with every port open. Lock it down to what the relay needs."
+say "Hetzner servers start with every port open. Lock it down to what the Relay needs."
 open_url "https://console.hetzner.cloud/"
 step "Your project → Firewalls → 'Create Firewall'."
-step "Inbound rules: TCP 22 (SSH), TCP 80 (Let's Encrypt), TCP 443 (relay), UDP 7842 (address discovery)."
+step "Inbound rules: TCP 22 (SSH), TCP 80 (HTTP, moved to HTTPS) and TCP 443 (the Relay)."
 step "Under 'Apply to', pick the server you just created, then create the firewall."
 pause "Done?"
 vps true 2>/dev/null && printf '  %s✓ SSH still works through the firewall%s\n' "$GREEN" "$RESET" \
   || warn "SSH stopped working; check that TCP 22 is in the inbound rules."
 pause
 
-# ── 4 ─────────────────────────────────────────────────────────────────────
+# ── 5 ─────────────────────────────────────────────────────────────────────
 stage "Install Docker on the server"
 if vps 'command -v docker >/dev/null && docker compose version >/dev/null 2>&1'; then
   printf '  %s✓ Docker is already installed%s\n' "$GREEN" "$RESET"
@@ -294,78 +314,47 @@ else
 fi
 pause
 
-# ── 5 ─────────────────────────────────────────────────────────────────────
-stage "Configure and upload the relay"
-say "Let's Encrypt needs a real contact email (it rejects example.com)."
-ask ACME_EMAIL "Contact email for the certificate:"
-write_env ACME_EMAIL "$ACME_EMAIL"
-build=$(mktemp -d)
-cp compose.yaml "$build/"
-sed -e "s|^hostname = .*|hostname = \"$RELAY_HOST\"|" \
-    -e "s|^contact = .*|contact = \"$ACME_EMAIL\"|" iroh-relay.toml > "$build/iroh-relay.toml"
-grep -E '^(hostname|contact) =' "$build/iroh-relay.toml" | sed 's/^/    /'
-vps 'mkdir -p ~/tooob-relay'
-scp -q "${SSH_OPTS[@]}" "$build/compose.yaml" "$build/iroh-relay.toml" "$SSH_USER@$VPS_IP:tooob-relay/"
-rm -rf "$build"
-printf '  %s✓ uploaded to %s:~/tooob-relay%s\n' "$GREEN" "$VPS_IP" "$RESET"
-pause
-
 # ── 6 ─────────────────────────────────────────────────────────────────────
-stage "Start the relay and get a certificate"
-vps 'cd ~/tooob-relay && docker compose up -d' 2>&1 | tail -n 3 || true
-printf '  waiting for https://%s/healthz ' "$RELAY_HOST"
-healthy=""
-for _ in $(seq 36); do
-  curl -fsS -m 5 "https://$RELAY_HOST/healthz" >/dev/null 2>&1 && { healthy=1; break; }
-  printf '.'; sleep 5
-done
-printf '\n'
-if [[ -n "$healthy" ]]; then
-  printf '  %s✓ relay is up with a valid certificate: https://%s/%s\n' "$GREEN" "$RELAY_HOST" "$RESET"
+stage "Deploy the Relay with a Release's Bootstrap"
+say "deploy.sh downloads a Release's Bootstrap Bundle, checks it against its checksum, then builds"
+say "and starts the Relay on the server. The first build takes a few minutes, and the certificates"
+say "a minute or two more."
+ask RELEASE "Release (Enter for the newest; --local for bootstrap/www as built here):"
+write_env RELEASE "$RELEASE"
+if ./deploy.sh $RELEASE; then
+  printf '  %s✓ https://%s/ is up, serving the Bootstrap%s\n' "$GREEN" "$RELAY_DOMAIN" "$RESET"
 else
-  warn "no healthy HTTPS after 3 minutes. Last relay logs:"
-  vps 'cd ~/tooob-relay && docker compose logs --tail 15' 2>&1 | sed 's/^/    /'
-  note "Usual causes: DNS not pointing here yet, TCP 80/443 closed, or the contact email rejected."
-  SKIPPED+=("relay not healthy yet; re-run the wizard once the logs above are fixed")
+  warn "the Relay isn't serving yet. Its last logs:"
+  vps 'cd tooob-relay && docker compose logs --tail 15' 2>&1 | sed 's/^/    /'
+  note "Usual causes: DNS not pointing here yet, TCP 443 closed, or the DNS token can't edit the zone."
+  SKIPPED+=("Relay not serving yet; fix what the logs say, then ./deploy.sh $RELEASE")
   finish; exit 1
 fi
 pause
 
 # ── 7 ─────────────────────────────────────────────────────────────────────
-stage "Measure the spike through your relay"
-say "Runs the spike's host on this Mac against https://$RELAY_HOST/ and the headless checks."
-note "Host and browser are both on this Mac, so traffic goes Mac → VPS → Mac: real relay round-trips."
-[[ -x "$SPIKE/target/release/host" && -f "$SPIKE/www/__tooob/pkg/web_bg.wasm" ]] || {
-  say "The spike isn't built yet (takes a few minutes)."
-  confirm "Build it now?" && "$SPIKE/build.sh" || { SKIPPED+=("spike/build.sh, then re-run"); finish; exit 1; }
-}
-[[ -f "$SPIKE/testsite/video.mp4" ]] || "$SPIKE/gen-testsite.sh"
-[[ -d "$SPIKE/check/node_modules" ]] || (cd "$SPIKE/check" && npm i --silent)
-for p in 8000 8088; do
-  lsof -nP -iTCP:$p -sTCP:LISTEN >/dev/null && { warn "port $p is busy; stop whatever uses it and re-run."; finish; exit 1; }
-done
-pids=()
-trap 'kill "${pids[@]}" 2>/dev/null || true' EXIT
-(cd "$SPIKE" && npx --yes http-server testsite -p 8000 -c-1 -s) >/dev/null 2>&1 & pids+=($!)
-(cd "$SPIKE" && npx --yes http-server www -p 8088 -c-1 -s) >/dev/null 2>&1 & pids+=($!)
-mkdir -p "$SPIKE/vps-host"
-hostlog=$(mktemp)
-(cd "$SPIKE/vps-host" && exec ../target/release/host 8000 "https://$RELAY_HOST/") > "$hostlog" 2>&1 & pids+=($!)
-for _ in $(seq 30); do grep -q '^visit:' "$hostlog" && break; sleep 1; done
-VISIT_URL=$(grep '^visit:' "$hostlog" | awk '{print $2}' || true)
-[[ -n "$VISIT_URL" ]] || { warn "host didn't start:"; sed 's/^/    /' "$hostlog"; finish; exit 1; }
-note "visit URL: $VISIT_URL"
-(cd "$SPIKE/check" && node check.mjs "$VISIT_URL") | sed 's/^/    /' || true
+stage "Public Suffix List"
+say "Put $RELAY_DOMAIN on the Public Suffix List, so browsers treat every Key Address under it"
+say "as a site of its own: one Site can't set cookies for the others, or share a process with them."
+say "It's a pull request to the list's private section, and takes weeks; the Relay works meanwhile."
+open_url "https://github.com/publicsuffix/list/wiki/Guidelines"
+note "Their guidelines ask for a _psl TXT record on $RELAY_DOMAIN that links to your pull request."
+pause
+
+# ── 8 ─────────────────────────────────────────────────────────────────────
+stage "Try it"
+say "On your home box, share something through your Relay and open the Invite on a phone:"
 say ""
-say "Want the real-world number? Run the host at home and open the visit URL from a phone"
-say "on cellular. That needs spike/www served over HTTPS somewhere the phone can reach."
-pause "Press Enter to stop the local servers and finish."
-kill "${pids[@]}" 2>/dev/null || true
-trap - EXIT
-rm -f "$hostlog"
+say "  tooob add photos ~/Pictures --relay https://$RELAY_DOMAIN/"
+say "  tooob run photos             # leave it running"
+say "  tooob invite photos phone    # in another terminal: open this link on the phone"
+say ""
+pause
 
 finish
-say "Relay: https://$RELAY_HOST/   (stop it: ssh $SSH_USER@$VPS_IP 'cd ~/tooob-relay && docker compose down')"
+say "Relay: https://$RELAY_DOMAIN/"
+say "Upgrade its Bootstrap: ./deploy.sh <newer Release>"
+say "Stop it: ssh $SSH_USER@$VPS_IP 'cd tooob-relay && docker compose down'"
 }
 
 run_wizard "$@"; exit

@@ -1,33 +1,37 @@
-# Your own Relay: stock iroh-relay on Fly.io, at https://<app>.fly.dev/ (the URL you give
-# `tooob add --relay`). First time: set `app` to a name of your own, then
-# `fly launch --copy-config --no-deploy` to claim it. After that, `fly deploy`.
+# A Relay on Fly.io (README.md): the Relay image (../relay/image), as-is. Caddy terminates TLS
+# itself, so Fly passes TCP straight through (no handlers), which takes a dedicated IPv4. The repo
+# names no app of its own (ADR 0015): deploy.sh deploys to FLY_APP.
 app = "your-relay-app"
 primary_region = "sjc"
 
-[build]
-  image = "n0computer/iroh-relay:v1.3.0"
+# Caddy's certificates, kept across deploys: Let's Encrypt limits how often it reissues them.
+[mounts]
+  source = "caddy_data"
+  destination = "/data"
 
-[experimental]
-  cmd = ["--config-path", "/etc/iroh-relay.toml"]
-
-[[files]]
-  guest_path = "/etc/iroh-relay.toml"
-  local_path = "iroh-relay.toml"
-
-[http_service]
-  internal_port = 8080
-  force_https = true
+[[services]]
+  internal_port = 443
+  protocol = "tcp"
   # Relay connections are long-lived WebSockets; a stopped machine would drop every Host.
   auto_stop_machines = "off"
   auto_start_machines = true
   min_machines_running = 1
 
-  [[http_service.checks]]
-    grace_period = "10s"
+  [[services.ports]]
+    port = 443
+
+  [[services.tcp_checks]]
+    grace_period = "30s"
     interval = "30s"
-    method = "GET"
-    path = "/healthz"
     timeout = "5s"
+
+[[services]]
+  internal_port = 80
+  protocol = "tcp"
+  auto_stop_machines = "off"
+
+  [[services.ports]]
+    port = 80
 
 [[vm]]
   size = "shared-cpu-1x"

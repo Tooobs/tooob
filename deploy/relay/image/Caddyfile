@@ -1,0 +1,31 @@
+# The Relay's Caddy: a certificate for the Relay's domain and one for *.<its domain>, through a DNS
+# challenge, then front.caddy on both. Set by the environment:
+#   RELAY_DOMAIN   e.g. relay.example.com; it and *.relay.example.com point at this machine
+#   DNS_API_TOKEN  a token for the DNS provider's API that can edit the domain's records
+#   ACME_EMAIL     Let's Encrypt's contact about the certificates
+#   DNS_PROVIDER   set by the image: the caddy-dns module built in (Dockerfile)
+{
+	admin off
+	email {$ACME_EMAIL}
+	# No HTTP/3: Relay connections are WebSockets, and it would need UDP 443 open as well.
+	servers {
+		protocols h1 h2
+	}
+}
+
+{$RELAY_DOMAIN}, *.{$RELAY_DOMAIN} {
+	tls {
+		dns {$DNS_PROVIDER} {$DNS_API_TOKEN}
+	}
+	import front.caddy
+}
+
+# Plain HTTP moves to HTTPS, except iroh's captive portal check, which is plain HTTP by design.
+http://{$RELAY_DOMAIN}, http://*.{$RELAY_DOMAIN} {
+	handle /generate_204 {
+		reverse_proxy 127.0.0.1:3340
+	}
+	handle {
+		redir https://{host}{uri} 308
+	}
+}

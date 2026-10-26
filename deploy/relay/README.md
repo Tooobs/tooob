@@ -1,31 +1,32 @@
-# Self-hosted iroh-relay
+# A Relay on a VPS
 
-Stock `n0computer/iroh-relay:v1.3.0` with automatic Let's Encrypt certificates. This is the relay the design calls for in place of n0's community relays.
+The Relay image (`image/`, see [../README.md](../README.md)) run by Docker Compose on any Linux box. 1 vCPU and 2 GB RAM is plenty; pick a plan for its included traffic.
 
-## Deploy (about 10 minutes)
+**Easiest:** `./wizard.sh`. It walks through a Hetzner server, DNS, the DNS API token, the firewall, Docker and the first deploy. It remembers your answers in `.env` (gitignored, mode 0600; it holds the token), so it's safe to re-run.
 
-**Easiest:** run `./wizard.sh`. It walks through Hetzner, DNS, the firewall, Docker, upload and certificate, then measures the spike through the new relay. It remembers answers in `.env` (gitignored), so it's safe to re-run. The manual steps below are what it does.
+## By hand
 
-1. **VPS**: any small Linux box with generous included bandwidth, near your first users. A Hetzner or OVH entry plan works. 1 vCPU and 2 GB RAM is plenty. Install Docker.
-2. **DNS**: point an A record (and AAAA if the VPS has IPv6), e.g. `relay.<a domain you own>`, at the VPS. Let's Encrypt needs this before the first start.
-3. **Firewall**: open TCP 80 and 443, and UDP 7842.
-4. Copy this folder to the VPS. Set `hostname` and `contact` (a real email) in `iroh-relay.toml`, then:
+1. **Server**: a Linux VPS you can SSH into, with Docker (`curl -fsSL https://get.docker.com | sh`).
+2. **DNS**: A records (and AAAA if it has IPv6) for `relay.example.com` and `*.relay.example.com`, pointing at the server. On Cloudflare, make them "DNS only".
+3. **DNS API token**: one that can edit the zone's records. On Cloudflare: My Profile → API Tokens → "Edit zone DNS", limited to that zone.
+4. **Firewall**: open TCP 80 and 443.
+5. **`.env`** in this folder:
    ```sh
-   docker compose up -d && docker compose logs -f   # wait for the certificate, then Ctrl-C
-   curl https://relay.<your-domain>/healthz
+   VPS_IP='203.0.113.7'
+   SSH_USER='root'
+   RELAY_DOMAIN='relay.example.com'
+   DNS_PROVIDER='cloudflare'          # a caddy-dns module that takes just a token
+   DNS_API_TOKEN='…'
+   ACME_EMAIL='you@example.com'       # Let's Encrypt's contact; not example.com
    ```
+6. **`./deploy.sh [RELEASE]`**: builds and starts the Relay on the server (in `~/tooob-relay`) with that Release's Bootstrap, then waits until `https://relay.example.com/` and a Key Address under it serve it. The first build takes a few minutes, and the certificates a minute or two more.
 
-## Point the spike at it
+Point Hosts at it with `tooob add … --relay https://relay.example.com/`.
 
-```sh
-cd spike/local-host && ../target/release/host 8000 https://relay.<your-domain>/
-# prints:  visit: http://localhost:8088/?relay=https://relay.<your-domain>/#<id>
-cd ../check && node check.mjs "<that visit URL>"
-```
+## Running it
 
-For a real-world number, run the host on a home connection and open the visit URL from a phone on cellular data. The visit URL needs the bootstrap (`spike/www`) reachable from the phone too. The simplest option is to serve `www/` from the same VPS behind HTTPS (service workers require a secure origin anywhere except localhost).
-
-## Notes
-
-- `access` is unset, so anyone can use this relay. Fine for the spike. Before sharing it publicly, restrict it (allowlist, tokens or an HTTP callout; see `access` in iroh-relay's `src/main.rs`) and set `limits`.
-- Watch the VPS's bandwidth graph: every byte a browser visitor loads goes through here.
+- Upgrade its Bootstrap: `./deploy.sh <newer Release>`. Caddy restarts, and Hosts and Visitors reconnect by themselves.
+- Logs: `ssh root@<server> 'cd tooob-relay && docker compose logs -f'`.
+- Stop it: `ssh root@<server> 'cd tooob-relay && docker compose down'`.
+- As shipped, anyone can use it: before you share it, set `access` and `limits` in `image/iroh-relay.toml` (see iroh-relay's `src/main.rs`).
+- Watch the server's bandwidth: every byte a Visitor loads over the Relayed Path goes through here.
