@@ -11,8 +11,8 @@ self.addEventListener('fetch', (e) => {
   e.respondWith(shellFor(e).then((shell) => tunnel(e.request, shell)));
 });
 
-// Several shell tabs can be open, each on its own Host, so every request goes to the shell whose
-// iframe made it. A shell says when its iframe is about to load a document; that navigation's new
+// Several shell tabs can be open, each with a connection of its own, so every request goes to the
+// shell whose iframe made it. A shell says when its iframe is about to load a document; that navigation's new
 // client is then its, and so is everything that document fetches.
 // When that's unknown, any ready shell tab gets the request (right with one tab open).
 // ponytail: best effort with several tabs open. The map is in memory (lost when the browser stops
@@ -73,12 +73,10 @@ async function anyReadyShell() {
 async function tunnel(req, shellId) {
   const shell = (shellId && (await self.clients.get(shellId))) ?? (await anyReadyShell());
   if (!shell) return new Response('tooob shell is not open', { status: 503 });
-  // Tunneled responses never reach the HTTP cache, so keep fresh ones here, one cache per host.
+  // Tunneled responses never reach the HTTP cache, so keep fresh ones here: one cache, since this
+  // origin is one Host's Key Address.
   // ponytail: freshness only, no ETag revalidation and no eviction; add both if caches grow or go stale.
-  // Just the Host Key: the shell's original address may still carry `&invite=<token>`, which must
-  // never end up in a cache name (browser storage).
-  const host = new URL(shell.url).hash.slice(1).split('&')[0];
-  const cache = host && req.method === 'GET' && !req.headers.has('range') ? await caches.open('tooob-' + host) : null;
+  const cache = req.method === 'GET' && !req.headers.has('range') ? await caches.open('tooob') : null;
   const hit = await cache?.match(req.url);
   if (hit && Date.now() < Number(hit.headers.get('x-tooob-expires'))) return hit;
 

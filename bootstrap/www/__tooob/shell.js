@@ -1,6 +1,7 @@
 // Shell page: opens an Invite Link, holds the iroh connection (WASM), and serves the Site's iframe
-// over it. Link: <bootstrap>?relay=<relay>#<host key>&invite=<token> (the fragment never leaves
-// the browser).
+// over it. Link: https://<host key>.<relay domain>/#invite=<token>, the Host's Key Address: an
+// origin of its own, so its storage and Visitor Key are walled off from every other Host's. The
+// fragment never leaves the browser.
 import init, { Tooob } from './pkg/web.js';
 
 const enc = new TextEncoder();
@@ -36,7 +37,7 @@ const idbResult = (request) => new Promise((ok, fail) => ((request.onsuccess = (
 // The Visitor Key: one per browser, reused on every visit, as {privateKey, public} (public in hex).
 // A WebCrypto key that can't be exported, kept in IndexedDB (ADR 0011).
 // ponytail: the Site's own scripts share this origin, so while they run they can sign hellos with
-// it (for any Host), just never read it out. Give the shell an origin of its own to stop that.
+// it (for this Host only), just never read it out. Give the shell an origin of its own to stop that.
 async function visitorKey() {
   const open = indexedDB.open('tooob');
   open.onupgradeneeded = () => open.result.createObjectStore('keys');
@@ -76,11 +77,13 @@ async function fromLocalStorage(old) {
   return { privateKey: await crypto.subtle.importKey('jwk', jwk, 'Ed25519', false, ['sign']), public: hex(publicKey) };
 }
 
-const [host, ...rest] = location.hash.slice(1).split('&');
-const invite = new URLSearchParams(rest.join('&')).get('invite');
-if (!host) {
+// The Host Key is the hostname's first label; the Relay is the rest of it, on the same port.
+const [hostKey, ...domain] = location.hostname.split('.');
+const relay = `${location.protocol}//${domain.join('.')}${location.port ? ':' + location.port : ''}/`;
+const invite = new URLSearchParams(location.hash.slice(1)).get('invite');
+if (!domain.length || !/^[ybndrfg8ejkmcpqxot1uwisza345h769]{52}$/.test(hostKey)) {
   show('This link is incomplete. Ask for a new Invite Link.');
-  throw new Error('no host');
+  throw new Error('no Host Key');
 }
 
 let t = performance.now();
@@ -104,7 +107,6 @@ stats.swMs = ms(t);
 
 t = performance.now();
 show('connecting…');
-const relay = new URLSearchParams(location.search).get('relay') ?? undefined;
 const UNREACHABLE = "Couldn't reach this site: its host may be offline. Reload this page to try again.";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // A browser without Ed25519 in WebCrypto or without IndexedDB (some private modes) can't keep one.
@@ -126,7 +128,7 @@ async function ask(message, conn = tooob) {
 
 /** Connect, then say hello: prove this browser's Visitor Key for the new connection (ADR 0011). */
 async function connect() {
-  const conn = await Tooob.connect(host, relay);
+  const conn = await Tooob.connect(hostKey, relay);
   const sig = new Uint8Array(await crypto.subtle.sign('Ed25519', visitor.privateKey, conn.hello_message()));
   const hello = { t: 'hello', visitor: visitor.public, sig: Array.from(sig) };
   const reply = await ask(hello, conn).catch((e) => ({ error: String(e) }));
@@ -257,7 +259,7 @@ try {
     if (!reply.redeemed && reply.error !== 'already_admitted') {
       refusal = REFUSED[reply.error] ?? "This invite can't be used right now. Try again later.";
     }
-    history.replaceState(null, '', location.pathname + location.search + '#' + host);
+    history.replaceState(null, '', location.pathname + location.search);
   }
 } catch (e) {
   show(UNREACHABLE);

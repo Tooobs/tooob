@@ -1,9 +1,11 @@
-// The real pieces on this machine, on free ports: a Relay (stock iroh-relay), a stand-in Site, the
-// Bootstrap (www/), and Hosts (`tooob add` + `tooob run`) from host/. Headless Chrome then opens real Invite Links.
+// The real pieces on this machine, on free ports: a Relay (stock iroh-relay behind a front that also
+// serves the Bootstrap, www/), a stand-in Site, and Hosts (`tooob add` + `tooob run`) from host/.
+// Headless Chrome then opens real Invite Links, on Key Addresses: `<host key>.localhost`, which
+// Chrome treats as a secure context and resolves to this machine.
 import { execFileSync, spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { createServer } from 'node:http';
-import { connect, createServer as createTcpServer } from 'node:net';
+import { createServer, request } from 'node:http';
+import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { extname, join } from 'node:path';
 import puppeteer from 'puppeteer-core';
@@ -61,19 +63,51 @@ export async function startRelay() {
   return url;
 }
 
+const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'application/wasm', '.json': 'application/json' };
+const IROH_PATHS = ['/relay', '/ping', '/generate_204', '/healthz'];
+
 /**
- * A TCP proxy in front of a Relay, for the browser only. `silence()` makes every connection open
- * so far go quiet both ways while staying open, as a phone's network does to the flows it had
- * when it comes out of deep sleep; connections made afterwards work.
+ * A Relay as a Relay Operator runs one (ADR 0020): one web server that hands iroh's paths to
+ * iroh-relay at `relayUrl` and serves the Bootstrap (www/) for everything else, on its own domain
+ * (`localhost`) and every Key Address under it. `url` is what Hosts name as their Relay.
+ * `silence()` makes every Relay connection open so far go quiet both ways while staying open, as a
+ * phone's network does to the flows it had when it comes out of deep sleep; connections made
+ * afterwards work.
  */
-export async function startRelayProxy(relayUrl) {
+export async function startRelayFront(relayUrl) {
   const relay = new URL(relayUrl);
+  const www = process.env.TOOOB_WWW || join(ROOT, 'bootstrap/www');
   const open = new Set();
-  const server = createTcpServer((client) => {
+  const server = createServer((req, res) => {
+    const path = new URL(req.url, 'http://x').pathname;
+    if (IROH_PATHS.includes(path)) {
+      const upstream = request({ host: relay.hostname, port: relay.port, path: req.url, method: req.method, headers: req.headers }, (r) => {
+        res.writeHead(r.statusCode, r.headers);
+        r.pipe(res);
+      });
+      upstream.on('error', () => res.destroy());
+      return req.pipe(upstream);
+    }
+    try {
+      const body = readFileSync(join(www, path === '/' ? 'index.html' : path));
+      res.setHeader('content-type', TYPES[extname(path)] ?? 'text/html');
+      res.setHeader('cache-control', 'no-store');
+      res.end(body);
+    } catch {
+      res.statusCode = 404;
+      res.end();
+    }
+  });
+  // iroh's Relay connection is a WebSocket: once upgraded, just bytes both ways.
+  server.on('upgrade', (req, client, head) => {
     const upstream = connect(Number(relay.port), relay.hostname);
-    const pair = { client, upstream, quiet: false };
+    const pair = { quiet: false };
     open.add(pair);
     sockets.push(client, upstream);
+    const lines = [`${req.method} ${req.url} HTTP/1.1`];
+    for (let i = 0; i < req.rawHeaders.length; i += 2) lines.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`);
+    upstream.write(lines.join('\r\n') + '\r\n\r\n');
+    upstream.write(head);
     client.on('data', (d) => pair.quiet || upstream.write(d));
     upstream.on('data', (d) => pair.quiet || client.write(d));
     const end = () => (open.delete(pair), client.destroy(), upstream.destroy());
@@ -82,7 +116,8 @@ export async function startRelayProxy(relayUrl) {
   });
   const port = await listen(server);
   return {
-    url: `http://127.0.0.1:${port}/`,
+    url: `http://localhost:${port}/`,
+    port,
     silence: () => open.forEach((pair) => (pair.quiet = true)),
   };
 }
@@ -120,45 +155,24 @@ export async function startSite() {
   return site;
 }
 
-const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'application/wasm' };
-
-/** The Bootstrap: www/ as static files, as any Bootstrap serves them. */
-export async function startBootstrap() {
-  const www = process.env.TOOOB_WWW || join(ROOT, 'bootstrap/www');
-  const server = createServer((req, res) => {
-    const path = new URL(req.url, 'http://x').pathname;
-    try {
-      const body = readFileSync(join(www, path === '/' ? 'index.html' : path));
-      res.setHeader('content-type', TYPES[extname(path)] ?? 'text/html');
-      res.setHeader('cache-control', 'no-store');
-      res.end(body);
-    } catch {
-      res.statusCode = 404;
-      res.end();
-    }
-  });
-  return `http://localhost:${await listen(server)}/`;
-}
-
 // Every Host made here lives under a TOOOB_HOME of its own, never the Owner's real one.
 const HOME = mkdtempSync(join(tmpdir(), 'tooob-home-'));
 const ENV = { ...process.env, TOOOB_HOME: HOME };
 let hosts = 0;
 
-/** A Host for a Site's web app, through a Relay, its links opening a Bootstrap, running; `name`
- * runs one made earlier again. */
-export async function startHost(site, relay, bootstrap, name) {
+/** A Host for a Site's web app, through a Relay, running; `name` runs one made earlier again. */
+export async function startHost(site, relay, name) {
   if (!name) {
     name = `site-${++hosts}`;
-    tooob(['add', name, site.addr, '--relay', relay, '--bootstrap', bootstrap]);
+    tooob(['add', name, site.addr, '--relay', relay]);
   }
   return runHost(name);
 }
 
 /** A Host sharing PATH (a Shared Folder, or a single file), through a Relay, running. */
-export async function startShare(path, relay, bootstrap) {
+export async function startShare(path, relay) {
   const name = `share-${++hosts}`;
-  tooob(['add', name, path, '--relay', relay, '--bootstrap', bootstrap]);
+  tooob(['add', name, path, '--relay', relay]);
   return runHost(name);
 }
 
@@ -239,7 +253,8 @@ export async function siteText(page, ms = 20000) {
 
 /**
  * What a script of the Site's own can find in the storage it shares with the shell (same origin):
- * localStorage, the private keys in IndexedDB (by algorithm), and the formats any of them exported to.
+ * localStorage, cache names, the private keys in IndexedDB (by algorithm), and the formats any of
+ * them exported to.
  */
 export async function whatTheSiteCanReach(page) {
   const frame = await (await page.$('iframe')).contentFrame();
@@ -261,7 +276,7 @@ export async function whatTheSiteCanReach(page) {
         await crypto.subtle.exportKey(format, k).then(() => exported.push(format), () => {});
       }
     }
-    return { localStorage: { ...localStorage }, privateKeys: privateKeys.map((k) => k.algorithm.name), exported };
+    return { localStorage: { ...localStorage }, caches: await caches.keys(), privateKeys: privateKeys.map((k) => k.algorithm.name), exported };
   });
 }
 
@@ -375,5 +390,8 @@ export async function bytesForReload(page) {
 export function stopAll() {
   for (const child of children) child.kill();
   for (const socket of sockets) socket.destroy();
-  for (const server of servers) server.close();
+  for (const server of servers) {
+    server.close();
+    server.closeAllConnections?.(); // a Relay front's keep-alive connections
+  }
 }

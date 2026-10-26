@@ -2,9 +2,9 @@
 //! Owner can edit (`<config>/hosts/NAME.toml`) and its state in a folder only tooob writes
 //! (`<state>/NAME/`), and runs as a process of its own, holding a lock on its state while it does.
 use crate::Network;
-use crate::control::{Client, HostAddress};
+use crate::control::Client;
 use crate::host::Site;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use std::{
     fs::File,
     io,
@@ -39,10 +39,9 @@ pub struct Settings {
     pub serves: String,
     /// A Relay's URL, or `none`.
     pub relay: String,
-    /// The Bootstrap whose URL starts the Host's Invite Links. Hosts made before it was a setting
-    /// have none, and can't make links until their Owner adds it.
-    #[serde(default)]
-    pub bootstrap: Option<String>,
+    /// Hosts made before a Relay served its Bootstrap (ADR 0020) named one here. Ignored.
+    #[serde(default, rename = "bootstrap")]
+    _bootstrap: Option<toml::Value>,
 }
 
 impl Settings {
@@ -58,7 +57,7 @@ impl Settings {
     }
 }
 
-/// Where an Owner says to look for a Relay and a Bootstrap: tooob names none of its own (ADR 0015).
+/// Where an Owner says to look for a Relay: tooob names none of its own (ADR 0015).
 pub const RUN_YOUR_OWN: &str = "deploy/ shows how to run your own";
 
 /// Check a `relay` setting: a Relay's URL, or `none`.
@@ -74,6 +73,26 @@ fn relay_network(relay: &str) -> Result<Network> {
         .parse()
         .with_context(|| format!("{relay:?} isn't a Relay's URL (or {NO_RELAY:?})"))?;
     Ok(Network::Relay(url))
+}
+
+/// Why a Host using `relay` has no Key Address, if it has none: browsers reach Hosts only through a
+/// Relay's domain (ADR 0020).
+pub fn no_key_address(relay: &str) -> Option<&'static str> {
+    if relay == NO_RELAY {
+        return Some("it has no Relay");
+    }
+    match relay.parse::<reqwest::Url>() {
+        Ok(url) if url.domain().is_none() => Some("its Relay is at an IP address"),
+        _ => None,
+    }
+}
+
+/// What to say when `host` (a Host Name, or "the new Host") has no Key Address, and `why`.
+pub fn no_invite_links(host: &str, why: &str) -> anyhow::Error {
+    anyhow!(
+        "{host} has no Key Address, so no Invite Links: {why}, and browsers reach Hosts only \
+         through a Relay's domain ({RUN_YOUR_OWN})"
+    )
 }
 
 /// Where a web app listens, from `HOST:PORT` or `http://HOST[:PORT][/]`; IPv4 first, since a web
@@ -101,21 +120,6 @@ fn web_app(address: &str) -> Result<SocketAddr> {
         .or(addrs.first())
         .copied()
         .with_context(bad)
-}
-
-/// Check a `bootstrap` setting: an http(s) page that Invite Links can start with. Links add their
-/// own `?relay=` and `#…`, so it has neither.
-pub fn check_bootstrap(text: &str) -> Result<()> {
-    match text.parse::<reqwest::Url>() {
-        Ok(url)
-            if ["https", "http"].contains(&url.scheme())
-                && url.query().is_none()
-                && url.fragment().is_none() =>
-        {
-            Ok(())
-        }
-        _ => bail!("{text:?} isn't a Bootstrap's URL (try https://bootstrap.example/)"),
-    }
 }
 
 /// Letters, digits, `-` and `_`: safe as a file name, and in a shell, as it is.
@@ -224,7 +228,7 @@ impl Home {
 
     /// Make a Host: its state, with its Host Key, then its settings file. `target` is a folder or
     /// file (a Shared Folder), or `HOST:PORT` / `http://HOST:PORT` (a web app).
-    pub fn add(&self, name: &str, target: &str, relay: &str, bootstrap: &str) -> Result<Entry> {
+    pub fn add(&self, name: &str, target: &str, relay: &str) -> Result<Entry> {
         if !valid_name(name) {
             bail!("{name:?} can't be a Host Name: use letters, digits, - and _");
         }
@@ -252,11 +256,10 @@ impl Home {
         let settings = Settings {
             serves,
             relay: relay.to_string(),
-            bootstrap: Some(bootstrap.to_string()),
+            _bootstrap: None,
         };
         settings.network()?;
-        check_bootstrap(bootstrap)?;
-        let made = self.make(&settings, bootstrap, &settings_file, &state_dir);
+        let made = self.make(&settings, &settings_file, &state_dir);
         if made.is_err() {
             // Never half a Host: a state folder alone would block the name, unlisted.
             let _ = std::fs::remove_dir_all(&state_dir);
@@ -271,13 +274,7 @@ impl Home {
     }
 
     /// The state folder, with its Host Key, then the settings file: a Host exists once that's there.
-    fn make(
-        &self,
-        settings: &Settings,
-        bootstrap: &str,
-        settings_file: &Path,
-        state_dir: &Path,
-    ) -> Result<()> {
+    fn make(&self, settings: &Settings, settings_file: &Path, state_dir: &Path) -> Result<()> {
         // Private to the Owner's account: anyone who can read the Host Key can impersonate it.
         std::fs::DirBuilder::new()
             .recursive(true)
@@ -289,14 +286,12 @@ impl Home {
             "# What this Host serves: a folder or file (a Shared Folder), or HOST:PORT or\n\
              # http://HOST:PORT (a web app). A Host only ever serves what it first ran with.\n\
              serves = {}\n\n\
-             # The Relay its Visitors reach it through, or \"{NO_RELAY}\": this machine and its\n\
-             # network only. Takes effect the next time it runs.\n\
-             relay = {}\n\n\
-             # The Bootstrap its Invite Links open: the page a Visitor's browser loads first.\n\
-             bootstrap = {}\n",
+             # The Relay its Visitors reach it through, which also serves the page their browsers\n\
+             # load first; or \"{NO_RELAY}\": this machine and its network only. Takes effect the\n\
+             # next time it runs.\n\
+             relay = {}\n",
             toml::Value::from(settings.serves.as_str()),
             toml::Value::from(settings.relay.as_str()),
-            toml::Value::from(bootstrap),
         );
         let mut file = std::fs::OpenOptions::new()
             .write(true)
@@ -308,20 +303,30 @@ impl Home {
 }
 
 impl Entry {
-    /// The Bootstrap its Invite Links open, as its settings say. Never a guess: a settings file
-    /// without one says what to add.
-    pub fn bootstrap(&self) -> Result<String> {
-        let Some(bootstrap) = &self.settings.bootstrap else {
-            bail!(
-                "{} doesn't say which Bootstrap its Invite Links open: add a line like\n  \
-                 bootstrap = \"https://bootstrap.example/\"\n\
-                 ({RUN_YOUR_OWN})",
-                self.settings_file.display()
-            );
-        };
-        check_bootstrap(bootstrap)
-            .with_context(|| format!("in {}", self.settings_file.display()))?;
-        Ok(bootstrap.clone())
+    /// Its Key Address, `<host key>.<relay domain>`, from the Relay its settings name (ADR 0020):
+    /// the page its Invite Links open. A Host with no Relay, or a Relay at an IP address, has
+    /// none, since browsers reach Hosts only through a Relay's domain.
+    pub fn key_address(&self) -> Result<String> {
+        let in_settings = || format!("its Relay is set in {}", self.settings_file.display());
+        if let Some(why) = no_key_address(&self.settings.relay) {
+            return Err(no_invite_links(&self.name, why).context(in_settings()));
+        }
+        let mut url: reqwest::Url = self.settings.relay.parse().with_context(in_settings)?;
+        let domain = url.domain().context("no domain")?.to_string();
+        let key = self
+            .host_key()
+            .with_context(|| format!("{} has no Host Key", self.name))?;
+        url.set_host(Some(&format!("{key}.{domain}")))?;
+        url.set_path("/");
+        url.set_query(None);
+        url.set_fragment(None);
+        Ok(url.to_string())
+    }
+
+    /// The Invite Link for `token`: its Key Address, with the Invite after the `#`, which stays in
+    /// the browser (never sent to the Relay).
+    pub fn invite_link(&self, token: &str) -> Result<String> {
+        Ok(format!("{}#invite={token}", self.key_address()?))
     }
 
     /// Its Host Key, as Invite Links carry it.
@@ -385,24 +390,9 @@ impl Entry {
         lock_file(&self.state_dir)
     }
 
-    /// The Owner's commands on it, running or not (ADR 0014). Its Invite Links carry its Host Key
-    /// and, while it's stopped, the Relay its settings name.
-    pub fn client(&self) -> Result<Client> {
-        let id = self
-            .host_key()
-            .with_context(|| format!("{} has no Host Key", self.name))?;
-        let relay = match self
-            .settings
-            .network()
-            .with_context(|| format!("in {}", self.settings_file.display()))?
-        {
-            Network::Relay(url) => Some(url.to_string()),
-            Network::Default | Network::LocalOnly => None,
-        };
-        Ok(Client::running_or_not(
-            &self.state_dir,
-            HostAddress { id, relay },
-        ))
+    /// The Owner's commands on it, running or not (ADR 0014).
+    pub fn client(&self) -> Client {
+        Client::running_or_not(&self.state_dir)
     }
 
     /// Delete its settings and state, Host Key and all. Refused while it's running.

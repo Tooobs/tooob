@@ -6,11 +6,14 @@ import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 import * as h from './harness.mjs';
 
-let relay, bootstrap, browser;
+// iroh-relay itself, and the Relay Hosts name: a front that hands iroh's paths to it and serves the
+// Bootstrap for everything else, as a Relay Operator runs one (ADR 0020).
+let irohRelay, relay, browser;
 
 before(async () => {
   h.buildHost();
-  [relay, bootstrap, browser] = await Promise.all([h.startRelay(), h.startBootstrap(), h.launchBrowser()]);
+  [irohRelay, browser] = await Promise.all([h.startRelay(), h.launchBrowser()]);
+  relay = (await h.startRelayFront(irohRelay)).url;
 });
 
 after(async () => {
@@ -20,10 +23,10 @@ after(async () => {
 
 async function hostWithSite() {
   const site = await h.startSite();
-  let host = await h.startHost(site, relay, bootstrap);
+  let host = await h.startHost(site, relay);
   const { name } = host;
   const invite = (label, ...flags) => h.tooob(['invite', name, label, ...flags]);
-  const start = async () => (host = await h.startHost(site, relay, bootstrap, name)); // the same Host: same Host Key and Allowlist
+  const start = async () => (host = await h.startHost(site, relay, name)); // the same Host: same Host Key and Allowlist
   const restart = async () => {
     await host.stop();
     await start();
@@ -75,11 +78,13 @@ test('after redeeming, a reload still gets in (the device is remembered)', async
 
 test('a browser with a Visitor Key from before the key store keeps its identity', async () => {
   const { name, invite } = await hostWithSite();
+  const link = invite('mom');
   const page = await h.newVisitor(browser);
-  await page.goto(bootstrap); // the old shell kept the Visitor Key's secret in localStorage, as hex
+  await page.goto(new URL('/__tooob/version.json', link).href); // its origin, without starting the shell
+  // the old shell kept the Visitor Key's secret in localStorage, as hex
   // RFC 8032's first Ed25519 test vector: this secret's public key is d75a9801…
   await page.evaluate(() => (localStorage.tooobVisitorKey = '9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60'));
-  await page.goto(invite('mom'));
+  await page.goto(link);
   await h.siteText(page);
   const visitors = h.tooob(['visitors', name]);
   assert.match(visitors, /^d75a980182b1\s/m, visitors); // the CLI shows the first 12 hex digits
@@ -102,7 +107,7 @@ test("the Site's own scripts can't read the Visitor Key", async () => {
 
 test("a link without an Invite tells a stranger they're not invited", async () => {
   const { site, invite } = await hostWithSite();
-  const plain = invite('mom').replace(/&invite=.*/, ''); // the Host's link, minus the Invite
+  const plain = invite('mom').replace(/#invite=.*/, ''); // the Host's Key Address, minus the Invite
   const page = await h.newVisitor(browser);
   await page.goto(plain);
   await page.waitForFunction(() => /not invited/.test(document.getElementById('status').textContent), { timeout: 20000 });
@@ -150,6 +155,38 @@ test('a page waiting for approval survives the Host restarting', async () => {
   const key = h.tooob(['visitors', name]).split(/\s+/)[0];
   h.tooob(['approve', name, key]);
   assert.match(await h.siteText(page, 40000), /label=mom/, 'the page reconnected and opened by itself');
+});
+
+test('an Invite Link is its Host\'s Key Address, on its Relay\'s domain', async () => {
+  const { name, invite } = await hostWithSite();
+  const key = h.tooob(['show', name]).match(/Host Key\s+(\S+)/)[1];
+  const link = new URL(invite('mom'));
+  assert.equal(link.origin, `http://${key}.localhost:${new URL(relay).port}`);
+  assert.match(link.hash, /^#invite=[^&]+$/);
+  assert.equal(link.search, '', 'no ?relay=: the Relay is the link\'s own domain');
+});
+
+test("two Sites through one Relay are two origins: neither can reach the other's storage or Visitor Key", async () => {
+  const x = await hostWithSite();
+  const y = await hostWithSite();
+  const tabX = await h.newVisitor(browser);
+  const tabY = await tabX.browserContext().newPage(); // the same browser, so the same profile
+  await tabX.goto(x.invite('mom'));
+  await h.siteText(tabX);
+  const siteX = await (await tabX.$('iframe')).contentFrame();
+  await siteX.evaluate(async () => {
+    localStorage.mine = 'x';
+    await (await caches.open('mine')).put('/mine', new Response('x'));
+  });
+
+  await tabY.goto(y.invite('dad'));
+  await h.siteText(tabY);
+  const found = await h.whatTheSiteCanReach(tabY);
+  assert.deepEqual(found.localStorage, {}, "Site Y read Site X's localStorage");
+  assert.ok(!found.caches.includes('mine'), `Site Y saw Site X's caches: ${found.caches}`);
+  assert.deepEqual(found.privateKeys, ['Ed25519'], 'only its own Visitor Key');
+  const visitorKey = (host) => h.tooob(['visitors', host.name]).split(/\s+/)[0];
+  assert.notEqual(visitorKey(x), visitorKey(y), 'one Visitor Key for both Sites');
 });
 
 test('two tabs on two different Sites each get their own Site', async () => {
@@ -233,13 +270,15 @@ test("after a phone's deep sleep silences its Relay connection, the Site loads a
   // flows, and on waking iroh still thinks its connection is up, so a request waits ~30 s for
   // its idle timeout. Relay only, so nothing can come by the Direct Path instead.
   const { invite } = await hostWithSite();
-  const proxy = await h.startRelayProxy(relay);
+  const front = await h.startRelayFront(irohRelay); // the browser's alone, so silencing it leaves the Host's be
   const page = await h.newVisitor(browser);
   await h.breakDirectPath(page);
-  await page.goto(invite('mom').replace(`relay=${relay}`, `relay=${proxy.url}`));
+  const link = new URL(invite('mom'));
+  link.port = front.port;
+  await page.goto(link.href);
   await h.siteText(page);
 
-  proxy.silence();
+  front.silence();
   await h.wake(page);
   const download = h.siteFetch(page, '/bytes/20000000');
   const late = new Promise((r) => setTimeout(() => r('no answer in 10 s'), 10000));
@@ -506,7 +545,7 @@ function aFolder() {
 }
 
 async function visitSharedFolder(path) {
-  const host = await h.startShare(path, relay, bootstrap);
+  const host = await h.startShare(path, relay);
   const page = await h.newVisitor(browser);
   const downloads = await h.watchDownloads(page);
   await page.goto(h.tooob(['invite', host.name, 'friend']));

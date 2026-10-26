@@ -16,4 +16,8 @@ The first Release, for technical early adopters on Linux and macOS.
   `stop`, `ls`, `show` and `rm`.
 - **The Bootstrap Bundle**, what a Host's Invite Links open, with a manifest
   (`__tooob/version.json`) naming its Release, its Protocol Version and every file's hash.
+- **Key Addresses**: each Host is an origin of its own, `<host key>.<relay domain>`, and its Invite
+  Links are `https://<host key>.<relay domain>/#invite=<token>`, so no Site's scripts can reach
+  another's browser storage or Visitor Key. A Host's settings name only its Relay, which serves
+  the Bootstrap (ADR 0020); Host Keys are written in z-base-32, short enough to be a hostname's label.
 - **`tooob --version`** prints the Release and the Protocol Version; a starting Host logs them.

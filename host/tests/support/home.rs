@@ -8,6 +8,48 @@ use std::{
 /// The Bootstrap the tests' Hosts name: no Visitor's browser loads it, so it needn't exist.
 pub const BOOTSTRAP: &str = "https://bootstrap.example/";
 
+/// The Relay the tests' stopped Hosts name when they need Invite Links: nothing reaches it, so it
+/// needn't exist. A Host that runs needs a TestRelay: with no Relay answering, it isn't serving
+/// for 15 s.
+pub const RELAY: &str = "https://relay.example/";
+
+/// A real Relay on this machine (iroh-relay's own server), stopped when dropped. It's on
+/// `localhost`, a domain, so its Hosts have Key Addresses.
+pub struct TestRelay {
+    pub url: String,
+    _stop: tokio::sync::oneshot::Sender<()>,
+}
+
+impl TestRelay {
+    pub fn start() -> TestRelay {
+        use iroh_relay::server::{RelayConfig, Server, ServerConfig};
+        let (port_tx, port_rx) = std::sync::mpsc::channel();
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        // A runtime of its own, so sync and async tests alike can start one.
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let mut config = ServerConfig::default();
+                config.relay = Some(RelayConfig::new(([127, 0, 0, 1], 0)));
+                let server = Server::spawn(config).await.unwrap();
+                port_tx.send(server.http_addr().unwrap().port()).unwrap();
+                let _ = stopped.await;
+                let _ = server.shutdown().await;
+            });
+        });
+        TestRelay {
+            url: format!("http://localhost:{}/", port_rx.recv().unwrap()),
+            _stop: stop,
+        }
+    }
+}
+
+/// z-base-32's alphabet: how a Host Key is written, short enough to be a hostname's label.
+pub const Z_BASE_32: &str = "ybndrfg8ejkmcpqxot1uwisza345h769";
+
 /// A `TOOOB_HOME` of its own, so tests never touch the Owner's real settings or Hosts.
 pub struct Home(pub tempfile::TempDir);
 

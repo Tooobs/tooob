@@ -63,7 +63,7 @@ What a Host keeps for itself and only tooob writes: its Host Key, Allowlist, Inv
 _Avoid_: data dir, storage
 
 **Host Key**:
-The key that is both a Host's identity and its address. Losing it means a new address and re-inviting every Visitor.
+The key that is both a Host's identity and its address, written in z-base-32 (52 characters, short enough to be a hostname's label). Losing it means a new address and re-inviting every Visitor.
 _Avoid_: endpoint id, node id, host id
 
 **Visitor Key**:
@@ -71,7 +71,7 @@ The key a Visitor's browser generates and keeps; the Host recognizes the Visitor
 _Avoid_: session, token, cookie
 
 **Key Address**:
-The URL form of a Host Key: the Host Key as a subdomain of its Relay's domain (`<host key>.<relay domain>`). Each is an origin of its own in the browser, walled off from every other Host's. Free, unreadable, and as lasting as the Relay.
+The URL form of a Host Key: the Host Key as a subdomain of its Relay's domain (`<host key>.<relay domain>`). Each is an origin of its own in the browser, walled off from every other Host's. Free, unreadable, and as lasting as the Relay. A Host with no Relay, or with a Relay at an IP address, has none, so it can't make Invite Links.
 _Avoid_: subdomain, link
 
 **Friendly Name**:

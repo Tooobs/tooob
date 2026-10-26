@@ -191,17 +191,6 @@ pub fn relay() -> Result<String> {
     Ok(relay.trim().to_string())
 }
 
-/// A new Host's `bootstrap` setting: the Bootstrap its Invite Links open.
-pub fn bootstrap() -> Result<String> {
-    let bootstrap: String = Input::with_theme(&theme())
-        .with_prompt("Which Bootstrap do its Invite Links open? (its URL)")
-        .validate_with(|b: &String| {
-            tooob::hosts::check_bootstrap(b.trim()).map_err(|e| e.to_string())
-        })
-        .interact_text()?;
-    Ok(bootstrap.trim().to_string())
-}
-
 /// The Label for the device a Pairing Invite is for.
 pub fn label() -> Result<String> {
     let label: String = Input::with_theme(&theme())

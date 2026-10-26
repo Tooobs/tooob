@@ -4,7 +4,7 @@ mod support;
 
 use std::process::Output;
 use support::TestSite;
-use support::home::{BOOTSTRAP, Home, Running};
+use support::home::{Home, Running, TestRelay};
 
 fn stdout(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
@@ -14,17 +14,12 @@ fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
-/// A Host named `site` for the web app, running.
-fn serve(home: &Home, site: &TestSite) -> Running {
-    home.ok(&[
-        "add",
-        "site",
-        &site.addr.to_string(),
-        "--local",
-        "--bootstrap",
-        BOOTSTRAP,
-    ]);
-    home.start("site")
+/// A Host named `site` for the web app, running through a Relay of its own.
+fn serve(home: &Home, site: &TestSite) -> (Running, TestRelay) {
+    let relay = TestRelay::start();
+    let addr = site.addr.to_string();
+    home.ok(&["add", "site", &addr, "--relay", &relay.url]);
+    (home.start("site"), relay)
 }
 
 /// What `--version` and a starting Host say: the Release, from Cargo.toml, and the Protocol Version.
@@ -43,7 +38,7 @@ fn version_prints_the_release_and_the_protocol_version() {
 async fn a_starting_host_logs_the_release_and_the_protocol_version() {
     let site = TestSite::start().await;
     let home = Home::new();
-    let serving = serve(&home, &site);
+    let (serving, _relay) = serve(&home, &site);
     serving.until_it_says(&release_and_protocol_version());
 }
 
@@ -55,8 +50,12 @@ async fn invite_prints_a_link_for_the_running_host() {
 
     let link = home.ok(&["invite", "site", "mom"]);
     let link = link.trim();
-    assert!(link.starts_with(&format!("{BOOTSTRAP}#")), "{link}");
-    assert!(link.contains("&invite="), "{link}");
+    let key = home.shown("site", "Host Key");
+    assert!(
+        link.starts_with(&format!("http://{key}.localhost:")),
+        "{link}"
+    );
+    assert!(link.contains("/#invite="), "{link}");
 
     let listed = home.ok(&["invites", "site"]);
     assert!(listed.contains("mom"), "{listed}");
@@ -65,14 +64,7 @@ async fn invite_prints_a_link_for_the_running_host() {
 #[test]
 fn stopping_a_host_that_isnt_running_says_how_to_run_it() {
     let home = Home::new();
-    home.ok(&[
-        "add",
-        "site",
-        "127.0.0.1:8096",
-        "--local",
-        "--bootstrap",
-        BOOTSTRAP,
-    ]);
+    home.ok(&["add", "site", "127.0.0.1:8096", "--local"]);
     let out = home.tooob(&["stop", "site"]);
     assert!(!out.status.success());
     let err = stderr(&out);
@@ -88,7 +80,7 @@ async fn pair_prints_a_link_and_a_bad_key_is_reported_not_ignored() {
     let home = Home::new();
     let _serving = serve(&home, &site);
 
-    assert!(home.ok(&["pair", "site", "my phone"]).contains("&invite="));
+    assert!(home.ok(&["pair", "site", "my phone"]).contains("#invite="));
     let out = home.tooob(&["block", "site", "ffffffffffff"]);
     assert!(!out.status.success());
     assert!(stderr(&out).contains("unknown_visitor"));

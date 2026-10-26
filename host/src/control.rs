@@ -16,21 +16,11 @@ use std::{
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::watch;
 
-/// Where a Host is reached: a running Host's own endpoint, or, while it's stopped, its Host Key and
-/// the Relay its settings name.
-#[derive(Clone)]
-pub(crate) enum Address {
-    Endpoint(iroh::Endpoint),
-    Stopped(HostAddress),
-}
-
 #[derive(Clone)]
 pub struct Control {
     pub(crate) access: Arc<Mutex<Access>>,
     /// Tells the Host access was taken away, so it can end open WebSockets.
     pub(crate) changes: Arc<watch::Sender<()>>,
-    /// Where Visitors reach the Host: what goes into Invite Links.
-    pub(crate) address: Address,
     /// Each Visitor's Site cookies: a Block throws theirs away.
     pub(crate) jars: Arc<crate::jars::Jars>,
     /// Rung when the Owner asks the Host to stop; whoever runs the Host shuts it down.
@@ -40,28 +30,13 @@ pub struct Control {
 impl Control {
     /// A stopped Host's state, for the Owner's commands to change directly (ADR 0014). Only while
     /// holding its lock: a running Host keeps its own copy, and saves over this one.
-    fn stopped(data_dir: &Path, address: HostAddress) -> io::Result<Control> {
+    fn stopped(data_dir: &Path) -> io::Result<Control> {
         Ok(Control {
             access: Arc::new(Mutex::new(Access::open(data_dir.join("access.json"))?)),
             changes: Arc::new(watch::Sender::new(())),
-            address: Address::Stopped(address),
             jars: Arc::new(crate::jars::Jars::open(data_dir.join("jars"))?),
             stop: Default::default(),
         })
-    }
-
-    /// What goes into Invite Links.
-    pub fn address(&self) -> HostAddress {
-        match &self.address {
-            Address::Endpoint(endpoint) => {
-                let addr = endpoint.addr();
-                HostAddress {
-                    id: addr.id.to_string(),
-                    relay: addr.relay_urls().next().map(|u| u.to_string()),
-                }
-            }
-            Address::Stopped(address) => address.clone(),
-        }
     }
 
     pub fn invite(&self, label: &str, options: InviteOptions) -> io::Result<Invite> {
@@ -227,7 +202,6 @@ fn reply(control: &Control, request: &Value) -> Value {
                 Err(e) => json!({"error": e.to_string()}),
             }
         }
-        Some("address") => json!({"ok": control.address()}),
         Some("stop") => {
             control.stop();
             json!({"ok": null})
@@ -278,26 +252,6 @@ fn outcome(result: Result<(), ChangeError>) -> Value {
     }
 }
 
-/// What a Visitor's browser needs to reach a Host: its Host Key and, if it has one, its Relay.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct HostAddress {
-    pub id: String,
-    pub relay: Option<String>,
-}
-
-impl HostAddress {
-    /// The Invite Link: the Bootstrap page, the Host's Relay, the Host Key and the Invite token.
-    /// Everything after `#` stays in the browser (never sent to the Bootstrap's server).
-    pub fn invite_link(&self, bootstrap: &str, token: &str) -> String {
-        let relay = self
-            .relay
-            .as_ref()
-            .map(|r| format!("?relay={r}"))
-            .unwrap_or_default();
-        format!("{bootstrap}{relay}#{}&invite={token}", self.id)
-    }
-}
-
 #[derive(Debug, PartialEq, Eq)]
 pub enum ControlError {
     /// No Host is running for this data directory (or it can't be reached).
@@ -309,8 +263,8 @@ pub enum ControlError {
 /// Talks to the Host for one data directory: what the `tooob` CLI uses.
 pub struct Client {
     data_dir: PathBuf,
-    /// Its address while it's stopped, for a Client that changes a stopped Host's state directly.
-    stopped: Option<HostAddress>,
+    /// Whether it changes a stopped Host's state directly.
+    stopped: bool,
 }
 
 impl Client {
@@ -318,16 +272,16 @@ impl Client {
     pub fn new(data_dir: &Path) -> Client {
         Client {
             data_dir: data_dir.to_path_buf(),
-            stopped: None,
+            stopped: false,
         }
     }
 
     /// Talks to the Host whether it's running or not (ADR 0014). While it isn't, requests change its
-    /// state directly, under the lock a running Host holds, and `stopped` goes into Invite Links.
-    pub fn running_or_not(data_dir: &Path, stopped: HostAddress) -> Client {
+    /// state directly, under the lock a running Host holds.
+    pub fn running_or_not(data_dir: &Path) -> Client {
         Client {
             data_dir: data_dir.to_path_buf(),
-            stopped: Some(stopped),
+            stopped: true,
         }
     }
 
@@ -346,11 +300,6 @@ impl Client {
     /// socket offers it.
     pub async fn pair(&self, label: &str) -> Result<Invite, ControlError> {
         decode(self.ask(json!({"op": "pair", "label": label})).await?)
-    }
-
-    /// The running Host's Host Key and Relay: what an Invite Link needs.
-    pub async fn address(&self) -> Result<HostAddress, ControlError> {
-        decode(self.ask(json!({"op": "address"})).await?)
     }
 
     pub async fn visitors(&self) -> Result<Vec<VisitorInfo>, ControlError> {
@@ -399,12 +348,12 @@ impl Client {
                 Err(ControlError::NotRunning) => {}
                 answered => return answered,
             }
-            let Some(address) = &self.stopped else {
+            if !self.stopped {
                 return Err(ControlError::NotRunning);
-            };
+            }
             let refused = |e: io::Error| ControlError::Refused(e.to_string());
             if let Some(_lock) = crate::hosts::try_lock(&self.data_dir).map_err(refused)? {
-                let control = Control::stopped(&self.data_dir, address.clone()).map_err(refused)?;
+                let control = Control::stopped(&self.data_dir).map_err(refused)?;
                 return outcome_of(reply(&control, &request));
             }
             if started.elapsed() > Duration::from_secs(5) {

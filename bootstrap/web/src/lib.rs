@@ -24,13 +24,14 @@ pub struct Tooob {
 
 #[wasm_bindgen]
 impl Tooob {
-    /// Dial a Host by its Host Key. With `relay` (from the Invite Link) we go straight to the
-    /// Host's Relay; without it, address lookup (pkarr over HTTPS) finds the Relay first.
+    /// Dial a Host by its Host Key (z-base-32, as a Key Address carries it). With `relay` (the
+    /// Key Address's own domain) we go straight to the Host's Relay; without it, address lookup
+    /// (pkarr over HTTPS) finds the Relay first.
     /// The connection uses a key of its own, so each tab has its own Relay connection; JS then
     /// sends a hello proving the Visitor Key, which never enters WASM (ADR 0011).
     pub async fn connect(host_key: String, relay: Option<String>) -> Result<Tooob, JsError> {
         console_error_panic_hook::set_once();
-        let host_key: EndpointId = host_key.parse().map_err(err)?;
+        let host_key = EndpointId::from_z32(&host_key).map_err(err)?;
         let mut addr = EndpointAddr::new(host_key);
         let mut builder = Endpoint::builder(presets::N0).secret_key(SecretKey::generate());
         if let Some(relay) = relay {

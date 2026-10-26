@@ -37,9 +37,9 @@ bootstrap/build.sh                          # the Bootstrap's WASM into bootstra
 ## Use
 
 ```sh
-tooob add photos ~/Photos --relay https://relay.example/ --bootstrap https://bootstrap.example/
+tooob add photos ~/Photos --relay https://relay.example/
 tooob run photos                            # in the foreground; Ctrl-C ends it
-tooob invite photos mom --expires 7d        # prints the Invite Link, and nothing else
+tooob invite photos mom --expires 7d        # prints the Invite Link (https://<host key>.relay.example/#invite=…)
 tooob visitors photos                       # who has got in
 tooob block photos <key prefix>
 ```

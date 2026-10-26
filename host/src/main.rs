@@ -14,7 +14,9 @@ use tooob::Network;
 use tooob::access::InviteOptions;
 use tooob::control::{Client, ControlError};
 use tooob::host::{Host, HostConfig, Site};
-use tooob::hosts::{Entry, Home, NO_RELAY, RUN_YOUR_OWN, check_bootstrap, check_relay, name_char};
+use tooob::hosts::{
+    Entry, Home, NO_RELAY, RUN_YOUR_OWN, check_relay, name_char, no_invite_links, no_key_address,
+};
 
 mod ask;
 
@@ -25,11 +27,11 @@ mod ask;
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 const USAGE: &str = "usage:
-  tooob add NAME TARGET (--relay URL | --local) --bootstrap URL
+  tooob add NAME TARGET (--relay URL | --local)
                                                   make a Host; TARGET is a folder or file to share
                                                   read-only, or HOST:PORT for a web app
   tooob run NAME                                  serve it here, until Ctrl-C
-  tooob share [PATH] [--name NAME] [--invite LABEL] [--relay URL | --local] [--bootstrap URL]
+  tooob share [PATH] [--name NAME] [--invite LABEL] [--relay URL | --local]
                                                   add a Host for PATH (or reuse its Host), then
                                                   run it; in a terminal, it asks what's missing
   tooob ls [--json]                               every Host on this box, running or stopped
@@ -43,9 +45,9 @@ const USAGE: &str = "usage:
   tooob revoke NAME INVITE-ID
   tooob --version                                 the Release and Protocol Version
 NAME is a Host Name, what the Host serves, or a Host Key prefix. Owner commands work whether the
-Host is running or not. There's no default Relay or Bootstrap: deploy/ shows how to run your own.";
+Host is running or not. There's no default Relay: deploy/ shows how to run your own.";
 
-const VALUE_FLAGS: &[&str] = &["relay", "bootstrap", "expires", "name"];
+const VALUE_FLAGS: &[&str] = &["relay", "expires", "name"];
 const BARE_FLAGS: &[&str] = &["local", "json", "approve", "owner"];
 
 /// Commands for one Host, named first: `tooob VERB NAME …`. They work whether it's running or not
@@ -110,10 +112,10 @@ async fn run() -> Result<()> {
 
     match words.first().map(String::as_str) {
         Some("add") => {
-            exactly(3, &["relay", "local", "bootstrap"])?;
+            exactly(3, &["relay", "local"])?;
             let (name, target) = (arg(1)?, arg(2)?);
-            let (relay, bootstrap) = new_host_settings(&flags, false)?;
-            home.add(&name, &target, &relay, &bootstrap)?;
+            let relay = new_host_relay(&flags, false)?;
+            home.add(&name, &target, &relay)?;
         }
         Some("run") => {
             exactly(2, &[])?;
@@ -152,35 +154,19 @@ fn relay(flags: &Flags) -> Result<Option<String>> {
     }
 }
 
-/// A new Host's Relay and Bootstrap, as `--relay URL` (or `--local`) and `--bootstrap URL` say:
-/// never a guess (ADR 0015). With `ask`, a person at the keyboard is asked for what's missing;
-/// otherwise it's an error that names all of it.
-fn new_host_settings(flags: &Flags, ask: bool) -> Result<(String, String)> {
-    let relay = relay(flags)?;
-    let bootstrap = flags.get("bootstrap").cloned().flatten();
-    if let Some(relay) = &relay {
-        check_relay(relay)?;
-    }
-    if let Some(bootstrap) = &bootstrap {
-        check_bootstrap(bootstrap)?;
-    }
-    if ask {
-        let relay = relay.map_or_else(ask::relay, Ok)?;
-        let bootstrap = bootstrap.map_or_else(ask::bootstrap, Ok)?;
-        return Ok((relay, bootstrap));
-    }
-    let mut missing = Vec::new();
-    if relay.is_none() {
-        missing.push(
-            "which Relay its Visitors reach it through (--relay URL, or --local for this network only)",
-        );
-    }
-    if bootstrap.is_none() {
-        missing.push("which Bootstrap its Invite Links open (--bootstrap URL)");
-    }
-    match (relay, bootstrap) {
-        (Some(relay), Some(bootstrap)) => Ok((relay, bootstrap)),
-        _ => bail!("say {}: {RUN_YOUR_OWN}\n{USAGE}", missing.join(", and ")),
+/// A new Host's Relay, as `--relay URL` (or `--local`) says: never a guess (ADR 0015). With `ask`,
+/// a person at the keyboard is asked for it; otherwise it's an error.
+fn new_host_relay(flags: &Flags, ask: bool) -> Result<String> {
+    match relay(flags)? {
+        Some(relay) => {
+            check_relay(&relay)?;
+            Ok(relay)
+        }
+        None if ask => ask::relay(),
+        None => bail!(
+            "say which Relay its Visitors reach it through (--relay URL, or --local for this \
+             network only): {RUN_YOUR_OWN}\n{USAGE}"
+        ),
     }
 }
 
@@ -188,7 +174,7 @@ fn new_host_settings(flags: &Flags, ask: bool) -> Result<(String, String)> {
 /// Owner has answered everything, so backing out adds nothing.
 enum Sharing {
     Reused(Entry),
-    New { relay: String, bootstrap: String },
+    New { relay: String },
 }
 
 /// `tooob share`: add a Host for a folder or file, or reuse the one already serving it, then run
@@ -200,21 +186,28 @@ async fn share(home: &Home, words: &[String], flags: &Flags, invitees: &[String]
         None => bail!("say what to share: tooob share PATH\n{USAGE}"),
     };
     let serves = path.to_string_lossy();
-    // A reused Host keeps its own Relay and Bootstrap; the flags are for a new one.
-    let sharing = match home
+    // A reused Host keeps its own Relay; the flags are for a new one. Invites need a Key Address,
+    // so without one, `--invite` is refused and nobody's asked who to invite.
+    let (sharing, can_invite) = match home
         .hosts()
         .into_iter()
         .find(|h| h.settings.serves == serves)
     {
         Some(host) => {
-            if terminal() || !invitees.is_empty() {
-                host.bootstrap()?; // the questions are about Invites, which need it
-            }
-            Sharing::Reused(host)
+            let can_invite = match host.key_address() {
+                Ok(_) => true,
+                Err(e) if !invitees.is_empty() => return Err(e),
+                Err(_) => false,
+            };
+            (Sharing::Reused(host), can_invite)
         }
         None => {
-            let (relay, bootstrap) = new_host_settings(flags, terminal())?;
-            Sharing::New { relay, bootstrap }
+            let relay = new_host_relay(flags, terminal())?;
+            let why = no_key_address(&relay);
+            if let Some(why) = why.filter(|_| !invitees.is_empty()) {
+                bail!(no_invite_links("the new Host", why));
+            }
+            (Sharing::New { relay }, why.is_none())
         }
     };
     if terminal() {
@@ -232,19 +225,19 @@ async fn share(home: &Home, words: &[String], flags: &Flags, invitees: &[String]
             approve: flags.contains_key("approve"),
         })
         .collect();
-    if terminal() {
+    if terminal() && can_invite {
         while let Some(more) = ask::invitee(who.is_empty())? {
             who.push(more);
         }
     }
     let host = match sharing {
         Sharing::Reused(host) => host,
-        Sharing::New { relay, bootstrap } => {
+        Sharing::New { relay } => {
             let name = match flags.get("name").cloned().flatten() {
                 Some(name) => name,
                 None => free_name(home, &path),
             };
-            home.add(&name, &serves, &relay, &bootstrap)?
+            home.add(&name, &serves, &relay)?
         }
     };
     serve(&host, who).await
@@ -340,13 +333,6 @@ fn show_host(host: &Entry) {
     for (label, value) in [
         ("serves", host.settings.serves.clone()),
         ("relay", host.settings.relay.clone()),
-        (
-            "bootstrap",
-            host.settings
-                .bootstrap
-                .clone()
-                .unwrap_or_else(|| "not set: Invite Links need one in the settings file".into()),
-        ),
         ("Host Key", key),
         ("settings file", host.settings_file.display().to_string()),
         ("state folder", host.state_dir.display().to_string()),
@@ -387,9 +373,9 @@ async fn owner_command(
     if command == "stop" {
         return stop(&host).await;
     }
-    let client = host.client()?;
+    let client = host.client();
     if matches!(command, "invite" | "pair") {
-        host.bootstrap()?; // before anything's asked: a link needs it
+        host.key_address()?; // before anything's asked: a link needs it
     }
     let said = |what: &str| {
         words.get(2).cloned().with_context(|| {
@@ -417,10 +403,8 @@ async fn owner_command(
                 None if terminal() => ask::label()?,
                 _ => said("label")?,
             };
-            let bootstrap = host.bootstrap()?;
             let invite = client.pair(&label).await.map_err(refused)?;
-            let address = client.address().await.map_err(refused)?;
-            println!("{}", address.invite_link(&bootstrap, &invite.token));
+            println!("{}", host.invite_link(&invite.token)?);
         }
         "visitors" => {
             let visitors = client.visitors().await.map_err(refused)?;
@@ -518,14 +502,12 @@ fn invite_options(flags: &Flags) -> Result<InviteOptions> {
     })
 }
 
-/// Make an Invite and print its link, alone on stdout so a script can take it. The Bootstrap comes
-/// first: without one, no Invite is made that nobody would have a link for.
+/// Make an Invite and print its link, alone on stdout so a script can take it. The Key Address
+/// comes first: without one, no Invite is made that nobody would have a link for.
 async fn invite(host: &Entry, client: &Client, label: &str, options: InviteOptions) -> Result<()> {
-    let bootstrap = host.bootstrap()?;
-    let refused = refused(host);
-    let invite = client.invite(label, options).await.map_err(refused)?;
-    let address = client.address().await.map_err(refused)?;
-    println!("{}", address.invite_link(&bootstrap, &invite.token));
+    host.key_address()?;
+    let invite = client.invite(label, options).await.map_err(refused(host))?;
+    println!("{}", host.invite_link(&invite.token)?);
     Ok(())
 }
 
@@ -545,7 +527,7 @@ fn lasts(options: &InviteOptions) -> String {
 /// says now. One process per Host: a second is refused, with the first one's pid.
 async fn serve(host: &Entry, invitees: Vec<ask::Invitee>) -> Result<()> {
     if !invitees.is_empty() {
-        host.bootstrap()?; // say so now, not once it's serving
+        host.key_address()?; // say so now, not once it's serving
     }
     let _lock = host.lock()?;
     let site = host.settings.site()?;
@@ -594,14 +576,14 @@ async fn serve_here(
     .await?;
     eprintln!(
         "tooob: {name}: Host {}, through {through}",
-        running.address().id
+        running.address().id.to_z32()
     );
-    // Links made before the Host has a Relay would only work on this network.
+    // Browsers reach a Host only through its Relay, so until it's there, its links lead nowhere.
     let online = async {
         let wait = Duration::from_secs(15);
         if !local && tokio::time::timeout(wait, running.online()).await.is_err() {
             eprintln!(
-                "tooob: {name}: warning: no Relay yet; Invite Links will only work on this network for now"
+                "tooob: {name}: warning: not on its Relay yet, so Visitors' browsers can't reach it for now"
             );
         }
     };
@@ -721,6 +703,10 @@ fn parse(args: impl Iterator<Item = String>) -> Result<(Vec<String>, Flags, Vec<
             Some(name) if BARE_FLAGS.contains(&name) => {
                 flags.insert(name.to_string(), None);
             }
+            Some("bootstrap") => bail!(
+                "--bootstrap is gone: a Relay serves its Bootstrap, so a Host names only its \
+                 Relay (--relay URL)\n{USAGE}"
+            ),
             Some(name) => bail!("unknown option --{name}\n{USAGE}"),
             None => words.push(a),
         }

@@ -100,7 +100,6 @@ impl Host {
         let control = Control {
             access,
             changes,
-            address: crate::control::Address::Endpoint(endpoint.clone()),
             jars,
             stop: Default::default(),
         };
@@ -185,7 +184,7 @@ pub fn host_key(data_dir: &std::path::Path) -> Option<String> {
         .ok()?
         .try_into()
         .ok()?;
-    Some(SecretKey::from_bytes(&bytes).public().to_string())
+    Some(SecretKey::from_bytes(&bytes).public().to_z32())
 }
 
 /// The Host Key, kept across restarts so the Key Address and Invite Links stay valid.
