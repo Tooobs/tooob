@@ -79,6 +79,9 @@ cross_release_check() {
   [[ -n $PREVIOUS_RELEASE ]] || { echo "$skip the first Release" && return; }
   published=$(published_release)
   [[ -n $published ]] || { echo "$skip no earlier Release is published" && return; }
+  # rc's are test Releases: compatibility is owed from a version's final Release on, not to its rc's.
+  [[ $published != "${RELEASE%-rc.*}"-rc.* ]] ||
+    { echo "$skip $published is a test Release of ${RELEASE%-rc.*}" && return; }
   [[ $(protocol_version "v$published") == "$PROTOCOL" ]] ||
     { echo "$skip the Protocol Version changes since $published" && return; }
   # Linux Releases are static musl builds, which run on any Linux.

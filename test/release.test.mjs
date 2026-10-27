@@ -41,9 +41,18 @@ function aClone(t, { changelog = UNRELEASED, browserTest = "test('stub', () => {
 
 /** ./release.sh VERSION in the clone. Without NODE_TEST_CONTEXT, which this test runner passes
  *  to its children: the browser suite's own `node --test` would report to this runner instead. */
-function release(work, version) {
+function release(work, version, extraEnv = {}) {
   const { NODE_TEST_CONTEXT, ...env } = process.env;
-  return spawnSync('./release.sh', [version], { cwd: work, encoding: 'utf8', env });
+  return spawnSync('./release.sh', [version], { cwd: work, encoding: 'utf8', env: { ...env, ...extraEnv } });
+}
+
+/** A PATH whose `gh` says `tag` is a published GitHub Release and nothing else is: GitHub can't see
+ *  the clone's throwaway origin. */
+function ghPublishing(t, tag) {
+  const bin = mkdtempSync(join(tmpdir(), 'tooob-gh-'));
+  t.after(() => rmSync(bin, { recursive: true, force: true }));
+  writeFileSync(join(bin, 'gh'), `#!/bin/sh\n[ "$1 $2 $3" = "release view ${tag}" ] && exit 0\nexit 1\n`, { mode: 0o755 });
+  return { PATH: `${bin}:${process.env.PATH}` };
 }
 
 test('a dirty tree is refused', (t) => {
@@ -181,4 +190,24 @@ test("a tag whose Release was never published doesn't block the next Release", (
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /cross-Release check: skipped, no earlier Release is published/);
   assert.equal(git(bare, 'tag', '-l').split('\n').sort().join(' '), 'v0.1.0 v0.1.1');
+});
+
+test("a Release isn't checked against a published test Release of its own version", (t) => {
+  const { work, bare } = aClone(t);
+  git(work, 'tag', 'v0.1.0-rc.1');
+  git(work, 'push', '-q', 'origin', 'v0.1.0-rc.1');
+  const result = release(work, '0.1.0-rc.2', ghPublishing(t, 'v0.1.0-rc.1'));
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /cross-Release check: skipped, 0\.1\.0-rc\.1 is a test Release of 0\.1\.0/);
+  assert.equal(git(bare, 'tag', '-l').split('\n').sort().join(' '), 'v0.1.0-rc.1 v0.1.0-rc.2');
+});
+
+test("an earlier version's test Release still gets the cross-Release check", (t) => {
+  const { work } = aClone(t);
+  git(work, 'tag', 'v0.1.0-rc.1');
+  git(work, 'push', '-q', 'origin', 'v0.1.0-rc.1');
+  const result = release(work, '0.2.0-rc.1', ghPublishing(t, 'v0.1.0-rc.1'));
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stdout, /is a test Release of/);
+  assert.match(result.stdout, /cross-Release check: skipped, 0\.1\.0-rc\.1 has no tooob for this machine/); // the stand-in gh lists no assets
 });
