@@ -315,8 +315,7 @@ test('a Direct Path that fails mid-visit is renegotiated each time, and a downlo
   const download = frame.evaluate(() => fetch('/bytes/20971520').then((r) => r.arrayBuffer()).then((b) => b.byteLength));
 
   for (let i = 0; i < 5; i++) { // more failures than any retry budget
-    await h.failDirectPath(page);
-    assert.notEqual(await page.evaluate(() => window.__tooobStats.path), 'direct', `failure ${i + 1} went unnoticed`);
+    assert.notEqual(await h.failDirectPath(page), 'direct', `failure ${i + 1} went unnoticed`);
     await page.waitForFunction(() => window.__tooobStats.path === 'direct', { timeout: 3000 });
   }
   assert.equal(await download, 20971520);

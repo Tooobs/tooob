@@ -335,14 +335,17 @@ export async function watchDirectPath(page) {
 /**
  * Tell the shell its Direct Path failed, as the browser does when the network changes under it.
  * Only the news is forged: the connection itself stays up, so whatever the shell does next runs
- * for real against the Host.
+ * for real against the Host. Returns the path the shell says it's on straight after hearing the
+ * news: read any later and its ICE restart, one round trip to the Host on a connection that never
+ * really failed, may already have put it back on 'direct' (#30).
  */
 export async function failDirectPath(page) {
-  await page.evaluate(() => {
+  return page.evaluate(() => {
     const pc = window.__peers.at(-1);
     Object.defineProperty(pc, 'connectionState', { configurable: true, get: () => 'failed' });
     pc.dispatchEvent(new Event('connectionstatechange'));
     delete pc.connectionState;
+    return window.__tooobStats.path;
   });
 }
 
