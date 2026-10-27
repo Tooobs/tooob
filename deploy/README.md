@@ -10,7 +10,7 @@ Both setups here run the same container (`relay/image/`): stock [iroh-relay](htt
 ## What a Relay needs
 
 - **A domain of its own**, e.g. `relay.example.com`, with two DNS records pointing at the Relay: the domain itself and `*.relay.example.com`. Every Host's Key Address is a name under it.
-- **A DNS API token**: the Relay gets a wildcard certificate from Let's Encrypt through a DNS challenge, which adds a record through your DNS provider's API. Any provider with a [caddy-dns](https://github.com/caddy-dns) module that takes just a token works; the default is Cloudflare.
+- **A DNS API token**: browsers only run the Bootstrap's service worker on an HTTPS page, so every Key Address needs a certificate. The Relay gets a wildcard one from Let's Encrypt through a DNS challenge, which adds a record through your DNS provider's API. Any provider with a [caddy-dns](https://github.com/caddy-dns) module that takes just a token works; the default is Cloudflare.
 - **TCP 443** (and 80, which redirects to it). UDP 7842 is optional and these setups leave it off: it's iroh-relay's QUIC address discovery, which helps native endpoints punch holes, and v1 doesn't use it.
 - **Generous bandwidth**: every byte a Visitor loads over the Relayed Path passes through it. A Relay stores nothing.
 - **A long-running process**: Relay connections are WebSockets that stay open, so serverless platforms that stop between requests won't do.

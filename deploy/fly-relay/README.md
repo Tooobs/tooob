@@ -15,7 +15,9 @@ fly secrets set DNS_API_TOKEN='…' -a "$FLY_APP" --stage
 fly ips list -a "$FLY_APP"                        # the addresses for DNS
 ```
 
-Then, at your DNS provider, add A and AAAA records pointing at those addresses for the Relay's domain and its wildcard (`relay.example.com` and `*.relay.example.com`; "DNS only" on Cloudflare). The token is one that can edit the zone's records: on Cloudflare, My Profile → API Tokens → "Edit zone DNS", limited to that zone.
+Then, at your DNS provider, add A and AAAA records pointing at those addresses for the Relay's domain and its wildcard (`relay.example.com` and `*.relay.example.com`; "DNS only" on Cloudflare). A resolver that looked up a name under the wildcard just before the record existed can keep saying it doesn't exist for a few minutes; your DNS provider's own nameservers have it at once (`dig check.relay.example.com @<one of them>`). The token is one that can edit the zone's records: on Cloudflare, My Profile → API Tokens → "Edit zone DNS", limited to that zone.
+
+**Turning an existing Fly app into a Relay**, such as one that ran stock iroh-relay: skip `fly apps create`, and before the first deploy destroy its machines (`fly machines list`, then `fly machine destroy <id> --force`). Fly can't attach the volume to a machine made without one. The app's `<app>.fly.dev` address stops working: the Relay only has certificates for its own domain.
 
 ## Deploy
 
