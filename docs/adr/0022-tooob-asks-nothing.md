@@ -1,0 +1,5 @@
+# tooob asks nothing; it says what to type
+
+Supersedes the guided `tooob share` of #22. No `tooob` command asks a question, in a terminal or not: when something it needs is missing, it says what in one line and shows the command as typed with a placeholder in the gap, ready to edit (a missing Host Name lists the Hosts there are). A terminal and a script get the same behaviour, so `tooob share PATH --relay URL --invite NAME` is one shot that can be backgrounded, and Agents, which can't answer prompts, use the same commands people do. A folder holding `.git` is refused unless `--include-git` says so, where a person used to be asked.
+
+We rejected keeping the questions for people at a keyboard. A command that asks in one setting and not another has two behaviours to learn and test, a backgrounded job that asks a question is stopped by the shell without a word, and a question loop ("Who else?") gets between an Owner and a one-liner. Guided set-up for Normal people belongs in the tray app, not the command line.

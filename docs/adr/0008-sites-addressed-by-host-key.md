@@ -1,5 +1,5 @@
 ---
-status: amended by ADR 0015 and ADR 0020
+status: amended by ADR 0015, ADR 0020 and ADR 0021
 ---
 
 # Sites are addressed by their Host Key

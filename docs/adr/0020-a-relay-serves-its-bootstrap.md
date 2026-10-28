@@ -1,3 +1,7 @@
+---
+status: amended by ADR 0021
+---
+
 # A Relay serves its Bootstrap, and each Host's Key Address is on the Relay's domain
 
 Amends ADR 0015 and ADR 0008. A Relay Operator serves the Bootstrap beside their Relay, from the Relay's own domain: stock iroh-relay behind one web server that hands iroh's paths to it and serves a Release's Bootstrap Bundle for everything else. So a Host's settings name only its Relay, and a Host's Key Address is `<host key>.<relay domain>`: its Invite Links are `https://<host key>.<relay domain>/#invite=<token>`. Before, every Host also named a Bootstrap, which meant an Owner deploying a static site with wildcard subdomains over HTTPS, something no ordinary Owner can do, and which left Owners choosing two servers and trusting two operators. A Relay's operator already sees its Visitors' metadata, so serving the code their browsers run adds no new party to trust. We rejected a Relay advertising a Bootstrap hosted elsewhere (two servers, two operators, more to go wrong) and keeping them separate with better tooling (still two choices). Still no default (ADR 0015): Owners choose a Relay, and later find one through the Relay finder.
