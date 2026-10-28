@@ -38,7 +38,7 @@ Turn home infrastructure into web infrastructure for normal people. Run somethin
 - **Built on iroh 1.x** (MIT/Apache, wire-stable across v1). Hole punching is the hardest part and iroh has it. We don't write our own transport.
 - **Open source**, `MIT OR Apache-2.0` (ADR 0016).
 - **Self-hosted by design**: tooob names no Relay of its own, and every Host's settings name one (ADR 0015). A Relay is stock iroh-relay behind Caddy, which also serves a Release's Bootstrap Bundle (ADR 0020); `deploy/` sets one up on a VPS or Fly.io.
-- **Addresses are key subdomains** (`<base32 key>.<relay domain>`, 52 chars, fits a DNS label). Each site gets its own origin. **Friendly names** are a v2 feature. The Relay's domain goes on the Public Suffix List. A Key Address lasts as long as its Relay: switching Relay means new Invites for everyone (ADR 0020).
+- **Addresses are key subdomains** (`<base32 key>.<relay domain>`, 52 chars, fits a DNS label). Each site gets its own origin. **Friendly names** are a v2 feature. A Relay shared by people who don't trust each other goes on the Public Suffix List; one for its Owner alone doesn't need it (ADR 0021). A Key Address lasts as long as its Relay: switching Relay means new Invites for everyone (ADR 0020).
 
 ### Access control
 - **The allowlist lives only on the host.** Relays and Bootstraps never learn who your visitors are.
@@ -70,7 +70,7 @@ Turn home infrastructure into web infrastructure for normal people. Run somethin
 | Risk | Compared to the open web | Mitigation |
 |---|---|---|
 | Visitors trust bootstrap JS from the Relay Operator who serves it | Same as any web app; better than a TLS-terminating CDN | Versioned, reproducible bootstrap; the Owner chooses (or runs) the Relay; a Relay audit for the Relay finder; v2 extension |
-| Isolation between sites | Same as github.io | Per-key subdomain plus Public Suffix List |
+| Isolation between sites | Same as github.io | Per-key subdomain; the Bootstrap keeps cookies to one Site and asks for a process per Site. A Relay shared by people who don't trust each other also goes on the Public Suffix List, for password managers (ADR 0021) |
 | Home IP visible on direct paths | Same as self-hosting | A "relay only" option (skip WebRTC and native hole punching) for hosts who want their IP hidden |
 | Service worker / WASM / WebSocket-shim plumbing | New | **The spike** |
 | Prompt injection via the AI front door, or via what an agent reads | New | An agent can't let anyone in unseen: its invites need the owner's approval on first visit, enforced through Agent Accounts (ADR 0018) |

@@ -86,6 +86,17 @@ if (!domain.length || !/^[ybndrfg8ejkmcpqxot1uwisza345h769]{52}$/.test(hostKey))
   throw new Error('no Host Key');
 }
 
+// tooob uses no browser cookies, and one set for the whole Relay domain reaches every Host's pages
+// on it: delete any this page can see, wherever the Site set it from (ADR 0021). A deletion that
+// names a domain leaves this Key Address's own cookies, the Site's, alone. A Secure cookie, and so
+// any named __Secure-, only goes to a deletion that is Secure too.
+const secure = isSecureContext ? '; Secure' : '';
+for (const name of document.cookie.split(';').map((c) => c.split('=')[0].trim()).filter(Boolean)) {
+  for (let i = 0; i < domain.length; i++) {
+    document.cookie = `${name}=; Domain=${domain.slice(i).join('.')}; Path=/; Max-Age=0${secure}`;
+  }
+}
+
 let t = performance.now();
 show('loading…');
 await init();

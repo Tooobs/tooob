@@ -1,6 +1,7 @@
 // The browser side of an Invite Link, end to end. Run: node --test (after ../build.sh).
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { createServer, get } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
@@ -187,6 +188,80 @@ test("two Sites through one Relay are two origins: neither can reach the other's
   assert.deepEqual(found.privateKeys, ['Ed25519'], 'only its own Visitor Key');
   const visitorKey = (host) => h.tooob(['visitors', host.name]).split(/\s+/)[0];
   assert.notEqual(visitorKey(x), visitorKey(y), 'one Visitor Key for both Sites');
+});
+
+test("a cookie a Site sets for the whole Relay domain stays with that Site", async () => {
+  // Without the Public Suffix List, the browser lets a Key Address set a cookie for its whole Relay
+  // domain, which every other Host's pages would then see (ADR 0021).
+  const shared = (await h.startRelayFront(irohRelay, 'relay.localhost')).url;
+  const a = await h.startHost(await h.startSite(), shared);
+  const b = await h.startHost(await h.startSite(), shared);
+  const tabA = await h.newVisitor(browser);
+  const tabB = await tabA.browserContext().newPage(); // the same browser, so the same cookies
+  await tabA.goto(h.tooob(['invite', a.name, 'mom']));
+  await h.siteText(tabA);
+  const siteA = await (await tabA.$('iframe')).contentFrame();
+  await siteA.evaluate(async () => {
+    document.cookie = 'viaDocument=a; Domain=relay.localhost; Path=/';
+    await cookieStore.set({ name: 'viaCookieStore', value: 'a', domain: 'relay.localhost', path: '/' });
+  });
+  // Where the browser keeps them, before any shell of Site B's could clean up after Site A.
+  const kept = (await tabA.browserContext().cookies()).map((c) => `${c.name} for ${c.domain}`).sort();
+  const keyAddress = new URL(tabA.url()).hostname;
+  assert.deepEqual(kept, [`viaCookieStore for ${keyAddress}`, `viaDocument for ${keyAddress}`]);
+
+  await tabB.goto(h.tooob(['invite', b.name, 'dad']));
+  await h.siteText(tabB);
+  const siteB = await (await tabB.$('iframe')).contentFrame();
+  assert.equal(await siteB.evaluate(() => document.cookie), '', "Site B read Site A's cookies");
+});
+
+test('a cookie for the whole Relay domain is gone once a shell has started, and the Site keeps its own', async () => {
+  // Set where the injected script doesn't reach, such as a Site's own service worker (ADR 0021).
+  const shared = (await h.startRelayFront(irohRelay, 'relay.localhost')).url;
+  const host = await h.startHost(await h.startSite(), shared);
+  const link = h.tooob(['invite', host.name, 'mom']);
+  const tab = await h.newVisitor(browser);
+  const jar = tab.browserContext();
+  await jar.setCookie(
+    { name: 'stray', value: 'relay-wide', domain: '.relay.localhost', path: '/' },
+    { name: '__Secure-stray', value: 'relay-wide', domain: '.relay.localhost', path: '/', secure: true }, // deleted only by a Secure deletion
+    { name: 'stray', value: 'mine', domain: new URL(link).hostname, path: '/' },
+  );
+  await tab.goto(link);
+  await h.siteText(tab);
+  const left = (await jar.cookies()).map((c) => `${c.name}=${c.value} for ${c.domain}`);
+  assert.deepEqual(left, [`stray=mine for ${new URL(link).hostname}`]);
+});
+
+test('the Relay serves the Bundle for process isolation, and passes no Cookie on', async () => {
+  // In step with the Relay image's front.caddy (ADR 0021): what iroh-relay is sent here stands in
+  // for what reaches it there.
+  const seen = [];
+  const upstream = createServer((req, res) => (seen.push(req.headers), res.end()));
+  upstream.on('upgrade', (req, socket) => (seen.push(req.headers), socket.end('HTTP/1.1 404 Not Found\r\n\r\n')));
+  await new Promise((r) => upstream.listen(0, '127.0.0.1', r));
+  try {
+    const front = await h.startRelayFront(`http://127.0.0.1:${upstream.address().port}/`);
+    const ask = (path, headers) => new Promise((resolve) => {
+      get({ host: '127.0.0.1', port: front.port, path, headers: { cookie: 'bomb=x', ...headers } }, (res) => res.resume().on('end', () => resolve(res)))
+        .on('upgrade', (res, socket) => (socket.destroy(), resolve(res)));
+    });
+    const bundle = JSON.parse(readFileSync(new URL('../www/__tooob/version.json', import.meta.url), 'utf8'));
+    for (const path of ['/', '/__tooob/version.json', ...Object.keys(bundle.files).map((f) => '/' + f)]) {
+      const res = await ask(path);
+      assert.equal(res.statusCode, 200, path);
+      assert.equal(res.headers['origin-agent-cluster'], '?1', path);
+      assert.equal(res.headers['cross-origin-opener-policy'], 'same-origin-allow-popups', path);
+      assert.equal(res.headers['cross-origin-embedder-policy'], undefined, path);
+    }
+    await ask('/healthz');
+    await ask('/relay', { connection: 'Upgrade', upgrade: 'websocket' });
+    assert.equal(seen.length, 2);
+    assert.deepEqual(seen.map((headers) => headers.cookie), [undefined, undefined]);
+  } finally {
+    upstream.close();
+  }
 });
 
 test('two tabs on two different Sites each get their own Site', async () => {

@@ -1,5 +1,29 @@
-// Injected into the site iframe: service workers can't intercept WebSockets, so replace the
-// constructor with one that tunnels through the shell page's iroh connection.
+// Injected into the site iframe. A cookie the Site sets for a whole domain would reach every other
+// Host's pages on the Relay, so drop its Domain= and keep it with this Key Address (ADR 0021).
+(() => {
+  const cookie = Object.getOwnPropertyDescriptor(Document.prototype, 'cookie');
+  Object.defineProperty(Document.prototype, 'cookie', {
+    ...cookie,
+    set(v) {
+      cookie.set.call(this, String(v).replace(/;\s*domain\s*=[^;]*/gi, ''));
+    },
+  });
+  if (!window.CookieStore) return;
+  // A cookie set without its domain can only be deleted without it too.
+  for (const method of ['set', 'delete']) {
+    const real = CookieStore.prototype[method];
+    CookieStore.prototype[method] = function (name, ...rest) {
+      if (name && typeof name === 'object') {
+        const { domain, ...options } = name;
+        return real.call(this, options, ...rest);
+      }
+      return real.call(this, name, ...rest);
+    };
+  }
+})();
+
+// Service workers can't intercept WebSockets, so replace the constructor with one that tunnels
+// through the shell page's iroh connection.
 (() => {
   const shell = parent !== window && parent.__tooob;
   if (!shell) return;

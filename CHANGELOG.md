@@ -25,4 +25,9 @@ The first Release, for technical early adopters on Linux and macOS.
   against its checksum, on the Relay's domain and every Key Address. Run it on a VPS
   (`deploy/relay/`, with a wizard) or on Fly.io (`deploy/fly-relay/`). `deploy/fly-bootstrap/` is
   gone: a Relay is all a Host needs.
+- **A Relay for its Owner alone needs no Public Suffix List** (ADR 0021). A cookie a Site sets for
+  the whole Relay domain stays with that Site, and the shell deletes any it finds. A Relay passes
+  no `Cookie` header on, and asks browsers for a process per Key Address (`Origin-Agent-Cluster`,
+  `Cross-Origin-Opener-Policy`). A Relay shared by people who don't trust each other still goes on
+  the list, for password managers: `deploy/README.md` says why.
 - **`tooob --version`** prints the Release and the Protocol Version; a starting Host logs them.

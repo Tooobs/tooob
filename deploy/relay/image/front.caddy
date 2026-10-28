@@ -1,5 +1,8 @@
 # What a Relay serves on its domain and on every Key Address under it (ADR 0020): iroh's paths go to
 # iroh-relay (iroh-relay.toml), and everything else is the Bootstrap Bundle.
+# No Cookie goes on: a Relay needs none, and a Site that fills the Relay's domain with cookies would
+# otherwise have iroh-relay refuse every other Host's Visitors (ADR 0021).
+request_header -Cookie
 @iroh path /relay /ping /generate_204 /healthz
 handle @iroh {
 	reverse_proxy 127.0.0.1:3340
@@ -9,5 +12,10 @@ handle {
 	# The Bundle's files change with every upgrade and the pages are small: make browsers recheck
 	# them each time (cheap 304s), so an upgrade reaches phones at once, not after a cache expiry.
 	header Cache-Control "no-cache"
+	# Every Key Address shares one site without the Public Suffix List: ask for a process of its
+	# own anyway (ADR 0021). No Cross-Origin-Embedder-Policy, which breaks Sites that load from
+	# elsewhere, and COOP's same-origin would break login popups.
+	header Origin-Agent-Cluster "?1"
+	header Cross-Origin-Opener-Policy "same-origin-allow-popups"
 	file_server
 }

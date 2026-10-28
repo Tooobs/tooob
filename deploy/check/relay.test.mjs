@@ -47,9 +47,9 @@ after(async () => {
 });
 
 /** GET `path` from the container, as a browser on `host` would ask for it. */
-function fetchVia(host, path) {
+function fetchVia(host, path, headers = {}) {
   return new Promise((resolve, reject) => {
-    get({ host: '127.0.0.1', port, path, headers: { host: `${host}:${port}` } }, (res) => {
+    get({ host: '127.0.0.1', port, path, headers: { host: `${host}:${port}`, ...headers } }, (res) => {
       let body = '';
       res.on('data', (d) => (body += d));
       res.on('end', () => resolve({ status: res.statusCode, body, headers: res.headers }));
@@ -73,6 +73,27 @@ test("the Relay's domain and every Key Address serve the Bundle, which browsers 
     assert.equal(res.body, manifest, host);
     assert.equal(res.headers['cache-control'], 'no-cache', host);
   }
+});
+
+test('every Bundle file asks browsers for a process of its own (ADR 0021)', async () => {
+  const bundle = JSON.parse(readFileSync(join(DEPLOY, '../bootstrap/www/__tooob/version.json'), 'utf8'));
+  for (const host of ['localhost', 'ybndrfdyb.localhost']) {
+    for (const path of ['/', '/__tooob/version.json', ...Object.keys(bundle.files).map((f) => '/' + f)]) {
+      const res = await fetchVia(host, path);
+      assert.equal(res.status, 200, host + path);
+      assert.equal(res.headers['origin-agent-cluster'], '?1', host + path);
+      assert.equal(res.headers['cross-origin-opener-policy'], 'same-origin-allow-popups', host + path);
+      assert.equal(res.headers['cross-origin-embedder-policy'], undefined, host + path);
+    }
+  }
+});
+
+test("a Site that fills the Relay's domain with cookies can't stop other Hosts' Visitors connecting (ADR 0021)", async () => {
+  // As many as Chrome keeps for one domain, each as big as it allows: every request to the Relay
+  // would carry all of them.
+  const cookie = Array.from({ length: 180 }, (_, i) => `c${i}=${'x'.repeat(4090)}`).join('; ');
+  assert.equal((await fetchVia('ybndrfdyb.localhost', '/healthz', { cookie })).status, 200);
+  assert.equal((await fetchVia('ybndrfdyb.localhost', '/__tooob/version.json', { cookie })).status, 200);
 });
 
 test("iroh's paths go to iroh-relay", async () => {

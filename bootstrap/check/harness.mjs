@@ -69,16 +69,21 @@ const IROH_PATHS = ['/relay', '/ping', '/generate_204', '/healthz'];
 /**
  * A Relay as a Relay Operator runs one (ADR 0020): one web server that hands iroh's paths to
  * iroh-relay at `relayUrl` and serves the Bootstrap (www/) for everything else, on its own domain
- * (`localhost`) and every Key Address under it. `url` is what Hosts name as their Relay.
+ * (`domain`) and every Key Address under it. `url` is what Hosts name as their Relay. Chrome
+ * won't set a cookie for all of `localhost`, so a test of cookies set for a whole Relay domain
+ * needs one a label longer, such as `relay.localhost`.
  * `silence()` makes every Relay connection open so far go quiet both ways while staying open, as a
  * phone's network does to the flows it had when it comes out of deep sleep; connections made
  * afterwards work.
  */
-export async function startRelayFront(relayUrl) {
+export async function startRelayFront(relayUrl, domain = 'localhost') {
   const relay = new URL(relayUrl);
   const www = process.env.TOOOB_WWW || join(ROOT, 'bootstrap/www');
   const open = new Set();
   const server = createServer((req, res) => {
+    // As the Relay image's front.caddy does (ADR 0021): no Cookie goes on, and the Bundle asks
+    // browsers for a process of its own.
+    delete req.headers.cookie;
     const path = new URL(req.url, 'http://x').pathname;
     if (IROH_PATHS.includes(path)) {
       const upstream = request({ host: relay.hostname, port: relay.port, path: req.url, method: req.method, headers: req.headers }, (r) => {
@@ -92,6 +97,8 @@ export async function startRelayFront(relayUrl) {
       const body = readFileSync(join(www, path === '/' ? 'index.html' : path));
       res.setHeader('content-type', TYPES[extname(path)] ?? 'text/html');
       res.setHeader('cache-control', 'no-store');
+      res.setHeader('origin-agent-cluster', '?1');
+      res.setHeader('cross-origin-opener-policy', 'same-origin-allow-popups');
       res.end(body);
     } catch {
       res.statusCode = 404;
@@ -105,7 +112,9 @@ export async function startRelayFront(relayUrl) {
     open.add(pair);
     sockets.push(client, upstream);
     const lines = [`${req.method} ${req.url} HTTP/1.1`];
-    for (let i = 0; i < req.rawHeaders.length; i += 2) lines.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`);
+    for (let i = 0; i < req.rawHeaders.length; i += 2) {
+      if (req.rawHeaders[i].toLowerCase() !== 'cookie') lines.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`);
+    }
     upstream.write(lines.join('\r\n') + '\r\n\r\n');
     upstream.write(head);
     client.on('data', (d) => pair.quiet || upstream.write(d));
@@ -116,7 +125,7 @@ export async function startRelayFront(relayUrl) {
   });
   const port = await listen(server);
   return {
-    url: `http://localhost:${port}/`,
+    url: `http://${domain}:${port}/`,
     port,
     silence: () => open.forEach((pair) => (pair.quiet = true)),
   };

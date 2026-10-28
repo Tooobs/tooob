@@ -334,11 +334,13 @@ pause
 
 # ── 7 ─────────────────────────────────────────────────────────────────────
 stage "Public Suffix List"
-say "Put $RELAY_DOMAIN on the Public Suffix List, so browsers treat every Key Address under it"
-say "as a site of its own: one Site can't set cookies for the others, or share a process with them."
-say "It's a pull request to the list's private section, and takes weeks; the Relay works meanwhile."
-open_url "https://github.com/publicsuffix/list/wiki/Guidelines"
-note "Their guidelines ask for a _psl TXT record on $RELAY_DOMAIN that links to your pull request."
+say "A Relay for your own Hosts doesn't need the Public Suffix List: skip this stage."
+say "If people who don't trust each other will run Hosts through it, put $RELAY_DOMAIN on the"
+say "list first. Password managers match saved logins by base domain, so without it one Host's page"
+say "can be offered the logins Visitors saved on another's. It's a pull request to the list's private"
+say "section, reviewed by volunteers: weeks, maybe a no, then months to reach browsers."
+note "Their guidelines (https://github.com/publicsuffix/list/wiki/Guidelines) ask for a _psl TXT"
+note "record on $RELAY_DOMAIN that links to your pull request."
 pause
 
 # ── 8 ─────────────────────────────────────────────────────────────────────

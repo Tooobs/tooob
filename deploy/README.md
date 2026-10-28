@@ -17,7 +17,9 @@ Both setups here run the same container (`relay/image/`): stock [iroh-relay](htt
 
 ## The Public Suffix List
 
-Put the Relay's domain on the [Public Suffix List](https://publicsuffix.org). Each Key Address is already an origin of its own, but on the list each one is also a *site* of its own: one Site can't set cookies that reach the others, and browsers keep each one in its own process. Getting on it means a pull request to the list's private section and a `_psl` TXT record on the domain ([guidelines](https://github.com/publicsuffix/list/wiki/Guidelines)), and it takes weeks. The Relay works in the meantime.
+A Relay for your own Hosts doesn't need to be on the [Public Suffix List](https://publicsuffix.org) ([ADR 0021](../docs/adr/0021-a-relay-is-safe-for-its-owner-without-the-public-suffix-list.md)). Each Key Address is an origin of its own, so its storage, service worker and Visitor Key are walled off from every other Host's. On the list, each would also be a *site* of its own. Without it, tooob closes what it can of the difference: a cookie a Site sets for the whole Relay domain is kept to that Site, or deleted when a shell next starts. The Relay passes no `Cookie` header on, so a Site can't fill the domain with cookies until other Hosts' Visitors can't connect. And the Relay asks browsers to give each Key Address a process of its own.
+
+**A Relay shared by people who don't trust each other must be on the list before they use it.** Password managers match saved logins by base domain, not origin. Without the list, one Host's page can be offered the logins Visitors saved on another Host's, and only the list stops that. Getting on it means a pull request to the list's private section and a `_psl` TXT record on the domain ([guidelines](https://github.com/publicsuffix/list/wiki/Guidelines)). Volunteers review it, which takes weeks and may end in a no, and browsers pick up the change months later.
 
 ## The Bootstrap a Relay serves
 
