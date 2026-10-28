@@ -43,6 +43,20 @@ tooob block photos <key prefix>
 
 `TARGET` is a folder or file (served read-only, as a Shared Folder) or `HOST:PORT` for a web app. A Host's settings are a file you edit by hand (`tooob show photos` says where). Owner commands work whether the Host is running or not. `tooob` with no arguments lists every command.
 
+An Invite Link, piece by piece ([ADR 0020](docs/adr/0020-a-relay-serves-its-bootstrap.md)):
+
+```
+https://kgjwugk89iaan7dtoyuju7pts5r7j3f1zxm3zp8k98nepg1hq46y.relay.example/#invite=00be5118…
+        └──────────────────── Host Key ────────────────────┘ └── Relay ──┘  └── Invite ──┘
+```
+
+- **The Host Key**: the Host's identity and its address, made with the Host (`tooob show` prints it). It's in z-base-32, 52 characters, so it fits in a hostname. It isn't secret: who gets in is decided on the Host.
+- **The Relay's domain**: the visitor's browser loads the Bootstrap from it, and reaches the Host through it.
+- **Together, the Key Address** (`<host key>.<relay domain>`): each Host is an origin of its own, so no Site's scripts can reach another's browser storage or Visitor Key. It lasts as long as the Host Key and the Relay: a new Relay, or a deleted Host, means new Invites for everyone.
+- **After `#`, the Invite**: browsers never send this part to a server, so the Relay never sees it. It works once, for one device, and the page drops it from the address bar once it's used.
+
+Links within a Site work as they would anywhere: a page links to `subfolder/index.html` and the Visitor goes there. The address bar stays on the Key Address, though, and opening a page's own address directly (`https://<host key>.<relay domain>/subfolder/`) isn't served yet: start from the Key Address.
+
 ## Develop
 
 - `./check.sh`: formatting, clippy, `cargo test`, the Bootstrap's build and the Bootstrap Bundle's manifest tests; `git config core.hooksPath .githooks` (once per clone) runs it before every push.
