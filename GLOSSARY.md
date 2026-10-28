@@ -75,7 +75,7 @@ The key a Visitor's browser generates and keeps; the Host recognizes the Visitor
 _Avoid_: session, token, cookie
 
 **Key Address**:
-The URL form of a Host Key: the Host Key as a subdomain of its Relay's domain (`<host key>.<relay domain>`). Each is an origin of its own in the browser, walled off from every other Host's. Free, unreadable, and as lasting as the Relay. A Host with no Relay, or with a Relay at an IP address, has none, so it can't make Invite Links.
+The URL form of a Host Key: the Host Key as a subdomain of its Relay's domain (`<host key>.<relay domain>`). Each is an origin of its own in the browser, walled off from every other Host's. Each of the Site's pages is at its own path on the Key Address, which opens that page directly. Free, unreadable, and as lasting as the Relay. A Host with no Relay, or with a Relay at an IP address, has none, so it can't make Invite Links.
 _Avoid_: subdomain, link
 
 **Friendly Name**:
