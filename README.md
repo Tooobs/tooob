@@ -6,7 +6,7 @@ A **Host** on your home box makes one **Site** reachable over [iroh](https://iro
 
 It's **private, not anonymous**: a Relay still sees which keys talk, when, how much and from where ([ADR 0007](docs/adr/0007-private-not-anonymous-no-public-ingress.md)).
 
-**Status:** early. v1 is for technical early adopters on Linux and macOS. Expect the commands to change.
+**Status:** early. v1 is for technical early adopters on Linux and macOS. Expect the commands to change. [What you can try](#what-you-can-try) says what works so far, and [the roadmap](docs/roadmap.md) what comes next.
 
 ## What you need
 
@@ -56,6 +56,65 @@ https://kgjwugk89iaan7dtoyuju7pts5r7j3f1zxm3zp8k98nepg1hq46y.relay.example/#invi
 - **After `#`, the Invite**: browsers never send this part to a server, so the Relay never sees it. It works once, for one device, and the page drops it from the address bar once it's used.
 
 Links within a Site work as they would anywhere: a page links to `subfolder/index.html` and the Visitor goes there. The address bar stays on the Key Address, though, and opening a page's own address directly (`https://<host key>.<relay domain>/subfolder/`) isn't served yet: start from the Key Address.
+
+## What you can try
+
+What a technical early adopter can try after each push, in the order it landed. Each entry is a ticket, the date its work was pushed, and the first Release that has it. A finished milestone's summary says what it adds up to.
+
+### [v1 · Technical early adopters](https://github.com/Tooobs/tooob/milestone/1) (in progress)
+
+Everything here is in the first Release, **0.1.0 (not out yet)**: until then, the test Releases on [Releases](https://github.com/Tooobs/tooob/releases) have it. Tickets finished before 2026-10-23 came over from an earlier tracker that day, so their own dates are lost.
+
+- **A Site on a phone, in an ordinary browser** ([#37](https://github.com/Tooobs/tooob/issues/37), [#40](https://github.com/Tooobs/tooob/issues/40), [#50](https://github.com/Tooobs/tooob/issues/50)) · before 2026-10-23 · 0.1.0 (not out yet)
+  - Run a Relay of your own ([`deploy/`](deploy/README.md)): tooob has no default one. Then `tooob add photos ~/Pictures --relay https://<your relay>/`, `tooob run photos`, and in another terminal `tooob invite photos phone`. Open the link on a phone: the Site loads, and the pill in the corner says how fast it connected and which path it came by.
+- **Straight to the Host when it can** ([#38](https://github.com/Tooobs/tooob/issues/38), [#39](https://github.com/Tooobs/tooob/issues/39)) · before 2026-10-23 · 0.1.0 (not out yet)
+  - With the Site open, the pill says `direct` when the browser reaches the Host over WebRTC, and whether that's on the home network or punched through NAT from elsewhere. Otherwise it says `relay`. Try it on Wi-Fi at home, then on cellular. The Direct Path stays up as a phone switches apps or locks its screen.
+- **A folder or a file as a Site** ([#44](https://github.com/Tooobs/tooob/issues/44)) · before 2026-10-23 · 0.1.0 (not out yet)
+  - `tooob share ~/Pictures --relay https://<your relay>/`, or `tooob add` with a folder or file. Visitors browse the folder and its subfolders, open photos in the browser, and download what it can't show under the file's own name. It's read-only.
+- **Staying logged in** ([#41](https://github.com/Tooobs/tooob/issues/41)) · before 2026-10-23 · 0.1.0 (not out yet)
+  - Share a web app with a login (`tooob add NAME HOST:PORT`), log in as a Visitor, then restart the Host: the Visitor is still logged in. Each Visitor's cookies for the Site are kept on the Host, never in their browser.
+- **The Visitor Key stays the browser's** ([#43](https://github.com/Tooobs/tooob/issues/43)) · before 2026-10-23 · 0.1.0 (not out yet)
+  - Nothing shows: the key that proves a Visitor's device is kept so that the Site's own scripts can't read it out.
+- **Knowing when the Host is away** ([#45](https://github.com/Tooobs/tooob/issues/45), [#46](https://github.com/Tooobs/tooob/issues/46)) · before 2026-10-23 · 0.1.0 (not out yet)
+  - Stop the Host (Ctrl-C) while a Visitor has the Site open. Their pill says `Reconnecting…` at once and counts its tries. Start the Host again and the Site comes back by itself; leave it stopped and the pill offers a reload instead.
+- **Hosts from the command line** ([#47](https://github.com/Tooobs/tooob/issues/47), [#48](https://github.com/Tooobs/tooob/issues/48), [#49](https://github.com/Tooobs/tooob/issues/49)) · before 2026-10-23 · 0.1.0 (not out yet)
+  - `tooob add` makes a Host once, `tooob run` serves it in the foreground until Ctrl-C, and `tooob ls`, `show` and `rm` list, describe and delete Hosts. Owner commands name the Host first (`tooob invite photos mom`), work whether it's running or not, and print nothing when they work. [#47](https://github.com/Tooobs/tooob/issues/47)'s background Hosts and `tooob list` were replaced by these ([ADR 0014](docs/adr/0014-hosts-run-in-the-foreground-the-os-keeps-them-running.md)).
+- **[#56](https://github.com/Tooobs/tooob/issues/56) `tooob --version`, and a Bootstrap Bundle says its Release and Protocol Version** · 2026-10-24 · 0.1.0 (not out yet)
+  - `tooob --version` prints the Release and the Protocol Version (`tooob 0.1.0-rc.6 (tooob/0)`), and a starting Host logs them. On any Key Address, `/__tooob/version.json` names the Bundle's Release, its Protocol Version and every file's hash.
+- **[#58](https://github.com/Tooobs/tooob/issues/58) Local checks run on every push** · 2026-10-24 · 0.1.0 (not out yet)
+  - For contributors: after `git config core.hooksPath .githooks` (once per clone), `git push` runs `./check.sh` first, and a failing check stops the push and says which.
+- **[#62](https://github.com/Tooobs/tooob/issues/62) The Host refuses a header line over its 64 KiB limit, however it arrives** · 2026-10-24 · 0.1.0 (not out yet)
+  - Nothing shows: one that arrived in a single read used to get through.
+- **[#65](https://github.com/Tooobs/tooob/issues/65) `tooob rm` works while other Owner commands run** · 2026-10-25 · 0.1.0 (not out yet)
+  - Nothing shows unless you script Owner commands: `rm` could fail on a stray lock file, or mistake another command for a running Host.
+- **[#66](https://github.com/Tooobs/tooob/issues/66) Key Addresses: each Host is its own origin** · 2026-10-26 · 0.1.0 (not out yet)
+  - `tooob invite` prints `https://<host key>.<relay domain>/#invite=…`: the Host's own address on its Relay's domain, so one Site's scripts can't reach another's browser storage or Visitor Key. A Host names only its Relay, which serves the Bootstrap on its domain and every Key Address under it (the Relay setups in [`deploy/`](deploy/README.md), [#67](https://github.com/Tooobs/tooob/issues/67)).
+- **[#78](https://github.com/Tooobs/tooob/issues/78) A Relay is safe for its Owner without the Public Suffix List** · 2026-10-28 · 0.1.0 (not out yet)
+  - A Relay of your own doesn't need the list, and [`deploy/README.md`](deploy/README.md) says when one shared with others does. `curl -sI https://<host key>.<your relay>/` shows `Origin-Agent-Cluster` and `Cross-Origin-Opener-Policy`. A cookie a Site sets for the whole Relay domain stays with that Site.
+
+## Still to come
+
+What each later milestone will add when it's done, in the planned order. Details and progress: [the roadmap](https://github.com/Tooobs/tooob/blob/main/docs/roadmap.md).
+
+### [Agents](https://github.com/Tooobs/tooob/blob/main/docs/roadmap.md#agents)
+
+AI agents run Hosts for their Owners and visit Sites in a browser like anyone else. An agent shares a status dashboard or a preview with people and other agents by invitation, and every device its Invites let in is approved by a person first ([ADR 0018](docs/adr/0018-agents-make-approve-first-invites-enforced-by-agent-accounts.md)). A local MCP server lets an agent read, block and revoke; anything that would let someone in waits for the Owner.
+
+### [Relay finder](https://github.com/Tooobs/tooob/blob/main/docs/roadmap.md#relay-finder)
+
+Owners find a Relay to use instead of running their own: a plain list anyone can host, or a trusted site with each Relay's stats and terms, and an audit that checks what each one serves against tooob's published Releases. Choosing stays the Owner's.
+
+### [Normal people](https://github.com/Tooobs/tooob/blob/main/docs/roadmap.md#normal-people)
+
+tooob for people who don't open a terminal: a signed `tooob` for every Mac and for Windows that upgrades itself, set-up that walks them through it, and Visitors who keep working when a Host and its Relay's Bootstrap are a version apart. Every v1 choice is already checked against it.
+
+### [v2](https://github.com/Tooobs/tooob/blob/main/docs/roadmap.md#v2)
+
+A native visitor app or browser extension, which reaches Hosts with iroh's own hole punching, friendly names in place of Host Keys, and linking a person's devices.
+
+### [Sync](https://github.com/Tooobs/tooob/blob/main/docs/roadmap.md#sync)
+
+A folder kept in step across the Owner's devices and the people they invite, like Dropbox: a change made on any of them reaches the others. Its scope is still to be settled.
 
 ## Develop
 
