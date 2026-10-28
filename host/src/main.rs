@@ -297,7 +297,7 @@ async fn ls(home: &Home, json: bool) -> Result<()> {
         rows.push(Row {
             name,
             state: if running { "running" } else { "stopped" },
-            enabled: false, // until #40
+            enabled: false, // until `tooob enable` (#27)
             visitors: visitors.map(|v| v.len()),
             serves: host.settings.serves,
         });
