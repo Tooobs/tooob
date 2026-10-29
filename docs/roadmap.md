@@ -1,6 +1,6 @@
 # Roadmap
 
-Every milestone's features and where each stands. The why and the scope are in [`DESIGN.md`](../DESIGN.md); what you can try so far is in [the README](../README.md#what-you-can-try). Work is tracked in [GitHub Issues](https://github.com/Tooobs/tooob/issues).
+Every milestone's features and where each stands. The why and the scope of v1 to v2 are in [`DESIGN.md`](../DESIGN.md) (Sync's are still to be settled); what you can try so far is in [the README](../README.md#what-you-can-try). Work is tracked in [GitHub Issues](https://github.com/Tooobs/tooob/issues).
 
 Status: ✅ done · 🟡 partly done · ⬜ not started · ➖ not applicable.
 
@@ -25,7 +25,7 @@ A home box serving a Site to invited Visitors in ordinary browsers, for technica
 - ✅ Visitors learn at once when the Host stops, and the pill reconnects or offers a reload ([#45](https://github.com/Tooobs/tooob/issues/45), [#46](https://github.com/Tooobs/tooob/issues/46))
 - ⬜ A page's own address opens that page, and the address bar follows the Site ([#77](https://github.com/Tooobs/tooob/issues/77))
 - ⬜ A Site's link to another Key Address opens that Site ([#80](https://github.com/Tooobs/tooob/issues/80))
-- 🟡 Several tabs reach their own Site: best effort with several open ([#11](https://github.com/Tooobs/tooob/issues/11))
+- 🟡 Several tabs each reach their own Site; with several open at once, a request can now and then reach another tab's ([#11](https://github.com/Tooobs/tooob/issues/11))
 - ⬜ Large uploads reach the Site ([#1](https://github.com/Tooobs/tooob/issues/1)), and a cancelled request stops the Host's request to it ([#2](https://github.com/Tooobs/tooob/issues/2))
 - ⬜ A cut-short Invite Link says so ([#32](https://github.com/Tooobs/tooob/issues/32)); a browser that can't open a tooob link is told why ([#14](https://github.com/Tooobs/tooob/issues/14)); a Bootstrap and a Host on different Protocol Versions say so ([#55](https://github.com/Tooobs/tooob/issues/55))
 
@@ -69,6 +69,7 @@ A home box serving a Site to invited Visitors in ordinary browsers, for technica
 ### Hardening and tests
 
 - ✅ The Host refuses a header line over 64 KiB however it arrives ([#62](https://github.com/Tooobs/tooob/issues/62)); `tooob rm` survives Owner commands racing it ([#65](https://github.com/Tooobs/tooob/issues/65))
+- ⬜ The browser suite runs on Playwright, in windows you can watch, and can't take over the machine ([#82](https://github.com/Tooobs/tooob/issues/82))
 - ⬜ The browser suite's flaky tests: the burst stall ([#19](https://github.com/Tooobs/tooob/issues/19)), the slow exit after the suspend test ([#20](https://github.com/Tooobs/tooob/issues/20)), the renegotiation timeout ([#30](https://github.com/Tooobs/tooob/issues/30))
 
 ## [Agents](https://github.com/Tooobs/tooob/milestone/5)
@@ -107,6 +108,7 @@ tooob for people who don't open a terminal.
 - ⬜ Idea: browsers reach a Host with no Relay at all ([#75](https://github.com/Tooobs/tooob/issues/75))
 - ⬜ Several Hosts serving one Site, so Visitors reach whichever is up ([#17](https://github.com/Tooobs/tooob/issues/17))
 - ⬜ Whether search engines and LLMs can index a Site, and how ([#16](https://github.com/Tooobs/tooob/issues/16))
+- ⬜ Idea: native phone apps, so a phone can be a Host and a Site goes phone to phone ([#81](https://github.com/Tooobs/tooob/issues/81))
 
 ## [Sync](https://github.com/Tooobs/tooob/milestone/4)
 

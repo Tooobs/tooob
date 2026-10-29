@@ -68,7 +68,7 @@ Everything here is in the first Release, **0.1.0 (not out yet)**: until then, th
 - **A Site on a phone, in an ordinary browser** ([#37](https://github.com/Tooobs/tooob/issues/37), [#40](https://github.com/Tooobs/tooob/issues/40), [#50](https://github.com/Tooobs/tooob/issues/50)) · before 2026-10-23 · 0.1.0 (not out yet)
   - Run a Relay of your own ([`deploy/`](deploy/README.md)): tooob has no default one. Then `tooob add photos ~/Pictures --relay https://<your relay>/`, `tooob run photos`, and in another terminal `tooob invite photos phone`. Open the link on a phone: the Site loads, and the pill in the corner says how fast it connected and which path it came by.
 - **Straight to the Host when it can** ([#38](https://github.com/Tooobs/tooob/issues/38), [#39](https://github.com/Tooobs/tooob/issues/39)) · before 2026-10-23 · 0.1.0 (not out yet)
-  - With the Site open, the pill says `direct` when the browser reaches the Host over WebRTC, and whether that's on the home network or punched through NAT from elsewhere. Otherwise it says `relay`. Try it on Wi-Fi at home, then on cellular. The Direct Path stays up as a phone switches apps or locks its screen.
+  - With the Site open, the pill says `direct` when the browser reaches the Host over WebRTC, and whether that's on the home network or punched through NAT from elsewhere. Otherwise it says `relay`. Try it on Wi-Fi at home, then on cellular. The Direct Path carries on as a phone switches apps or locks its screen for a while; after a long background it may come back on the Relay instead ([#15](https://github.com/Tooobs/tooob/issues/15)).
 - **A folder or a file as a Site** ([#44](https://github.com/Tooobs/tooob/issues/44)) · before 2026-10-23 · 0.1.0 (not out yet)
   - `tooob share ~/Pictures --relay https://<your relay>/`, or `tooob add` with a folder or file. Visitors browse the folder and its subfolders, open photos in the browser, and download what it can't show under the file's own name. It's read-only.
 - **Staying logged in** ([#41](https://github.com/Tooobs/tooob/issues/41)) · before 2026-10-23 · 0.1.0 (not out yet)
@@ -78,7 +78,7 @@ Everything here is in the first Release, **0.1.0 (not out yet)**: until then, th
 - **Knowing when the Host is away** ([#45](https://github.com/Tooobs/tooob/issues/45), [#46](https://github.com/Tooobs/tooob/issues/46)) · before 2026-10-23 · 0.1.0 (not out yet)
   - Stop the Host (Ctrl-C) while a Visitor has the Site open. Their pill says `Reconnecting…` at once and counts its tries. Start the Host again and the Site comes back by itself; leave it stopped and the pill offers a reload instead.
 - **Hosts from the command line** ([#47](https://github.com/Tooobs/tooob/issues/47), [#48](https://github.com/Tooobs/tooob/issues/48), [#49](https://github.com/Tooobs/tooob/issues/49)) · before 2026-10-23 · 0.1.0 (not out yet)
-  - `tooob add` makes a Host once, `tooob run` serves it in the foreground until Ctrl-C, and `tooob ls`, `show` and `rm` list, describe and delete Hosts. Owner commands name the Host first (`tooob invite photos mom`), work whether it's running or not, and print nothing when they work. [#47](https://github.com/Tooobs/tooob/issues/47)'s background Hosts and `tooob list` were replaced by these ([ADR 0014](docs/adr/0014-hosts-run-in-the-foreground-the-os-keeps-them-running.md)).
+  - `tooob add` makes a Host once, `tooob run` serves it in the foreground until Ctrl-C, and `tooob ls`, `show` and `rm` list, describe and delete Hosts. Owner commands name the Host first (`tooob invite photos mom`), work whether it's running or not, and a command that changes something prints nothing when it works. [#47](https://github.com/Tooobs/tooob/issues/47)'s background Hosts and `tooob list` were replaced by these ([ADR 0014](docs/adr/0014-hosts-run-in-the-foreground-the-os-keeps-them-running.md)).
 - **[#56](https://github.com/Tooobs/tooob/issues/56) `tooob --version`, and a Bootstrap Bundle says its Release and Protocol Version** · 2026-10-24 · 0.1.0 (not out yet)
   - `tooob --version` prints the Release and the Protocol Version (`tooob 0.1.0-rc.6 (tooob/0)`), and a starting Host logs them. On any Key Address, `/__tooob/version.json` names the Bundle's Release, its Protocol Version and every file's hash.
 - **[#58](https://github.com/Tooobs/tooob/issues/58) Local checks run on every push** · 2026-10-24 · 0.1.0 (not out yet)
@@ -106,11 +106,11 @@ Owners find a Relay to use instead of running their own: a plain list anyone can
 
 ### [Normal people](https://github.com/Tooobs/tooob/blob/main/docs/roadmap.md#normal-people)
 
-tooob for people who don't open a terminal: a signed `tooob` for every Mac and for Windows that upgrades itself, set-up that walks them through it, and Visitors who keep working when a Host and its Relay's Bootstrap are a version apart. Every v1 choice is already checked against it.
+tooob for people who don't open a terminal: a signed `tooob` for every Mac and for Windows that upgrades itself, set-up that walks them through it, and Visitors who keep working when a Host and its Relay's Bootstrap are a Protocol Version apart. Every v1 choice is already checked against it.
 
 ### [v2](https://github.com/Tooobs/tooob/blob/main/docs/roadmap.md#v2)
 
-A native visitor app or browser extension, which reaches Hosts with iroh's own hole punching, friendly names in place of Host Keys, and linking a person's devices.
+A native visitor app or browser extension, which reaches Hosts with iroh's own hole punching, friendly names in place of Host Keys, and linking a person's devices. Perhaps native phone apps too, so a phone can be a Host and a Site goes phone to phone.
 
 ### [Sync](https://github.com/Tooobs/tooob/blob/main/docs/roadmap.md#sync)
 
