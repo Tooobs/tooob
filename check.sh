@@ -2,7 +2,7 @@
 # The fast checks, run before every push (.githooks/pre-push) and by release.sh: formatting,
 # clippy, the Host's tests, the Bootstrap's build, its Bundle's manifest tests, release.sh's tests
 # and deploy/bundle.sh's. Stops at the first that fails and says which. The browser suite isn't
-# here: it opens windows, and runs at the end of each issue and before a Release.
+# here: it starts a browser and real Hosts, and runs at the end of each issue and before a Release.
 set -u
 cd "$(dirname "$0")" || exit 1
 

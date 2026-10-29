@@ -1,4 +1,4 @@
-// The browser suite: npx playwright test (after ../build.sh), in windows you can watch. Under the
+// The browser suite: npx playwright test (after ../build.sh); HEADED=1 to watch it. Under the
 // guards in guards.mjs, so a run can't take over the machine (#82).
 import { guarded } from './guards.mjs';
 

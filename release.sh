@@ -43,20 +43,32 @@ if [[ -n $PREVIOUS_RELEASE && $PROTOCOL != "$PREVIOUS_PROTOCOL" && $(major_minor
   refuse "the Protocol Version changes from $PREVIOUS_PROTOCOL to $PROTOCOL since $PREVIOUS_RELEASE, so this is a minor Release, $next, not a patch (ADR 0017)"
 fi
 
-# browser_suite NAME [VAR=VALUE...]: the browser suite, on Playwright in windows you can watch, with
-# VAR=VALUE in its environment. The tests that failed (or never ran, in a run that ran out of time)
-# rerun once, saying so; failing twice stops the Release. A run that failed outside its tests
-# (another run was going, or its setup or teardown failed) stops the Release: a rerun of its failed
-# tests would run none.
+# browser_suite NAME [VAR=VALUE...]: the browser suite, on Playwright, with VAR=VALUE in its
+# environment. The tests that failed (or never ran, in a run that ran out of time) rerun once,
+# saying so; failing twice stops the Release. A run refused because another run of the suite is
+# going stops the Release, saying so; so does one that failed outside its tests (its setup or
+# teardown), since a rerun of its failed tests would run none.
 browser_suite() {
   local name=$1 started
   shift
   echo "release.sh: $name"
   started=$(node -p 'Date.now()')
-  (cd bootstrap/check && env "$@" npx playwright test) && return
+  run_suite "$name" "$@" && return
   [[ $(failed_tests "$started") -gt 0 ]] || refuse "$name: it failed outside its tests (see above)"
   echo "release.sh: $name: rerunning the tests that failed, once"
-  (cd bootstrap/check && env "$@" npx playwright test --last-failed) || refuse "$name: a test failed twice"
+  run_suite "$name" "$@" --last-failed || refuse "$name: a test failed twice"
+}
+
+# run_suite NAME [VAR=VALUE...] [FLAG...]: one run of the browser suite; if another run of the suite
+# refused it, stop the Release, saying so.
+run_suite() {
+  local name=$1 log="$TMP/suite.log" vars=() status=0
+  shift
+  while [[ $# -gt 0 && $1 == *=* ]]; do vars+=("$1") && shift; done
+  (cd bootstrap/check && env ${vars[@]+"${vars[@]}"} npx playwright test "$@") 2>&1 | tee "$log" || status=$?
+  ! grep -q 'another run of the browser suite is going' "$log" ||
+    refuse "$name: another run of the browser suite is going: one run at a time"
+  return "$status"
 }
 
 # failed_tests SINCE: how many tests the browser suite's last run says failed or never ran, if that

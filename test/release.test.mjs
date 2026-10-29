@@ -273,10 +273,10 @@ function refusedOutsideTests(result, bare) {
   assert.equal(git(bare, 'tag', '-l'), '');
 }
 
-test('a browser suite refused before any test runs stops the Release, saying so', (t) => {
-  // As when another run of the suite is going: its config refuses to load. An earlier run's failures
-  // are still on file, and must not be rerun as if they were this run's.
-  const { work, bare } = aCloneFailingOutsideTests(t, "throw new Error('another run of the browser suite is going');\n");
+test("a browser suite that fails before any test runs stops the Release, saying so", (t) => {
+  // Its config fails to load. An earlier run's failures are still on file, and must not be rerun as
+  // if they were this run's.
+  const { work, bare } = aCloneFailingOutsideTests(t, "throw new Error('a config that fails to load');\n");
   mkdirSync(join(work, 'bootstrap/check/test-results'));
   writeFileSync(join(work, 'bootstrap/check/test-results/.last-run.json'), '{"status":"failed","failedTests":["an-old-one"]}');
   refusedOutsideTests(release(work, '0.2.0'), bare);
@@ -309,5 +309,34 @@ test("a Release is refused up front when Playwright can't say where its Chromium
   const result = release(work, '0.2.0');
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /needs Playwright's Chromium: .*npx playwright install chromium/);
+  assert.equal(git(bare, 'tag', '-l'), '');
+});
+
+test("a rerun refused because another run of the suite started meanwhile stops the Release, saying so", (t) => {
+  // The first run has a test fail; by the rerun, another run of the suite has the lock.
+  const runs = join(mkdtempSync(join(tmpdir(), 'tooob-runs-')), 'runs');
+  t.after(() => rmSync(dirname(runs), { recursive: true, force: true }));
+  const { work, bare } = aClone(t, {
+    browserTest: "test('fails', () => { throw new Error('a failure'); });",
+    browserConfig: `import { existsSync, writeFileSync } from 'node:fs';
+if (process.send === undefined) { // the runner, not its workers
+  if (existsSync(${JSON.stringify(runs)})) throw new Error('another run of the browser suite is going (process 1): one run at a time');
+  writeFileSync(${JSON.stringify(runs)}, '1');
+}
+export default { testDir: '.', testMatch: 'stub.spec.mjs', workers: 1 };
+`,
+  });
+  const result = release(work, '0.2.0');
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /the browser suite: another run of the browser suite is going/, result.stderr);
+  assert.doesNotMatch(result.stderr, /failed twice/);
+  assert.equal(git(bare, 'tag', '-l'), '');
+});
+
+test('a first run refused because another run of the suite is going stops the Release, saying so', (t) => {
+  const { work, bare } = aCloneFailingOutsideTests(t, "throw new Error('another run of the browser suite is going (process 1): one run at a time');\n");
+  const result = release(work, '0.2.0');
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /the browser suite: another run of the browser suite is going/, result.stderr);
   assert.equal(git(bare, 'tag', '-l'), '');
 });

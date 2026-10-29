@@ -1,13 +1,13 @@
 // The browser suite's guards (#82), through the runner itself: `npx playwright test` on the small
-// specs in guards/, which use the same guards as the suite. Headed: a few windows open and close.
+// specs in guards/, which use the same guards as the suite (headless, unless HEADED=1).
 // Run: node --test guards.test.mjs
 import assert from 'node:assert/strict';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, fork, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { connect, createServer } from 'node:net';
 import { test } from 'node:test';
-import { alive } from './processes.mjs';
+import { LOCK_PORT, alive } from './machine.mjs';
 
 const CHECK = new URL('.', import.meta.url).pathname;
 
@@ -16,10 +16,10 @@ const CHECK = new URL('.', import.meta.url).pathname;
  * its output, and how long it took. Meanwhile, `saw(re)` waits until its output matches, and
  * `group` is its process group.
  */
-function run(spec, { env = {} } = {}) {
+function run(spec, { env = {}, reporter = 'line' } = {}) {
   const { NODE_TEST_CONTEXT, CI, ...rest } = process.env;
   const started = Date.now();
-  const child = spawn('npx', ['playwright', 'test', '--config', 'guards/playwright.config.mjs', '--reporter=line', `/${spec}`], {
+  const child = spawn('npx', ['playwright', 'test', '--config', 'guards/playwright.config.mjs', `--reporter=${reporter}`, `/${spec}`], {
     cwd: CHECK,
     env: { ...rest, ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -88,7 +88,6 @@ test("the limits can't be stretched", async () => {
   assert.match(output, /limits: test 90000 ms, run 900000 ms/, output);
 });
 
-const LOCK_PORT = 27182;
 const RESULT = join(CHECK, 'guards/test-results/hang-hangs/result'); // what hang.spec.mjs leaves
 
 test('a second run started during a run refuses, says so, and leaves the first run\'s results be', async () => {
@@ -143,7 +142,7 @@ test("a run refuses when something else holds its lock's port, and says so", asy
   await squatting((socket) => socket.end(), async () => {
     const { status, output } = await run('limits.spec.mjs');
     assert.notEqual(status, 0, output);
-    assert.match(output, /port 27182.*is taken by something else/, output);
+    assert.match(output, new RegExp(`port ${LOCK_PORT}.*is taken by something else`), output);
   });
 });
 
@@ -151,8 +150,8 @@ test("a run refuses promptly when something on its lock's port never answers", a
   await squatting(() => {}, async () => {
     const { status, output, ms } = await run('limits.spec.mjs');
     assert.notEqual(status, 0, output);
-    assert.match(output, /port 27182.*is taken by something else/, output);
-    assert.ok(ms < 15000, `took ${ms} ms`);
+    assert.match(output, new RegExp(`port ${LOCK_PORT}.*is taken by something else`), output);
+    assert.ok(ms >= 2000 && ms < 5000, `took ${ms} ms: not the 2 s the probe waits`);
   });
 });
 
@@ -201,16 +200,57 @@ test('a run killed hard leaves Hosts and Relays behind, and the next run stops t
   }
 });
 
-test("a run killed hard mid-build leaves cargo building, and the next run stops it first", async () => {
-  const killed = run('building.spec.mjs', { env: { TOOOB_GUARDS_LIMITS_MS: '120000,120000' } });
-  const [cargo] = (await killed.saw(/cargo: \d+\./)).match(/cargo: (\d+)\./).slice(1);
+test('a Playwright child process (its UI, watch mode or test server) loads the config while a run holds the lock', async () => {
+  const going = run('hang.spec.mjs', { env: { TOOOB_GUARDS_LIMITS_MS: '15000,30000' } });
   try {
-    await killHard(killed, [cargo]);
-    assert.ok(alive(cargo), 'cargo was done before the run was killed: nothing to test');
-    const next = await run('no-leftovers.spec.mjs', { env: { LEFTOVERS: cargo } });
+    await going.saw(/hangs/);
+    // As Playwright's loader process does: a child with an IPC channel imports the config.
+    const config = new URL('guards/playwright.config.mjs', import.meta.url).href;
+    const child = fork('--input-type=module', [], { execArgv: ['-e', `await import(${JSON.stringify(config)}); process.send('loaded');`], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+    let said = '';
+    child.stderr.on('data', (d) => (said += d));
+    const loaded = await new Promise((resolve) => {
+      child.on('message', (m) => resolve(m === 'loaded'));
+      child.on('exit', () => resolve(false));
+    });
+    child.kill();
+    assert.ok(loaded, `the child couldn't load the config:\n${said}`);
+  } finally {
+    process.kill(-going.group, 'SIGINT'); // its group: npm, the runner and its worker, never the browser
+    await going;
+  }
+});
+
+test('a run holds its lock until its runner is done, after its teardown and its reporters', async () => {
+  const { status, output } = await run('limits.spec.mjs', { reporter: 'line,./guards/lock-reporter.mjs' });
+  assert.equal(status, 0, output);
+  assert.match(output, /the lock at the reporters' end: held/, output);
+});
+
+test('a process whose program has a space in its path is still stopped by the next run', async () => {
+  const killed = run('spaced.spec.mjs', { env: { TOOOB_GUARDS_LIMITS_MS: '60000,60000' } });
+  const [pid] = (await killed.saw(/started: \d+\./)).match(/started: (\d+)\./).slice(1);
+  try {
+    await killHard(killed, [pid]);
+    assert.ok(alive(pid), 'it ended with the run: nothing to test');
+    const next = await run('no-leftovers.spec.mjs', { env: { LEFTOVERS: pid } });
     assert.equal(next.status, 0, next.output);
   } finally {
-    if (alive(cargo)) process.kill(Number(cargo), 'SIGKILL');
+    if (alive(pid)) process.kill(Number(pid), 'SIGKILL');
+  }
+});
+
+test("a run killed hard mid-build leaves cargo building, and the next run stops it first", async () => {
+  const killed = run('building.spec.mjs', { env: { TOOOB_GUARDS_LIMITS_MS: '120000,120000' } });
+  const said = (await killed.saw(/compiling: [\d,]+\./)).match(/cargo: (\d+)\. compiling: ([\d,]+)\./);
+  const building = [said[1], ...said[2].split(',')]; // cargo, and the compilers it started
+  try {
+    await killHard(killed, building);
+    assert.deepEqual(building.filter(alive), building, 'the build was done before the run was killed: nothing to test');
+    const next = await run('no-leftovers.spec.mjs', { env: { LEFTOVERS: building.join(',') } });
+    assert.equal(next.status, 0, next.output);
+  } finally {
+    for (const pid of building.filter(alive)) process.kill(Number(pid), 'SIGKILL');
   }
 });
 

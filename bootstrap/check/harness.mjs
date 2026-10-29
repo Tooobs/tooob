@@ -22,9 +22,11 @@ const sockets = []; // proxied connections: a server can't close while they're o
 /** Build the tooob the Hosts run (unless TOOOB_BIN names one), without blocking: time limits stay live. */
 export async function buildHost() {
   if (process.env.TOOOB_BIN) return;
-  const cargo = spawn('cargo', ['build', '-q', '--manifest-path', join(ROOT, 'host/Cargo.toml')], { stdio: ['ignore', 'inherit', 'inherit'] });
+  // In a process group of its own, so a run that ends mid-build stops it and the compilers it started,
+  // or they keep the build folder locked.
+  const cargo = spawn('cargo', ['build', '-q', '--manifest-path', join(ROOT, 'host/Cargo.toml')], { stdio: ['ignore', 'inherit', 'inherit'], detached: true });
   children.push(cargo);
-  recordProcess(cargo); // a run that ends mid-build stops it, or it keeps the build folder locked
+  recordProcess(cargo, { group: true });
   const status = await new Promise((resolve, reject) => cargo.on('error', reject).on('exit', resolve));
   if (status !== 0) throw new Error(`cargo build failed (${status})`);
 }

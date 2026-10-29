@@ -1,4 +1,7 @@
-// Processes, as the guards (and their tests) see them.
+// What the browser suite's runs on this machine share, as the guards (and their tests) see it.
+
+/** The port a run's runner listens on while it goes: the one-run-at-a-time lock (guards.mjs). */
+export const LOCK_PORT = 27182; // below every common ephemeral range, so no outgoing connection takes it
 
 /** Whether process `pid` is still running. */
 export function alive(pid) {
