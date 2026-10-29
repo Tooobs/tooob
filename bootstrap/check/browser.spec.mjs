@@ -50,7 +50,7 @@ test('an Invite Link loads the Site and drops the token from the address bar', a
 });
 
 /** `link`'s Key Address at `path` instead: the address of one of the Site's pages. */
-const pageAddress = (link, path) => new URL(path, link).href;
+const pageAddress = (link, path) => new URL(link).origin + path;
 
 /** Wait until the address bar is `path` on `page`'s Key Address. */
 const addressIs = (page, path) => page.waitForFunction((path) => location.pathname + location.search + location.hash === path, path, { timeout: 10000 });
@@ -90,6 +90,22 @@ test("an Invite Link at a page's own address opens that page, and drops the toke
   assert.equal(page.url(), pageAddress(link, '/subfolder/page.html'));
 });
 
+test("a path that starts with // or /\\ is the Site's, and never frames another website", async ({ browser, relay }) => {
+  // //example.invalid/x, as a URL of its own, would be another website's.
+  const { invite } = await hostWithSite(relay);
+  const link = new URL(invite('mom'));
+  const page = await h.newVisitor(browser);
+  await page.goto(pageAddress(link, '//example.invalid/x' + link.hash)); // a first visit, before the service worker
+  assert.match(await h.siteText(page), /site \/\/example\.invalid\/x label=mom/);
+  assert.equal(new URL((await siteFrame(page)).url()).origin, link.origin);
+  assert.equal(page.url(), pageAddress(link, '//example.invalid/x'));
+
+  const again = await page.context().newPage(); // its service worker installed
+  await again.goto(pageAddress(link, '/\\example.invalid/y')); // the browser reads /\ as //
+  assert.match(await h.siteText(again), /site \/\/example\.invalid\/y label=mom/);
+  assert.equal(new URL((await siteFrame(again)).url()).origin, link.origin);
+});
+
 test("once the service worker is installed, the Relay never sees a page's path", async ({ browser, relay, irohRelay }) => {
   // It serves the shell for every page load itself, fetched from the Relay as / (ADR 0023).
   const { invite } = await hostWithSite(relay);
@@ -104,7 +120,7 @@ test("once the service worker is installed, the Relay never sees a page's path",
   const again = await first.context().newPage();
   await again.goto(pageAddress(link, '/subfolder/page.html'));
   assert.match(await h.siteText(again), /site \/subfolder\/page\.html label=mom/);
-  const pages = front.asked.slice(asked).filter((path) => !path.startsWith('/__tooob/') && path !== '/tooob-sw.js');
+  const pages = front.asked.slice(asked).filter((path) => !h.isBundlePath(path));
   assert.deepEqual(pages, ['/']);
 });
 
@@ -126,6 +142,31 @@ test("the Site's pushState and #anchors put the address bar on the page shown, a
 
   await page.reload();
   assert.match(await h.siteText(page), /site \/albums\/2026\?sort=old label=mom/);
+  assert.equal(await (await siteFrame(page)).evaluate(() => location.hash), '#beach');
+  assert.equal(new URL(page.url()).hash, '#beach');
+});
+
+test("after the Site's pushState, a reload stays on that page", async ({ browser, relay }) => {
+  const { invite } = await hostWithSite(relay);
+  const page = await h.newVisitor(browser);
+  await page.goto(invite('mom'));
+  await h.siteText(page);
+  await (await siteFrame(page)).evaluate(() => history.pushState({}, '', '/albums/2026?sort=new'));
+  await addressIs(page, '/albums/2026?sort=new');
+  await page.reload();
+  assert.match(await h.siteText(page), /site \/albums\/2026\?sort=new label=mom/);
+  assert.equal(new URL(page.url()).pathname + new URL(page.url()).search, '/albums/2026?sort=new');
+});
+
+test("after the Site's #anchor, a reload stays on it", async ({ browser, relay }) => {
+  const { invite } = await hostWithSite(relay);
+  const page = await h.newVisitor(browser);
+  await page.goto(invite('mom'));
+  await h.siteText(page);
+  await (await siteFrame(page)).evaluate(() => (location.hash = 'beach'));
+  await addressIs(page, '/#beach');
+  await page.reload();
+  assert.match(await h.siteText(page), /site \/ label=mom/);
   assert.equal(await (await siteFrame(page)).evaluate(() => location.hash), '#beach');
   assert.equal(new URL(page.url()).hash, '#beach');
 });
@@ -347,6 +388,16 @@ test('a cookie for the whole Relay domain is gone once a shell has started, and 
   assert.deepEqual(left, [`stray=mine for ${new URL(link).hostname}`]);
 });
 
+/** GET `path` from a Relay front, as a browser would, with `headers`: its response, with `body`. */
+const askFront = (front, path, headers = {}) => new Promise((resolve, reject) => {
+  get({ host: '127.0.0.1', port: front.port, path, headers }, (res) => {
+    let body = '';
+    res.setEncoding('utf8').on('data', (d) => (body += d)).on('end', () => resolve(Object.assign(res, { body })));
+  })
+    .on('upgrade', (res, socket) => (socket.destroy(), resolve(res)))
+    .on('error', reject);
+});
+
 test('the Relay serves the Bundle for process isolation, and passes no Cookie on', async () => {
   // In step with the Relay image's front.caddy (ADR 0021): what iroh-relay is sent here stands in
   // for what reaches it there.
@@ -356,10 +407,7 @@ test('the Relay serves the Bundle for process isolation, and passes no Cookie on
   await new Promise((r) => upstream.listen(0, '127.0.0.1', r));
   try {
     const front = await h.startRelayFront(`http://127.0.0.1:${upstream.address().port}/`);
-    const ask = (path, headers) => new Promise((resolve) => {
-      get({ host: '127.0.0.1', port: front.port, path, headers: { cookie: 'bomb=x', ...headers } }, (res) => res.resume().on('end', () => resolve(res)))
-        .on('upgrade', (res, socket) => (socket.destroy(), resolve(res)));
-    });
+    const ask = (path, headers) => askFront(front, path, { cookie: 'bomb=x', ...headers });
     const bundle = JSON.parse(readFileSync(new URL('../www/__tooob/version.json', import.meta.url), 'utf8'));
     for (const path of ['/', '/__tooob/version.json', ...Object.keys(bundle.files).map((f) => '/' + f)]) {
       const res = await ask(path);
@@ -381,21 +429,15 @@ test("the Relay serves the shell at any page's path, and a missing Bundle file i
   // In step with the Relay image's front.caddy (ADR 0023): for a first visit, before the service
   // worker is installed.
   const front = await h.startRelayFront(irohRelay);
-  const ask = (path) => new Promise((resolve, reject) => {
-    get({ host: '127.0.0.1', port: front.port, path }, (res) => {
-      let body = '';
-      res.on('data', (d) => (body += d)).on('end', () => resolve({ status: res.statusCode, body, type: res.headers['content-type'] }));
-    }).on('error', reject);
-  });
   const shell = readFileSync(new URL('../www/index.html', import.meta.url), 'utf8');
-  for (const path of ['/subfolder/', '/subfolder/page.html', '/photo.png?size=big', '/a/b/c', '/tooob-sw.js/x']) {
-    const res = await ask(path);
-    assert.equal(res.status, 200, path);
+  for (const path of ['/subfolder/', '/subfolder/page.html', '/photo.png?size=big', '/a/b/c', '/tooob-sw.js/x', '//example.invalid/x']) {
+    const res = await askFront(front, path);
+    assert.equal(res.statusCode, 200, path);
     assert.equal(res.body, shell, path);
-    assert.match(res.type, /^text\/html/, path);
+    assert.match(res.headers['content-type'], /^text\/html/, path);
   }
   for (const path of ['/__tooob/missing.js', '/__tooob/', '/__tooob/pkg/missing.wasm']) {
-    assert.equal((await ask(path)).status, 404, path);
+    assert.equal((await askFront(front, path)).statusCode, 404, path);
   }
 });
 
@@ -818,6 +860,88 @@ test("the tab's title follows a title the Site changes without moving", async ({
   await titleIs(page, 'Our holiday, seen');
   await frame.evaluate(() => document.querySelector('title').remove());
   await titleIs(page, 'tooob');
+});
+
+test("a Site page rewritten with document.open() has its new title followed, as it changes too", async ({ browser, relay }) => {
+  const { page, frame } = await visitSharedFolder(aWebsite(), { browser, relay });
+  await frame.waitForSelector('#next', { timeout: 20000 });
+  await titleIs(page, 'Our holiday');
+  await frame.evaluate(() => {
+    document.open();
+    document.write('<!doctype html><title>Rewritten</title><p id="site">rewritten</p>');
+    document.close();
+  });
+  await titleIs(page, 'Rewritten');
+  await (await siteFrame(page)).evaluate(() => (document.title = '(1) Rewritten'));
+  await titleIs(page, '(1) Rewritten');
+});
+
+test("the tab's title is written only when the Site's changes, not on every change to its <head>", async ({ browser, relay }) => {
+  // CSS-in-JS adds and changes <style>s in <head> all the time.
+  const { page, frame } = await visitSharedFolder(aWebsite(), { browser, relay });
+  await frame.waitForSelector('#next', { timeout: 20000 });
+  await titleIs(page, 'Our holiday');
+  await page.evaluate(() => {
+    const real = Object.getOwnPropertyDescriptor(Document.prototype, 'title');
+    window.titleWrites = 0;
+    Object.defineProperty(document, 'title', { get: () => real.get.call(document), set: (v) => (window.titleWrites++, real.set.call(document, v)) });
+  });
+  await frame.evaluate(async () => {
+    for (let i = 0; i < 20; i++) {
+      document.head.append(Object.assign(document.createElement('style'), { textContent: `.c${i} { color: red }` }));
+      await new Promise((r) => setTimeout(r));
+    }
+  });
+  await frame.evaluate(() => (document.title = 'Our holiday, seen'));
+  await titleIs(page, 'Our holiday, seen');
+  assert.equal(await page.evaluate(() => window.titleWrites), 1);
+});
+
+test("a Site whose history instrumentation wraps pushState before it loads still moves the address bar", async ({ browser, relay }) => {
+  // As Sentry, GTM and single-spa do: history.pushState, wrapped early, as the page's own.
+  const site = aWebsite();
+  writeFileSync(join(site, 'app.html'), '<!doctype html><head><title>App</title><script>const real = history.pushState; history.pushState = function (...args) { return real.apply(this, args); };</script></head><p id="site">app</p>');
+  const { page, frame } = await visitSharedFolder(site, { browser, relay });
+  await frame.waitForSelector('#next', { timeout: 20000 });
+  await Promise.all([frame.waitForNavigation(), frame.evaluate(() => (location.href = '/app.html'))]);
+  await addressIs(page, '/app.html');
+  await (await siteFrame(page)).evaluate(() => history.pushState({}, '', '/app/inbox'));
+  await addressIs(page, '/app/inbox');
+});
+
+test("a Site page that never finishes loading is followed all the same", async ({ browser, relay }) => {
+  const never = createServer(() => {}); // an image that never comes
+  await new Promise((r) => never.listen(0, '127.0.0.1', r));
+  try {
+    const site = aWebsite();
+    writeFileSync(join(site, 'live.html'), `<!doctype html><title>Live</title><p id="site">live</p><img src="http://127.0.0.1:${never.address().port}/photo.png">`);
+    const { page, frame } = await visitSharedFolder(site, { browser, relay });
+    await frame.waitForSelector('#next', { timeout: 20000 });
+    await frame.evaluate(() => (location.href = '/live.html'));
+    await page.waitForFunction(() => document.querySelector('iframe').contentDocument?.getElementById('site')?.textContent === 'live', null, { timeout: 20000 });
+    await addressIs(page, '/live.html');
+    await titleIs(page, 'Live');
+    await (await siteFrame(page)).evaluate(() => history.pushState({}, '', '/live.html#now'));
+    await addressIs(page, '/live.html#now');
+  } finally {
+    never.closeAllConnections();
+    never.close();
+  }
+});
+
+test("a blob: page in the Site's frame isn't one of its pages: the address and the title stay on the last", async ({ browser, relay }) => {
+  const { page, frame } = await visitSharedFolder(aWebsite(), { browser, relay });
+  await frame.waitForSelector('#next', { timeout: 20000 });
+  await titleIs(page, 'Our holiday');
+  await frame.evaluate(() => (location.href = URL.createObjectURL(new Blob(['<title>A blob</title><p>made here</p>'], { type: 'text/html' }))));
+  // Once the blob page has loaded, and the shell has heard so.
+  await page.waitForFunction(() => {
+    const site = document.querySelector('iframe').contentWindow;
+    return site.location.protocol === 'blob:' && site.document.readyState === 'complete';
+  });
+  await page.evaluate(() => new Promise((r) => setTimeout(r, 200)));
+  assert.equal(new URL(page.url()).pathname, '/');
+  assert.equal(await page.title(), 'Our holiday');
 });
 
 test('a Visitor browses a Shared Folder into a subfolder and opens a photo', async ({ browser, relay }) => {

@@ -23,7 +23,7 @@ A home box serving a Site to invited Visitors in ordinary browsers, for technica
 - ✅ Visitors stay logged in across a Host restart ([#41](https://github.com/Tooobs/tooob/issues/41))
 - ✅ The Visitor Key can't be read by the Site's own scripts ([#43](https://github.com/Tooobs/tooob/issues/43))
 - ✅ Visitors learn at once when the Host stops, and the pill reconnects or offers a reload ([#45](https://github.com/Tooobs/tooob/issues/45), [#46](https://github.com/Tooobs/tooob/issues/46))
-- ✅ A page's own address opens that page, and the address bar follows the Site ([#77](https://github.com/Tooobs/tooob/issues/77))
+- 🟡 A page's own address opens that page, and the address bar follows the Site ([#77](https://github.com/Tooobs/tooob/issues/77)): built; live check on the Relay after the next deploy
 - ⬜ A Site's link to another Key Address opens that Site ([#80](https://github.com/Tooobs/tooob/issues/80))
 - 🟡 Several tabs each reach their own Site; with several open at once, a request can now and then reach another tab's ([#11](https://github.com/Tooobs/tooob/issues/11))
 - ⬜ Large uploads reach the Site ([#1](https://github.com/Tooobs/tooob/issues/1)), and a cancelled request stops the Host's request to it ([#2](https://github.com/Tooobs/tooob/issues/2))

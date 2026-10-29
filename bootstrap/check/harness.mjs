@@ -72,6 +72,9 @@ export async function startRelay() {
   return url;
 }
 
+/** Whether `path` is the Bundle's alone, never a page of a Site's (ADR 0023): its own, or missing. */
+export const isBundlePath = (path) => path.startsWith('/__tooob/') || path === '/tooob-sw.js';
+
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'application/wasm', '.json': 'application/json' };
 const IROH_PATHS = ['/relay', '/ping', '/generate_204', '/healthz'];
 
@@ -94,7 +97,7 @@ export async function startRelayFront(relayUrl, domain = 'localhost') {
     // As the Relay image's front.caddy does (ADR 0021): no Cookie goes on, and the Bundle asks
     // browsers for a process of its own.
     delete req.headers.cookie;
-    const path = new URL(req.url, 'http://x').pathname;
+    const path = new URL('http://x' + req.url).pathname; // req.url can start with //
     if (IROH_PATHS.includes(path)) {
       const upstream = request({ host: relay.hostname, port: relay.port, path: req.url, method: req.method, headers: req.headers }, (r) => {
         res.writeHead(r.statusCode, r.headers);
@@ -106,9 +109,8 @@ export async function startRelayFront(relayUrl, domain = 'localhost') {
     asked.push(path);
     // Any other path is a page of the Site's, opened before the service worker is installed: the
     // shell, which opens it (ADR 0023). A missing Bundle file is still missing.
-    const bundleFile = path.startsWith('/__tooob/') || path === '/tooob-sw.js';
     const file = path.endsWith('/') ? join(path, 'index.html') : path;
-    const page = bundleFile ? file : existsSync(join(www, file)) && statSync(join(www, file)).isFile() ? file : '/index.html';
+    const page = isBundlePath(path) ? file : existsSync(join(www, file)) && statSync(join(www, file)).isFile() ? file : '/index.html';
     try {
       const body = readFileSync(join(www, page));
       res.setHeader('content-type', TYPES[extname(page)] ?? 'text/html');

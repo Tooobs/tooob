@@ -82,7 +82,8 @@ const [hostKey, ...domain] = location.hostname.split('.');
 const relay = `${location.protocol}//${domain.join('.')}${location.port ? ':' + location.port : ''}/`;
 const invite = new URLSearchParams(location.hash.slice(1)).get('invite');
 // A page's address on this Key Address (ADR 0023): its path, query and hash, minus a hash that holds
-// an Invite. The shell opens the Site at its own, and its own follows the Site's.
+// an Invite. The shell opens the Site at its own, and its own follows the Site's. Always used after
+// location.origin: a path can start with //, which on its own would be another website's address.
 const pageOf = (at) => at.pathname + at.search + (new URLSearchParams(at.hash.slice(1)).has('invite') ? '' : at.hash);
 const sitePage = pageOf(location);
 if (!domain.length || !/^[ybndrfg8ejkmcpqxot1uwisza345h769]{52}$/.test(hostKey)) {
@@ -274,7 +275,7 @@ try {
     if (!reply.redeemed && reply.error !== 'already_admitted') {
       refusal = REFUSED[reply.error] ?? "This invite can't be used right now. Try again later.";
     }
-    history.replaceState(null, '', location.pathname + location.search);
+    history.replaceState(null, '', location.origin + location.pathname + location.search); // a path can start with //
   }
 } catch (e) {
   show(UNREACHABLE);
@@ -690,50 +691,72 @@ frameEl.onload = () => {
   followSite(frameEl.contentWindow);
 };
 loadingSite();
-frameEl.src = sitePage;
+frameEl.src = location.origin + sitePage;
 
 // The address bar follows the page the Site shows, so a reload, a bookmark or a shared link lands
-// there (ADR 0023): on each load in the iframe, and as the Site moves within a page (pushState,
+// there (ADR 0023): as each page starts, and as the Site moves within a page (pushState,
 // replaceState, its own #anchors, Back and Forward). Replaced, never pushed: the iframe's navigations
 // are already in the tab's history. The tab's title follows the Site's in the same steps, and as the
 // Site changes it in place, and is "tooob" while the page has none.
+// Set up first thing in each Site page, from the script the service worker puts first in its <head>
+// (ws-shim.js): before the Site's own scripts, so history instrumentation that wraps pushState early
+// (Sentry, GTM) wraps this one, and a page whose load never ends is followed too. Again at its load,
+// for pages with no such script (a photo) and pages a document.open() replaced.
 // ponytail: a Site's own nested iframes and its pages on other origins aren't followed.
-function followSite(win) {
+window.__tooob.pageStarted = (win) => win === frameEl.contentWindow && followSite(win);
+const followed = new WeakSet(); // the Site's documents, <head>s and History prototypes already set up
+
+/** `win`'s page's address, if it's a page of the Site's: on this Key Address, and not a blob:. */
+function sitePageOf(win) {
   try {
-    win.document;
+    const at = new URL(win.location.href);
+    return at.origin === location.origin && at.protocol === location.protocol ? at : null;
   } catch {
-    return; // a page on another origin
+    return null; // gone, or another website's
   }
-  const showTitle = () => (document.title = win.document.title || 'tooob');
+}
+
+function followSite(win) {
+  if (!sitePageOf(win)) return;
+  const doc = win.document;
+  const showTitle = () => {
+    const title = doc.title || 'tooob';
+    if (document.title !== title) document.title = title;
+  };
   const follow = () => {
-    let at;
-    try {
-      at = new URL(win.location.href);
-    } catch {
-      return; // gone, or another origin's
-    }
-    if (at.origin !== location.origin) return;
+    const at = sitePageOf(win);
+    if (!at) return;
     const page = pageOf(at);
     try {
-      if (page !== pageOf(location)) history.replaceState(history.state, '', page);
+      if (page !== pageOf(location)) history.replaceState(history.state, '', location.origin + page);
     } catch {
       // Refused (Safari, past 100 history calls in 30 s): the address catches up at the next move.
     }
     showTitle();
   };
-  for (const name of ['pushState', 'replaceState']) {
-    const real = win.History.prototype[name];
-    win.History.prototype[name] = function (...args) {
-      const result = real.apply(this, args);
-      follow();
-      return result;
-    };
+  if (!followed.has(doc)) {
+    followed.add(doc);
+    const History = win.History.prototype;
+    if (!followed.has(History)) {
+      followed.add(History);
+      for (const name of ['pushState', 'replaceState']) {
+        const real = History[name];
+        History[name] = function (...args) {
+          const result = real.apply(this, args);
+          follow();
+          return result;
+        };
+      }
+    }
+    win.addEventListener('hashchange', follow);
+    win.addEventListener('popstate', follow);
   }
-  win.addEventListener('hashchange', follow);
-  win.addEventListener('popstate', follow);
   // A title changed in place (an unread count): the page's <title> set, added, replaced or removed,
   // or its text changed. ponytail: a <title> outside <head> is read only at the next move.
-  if (win.document.head) new win.MutationObserver(showTitle).observe(win.document.head, { childList: true, subtree: true, characterData: true });
+  if (doc.head && !followed.has(doc.head)) {
+    followed.add(doc.head);
+    new win.MutationObserver(showTitle).observe(doc.head, { childList: true, subtree: true, characterData: true });
+  }
   follow();
 }
 document.body.append(frameEl);

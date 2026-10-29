@@ -1,5 +1,13 @@
-// Injected into the site iframe. A cookie the Site sets for a whole domain would reach every other
-// Host's pages on the Relay, so drop its Domain= and keep it with this Key Address (ADR 0021).
+// Injected first into each of the Site's pages in the shell's iframe.
+
+// Tell the shell this page has started, before the Site's own scripts run: it sets up the address
+// bar and the tab's title following this page (ADR 0023).
+try {
+  if (parent !== window) parent.__tooob?.pageStarted?.(window);
+} catch {} // a parent that isn't the shell: another origin's
+
+// A cookie the Site sets for a whole domain would reach every other Host's pages on the Relay, so
+// drop its Domain= and keep it with this Key Address (ADR 0021).
 (() => {
   const cookie = Object.getOwnPropertyDescriptor(Document.prototype, 'cookie');
   Object.defineProperty(Document.prototype, 'cookie', {

@@ -94,7 +94,7 @@ Everything here is in the first Release, **0.1.0 (not out yet)**: until then, th
 - **[#82](https://github.com/Tooobs/tooob/issues/82) The browser suite runs on Playwright, and can't take over the machine** · 2026-10-29 · 0.1.0 (not out yet)
   - For contributors: `npx playwright install chromium` once in `bootstrap/check`, then `npx playwright test` there runs the browser suite in headless Chromium (`HEADED=1` opens windows you can watch). A second run started meanwhile refuses, a test that hangs fails at 90 s, and a run killed halfway leaves no Host or Relay running: the next run stops them first.
 - **[#77](https://github.com/Tooobs/tooob/issues/77) A page's own address opens that page, and the address bar follows the Site** · 2026-10-29 · 0.1.0 (not out yet)
-  - Open a Site and click into a subfolder: the address bar shows that page's path, and the tab shows its title, as the page changes it too (an unread count). Reload, or copy the address to another device that's a Visitor: it opens on the same page. An Invite Link works at a page's address too (`https://<host key>.<your relay>/subfolder/#invite=…`).
+  - Open a Site and click into a subfolder: the address bar shows that page's path, and the tab shows its title, as the page changes it too (an unread count). Reload, or copy the address to another device that's a Visitor: it opens on the same page. An Invite Link works at a page's address too (`https://<host key>.<your relay>/subfolder/#invite=…`). A Relay serves this from its next deploy: until then, a page's own address opens only on a device that has been to the Site before.
 
 ## Still to come
 
