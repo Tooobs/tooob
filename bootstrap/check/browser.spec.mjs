@@ -106,6 +106,19 @@ test("a path that starts with // or /\\ is the Site's, and never frames another 
   assert.equal(new URL((await siteFrame(again)).url()).origin, link.origin);
 });
 
+test("the Site moving to a path that starts with // puts the address bar there, on the Key Address", async ({ browser, relay }) => {
+  const { invite } = await hostWithSite(relay);
+  const link = new URL(invite('mom'));
+  const page = await h.newVisitor(browser);
+  await page.goto(link.href);
+  await h.siteText(page);
+  await (await siteFrame(page)).evaluate(() => history.pushState({}, '', location.origin + '//example.invalid/z'));
+  await addressIs(page, '//example.invalid/z');
+  assert.equal(new URL(page.url()).origin, link.origin);
+  await page.reload();
+  assert.match(await h.siteText(page), /site \/\/example\.invalid\/z label=mom/);
+});
+
 test("once the service worker is installed, the Relay never sees a page's path", async ({ browser, relay, irohRelay }) => {
   // It serves the shell for every page load itself, fetched from the Relay as / (ADR 0023).
   const { invite } = await hostWithSite(relay);
@@ -862,7 +875,7 @@ test("the tab's title follows a title the Site changes without moving", async ({
   await titleIs(page, 'tooob');
 });
 
-test("a Site page rewritten with document.open() has its new title followed, as it changes too", async ({ browser, relay }) => {
+test("a Site page rewritten with document.open() is still followed: its title, its #anchors and Back", async ({ browser, relay }) => {
   const { page, frame } = await visitSharedFolder(aWebsite(), { browser, relay });
   await frame.waitForSelector('#next', { timeout: 20000 });
   await titleIs(page, 'Our holiday');
@@ -872,8 +885,14 @@ test("a Site page rewritten with document.open() has its new title followed, as 
     document.close();
   });
   await titleIs(page, 'Rewritten');
-  await (await siteFrame(page)).evaluate(() => (document.title = '(1) Rewritten'));
+  const rewritten = await siteFrame(page);
+  await rewritten.evaluate(() => (document.title = '(1) Rewritten'));
   await titleIs(page, '(1) Rewritten');
+  // document.open() erased every listener on the page and its window.
+  await rewritten.evaluate(() => (location.hash = 'beach'));
+  await addressIs(page, '/#beach');
+  await rewritten.evaluate(() => history.back());
+  await addressIs(page, '/');
 });
 
 test("the tab's title is written only when the Site's changes, not on every change to its <head>", async ({ browser, relay }) => {
@@ -909,7 +928,7 @@ test("a Site whose history instrumentation wraps pushState before it loads still
   await addressIs(page, '/app/inbox');
 });
 
-test("a Site page that never finishes loading is followed all the same", async ({ browser, relay }) => {
+test("a Site page that never finishes loading is followed all the same, and announces the page after it", async ({ browser, relay }) => {
   const never = createServer(() => {}); // an image that never comes
   await new Promise((r) => never.listen(0, '127.0.0.1', r));
   try {
@@ -923,6 +942,17 @@ test("a Site page that never finishes loading is followed all the same", async (
     await titleIs(page, 'Live');
     await (await siteFrame(page)).evaluate(() => history.pushState({}, '', '/live.html#now'));
     await addressIs(page, '/live.html#now');
+
+    // Leaving it, the shell tells the service worker the next page is this tab's (#11).
+    await page.evaluate(() => {
+      const sw = navigator.serviceWorker.controller;
+      const real = sw.postMessage.bind(sw);
+      window.announced = 0;
+      sw.postMessage = (message, ...rest) => (message === 'loading-site' && window.announced++, real(message, ...rest));
+    });
+    await (await siteFrame(page)).evaluate(() => (location.href = '/trip/day-one.html'));
+    await addressIs(page, '/trip/day-one.html');
+    assert.equal(await page.evaluate(() => window.announced), 1);
   } finally {
     never.closeAllConnections();
     never.close();
@@ -938,6 +968,23 @@ test("a blob: page in the Site's frame isn't one of its pages: the address and t
   await page.waitForFunction(() => {
     const site = document.querySelector('iframe').contentWindow;
     return site.location.protocol === 'blob:' && site.document.readyState === 'complete';
+  });
+  await page.evaluate(() => new Promise((r) => setTimeout(r, 200)));
+  assert.equal(new URL(page.url()).pathname, '/');
+  assert.equal(await page.title(), 'Our holiday');
+});
+
+test("a Bundle file isn't a page of the Site's: the address and the title stay on the last", async ({ browser, relay }) => {
+  // ADR 0023: /__tooob/… and /tooob-sw.js are the Bundle's, and a reload there would show the file.
+  const { page, frame } = await visitSharedFolder(aWebsite(), { browser, relay });
+  await frame.waitForSelector('#next', { timeout: 20000 });
+  await titleIs(page, 'Our holiday');
+  await frame.evaluate(() => history.pushState({}, '', '/tooob-sw.js'));
+  await frame.evaluate(() => (location.href = '/__tooob/version.json'));
+  // Once the file has loaded, and the shell has heard so.
+  await page.waitForFunction(() => {
+    const site = document.querySelector('iframe').contentWindow;
+    return site.location.pathname === '/__tooob/version.json' && site.document.readyState === 'complete';
   });
   await page.evaluate(() => new Promise((r) => setTimeout(r, 200)));
   assert.equal(new URL(page.url()).pathname, '/');
