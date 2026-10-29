@@ -43,24 +43,16 @@ if [[ -n $PREVIOUS_RELEASE && $PROTOCOL != "$PREVIOUS_PROTOCOL" && $(major_minor
   refuse "the Protocol Version changes from $PREVIOUS_PROTOCOL to $PROTOCOL since $PREVIOUS_RELEASE, so this is a minor Release, $next, not a patch (ADR 0017)"
 fi
 
-# browser_suite NAME [VAR=VALUE...]: the browser suite with VAR=VALUE in its environment. A failed
-# test reruns once, saying so; failing twice stops the Release.
+# browser_suite NAME [VAR=VALUE...]: the browser suite, on Playwright in windows you can watch, with
+# VAR=VALUE in its environment. The tests that failed (or never ran, in a run that ran out of time)
+# rerun once, saying so; failing twice stops the Release.
 browser_suite() {
   local name=$1
   shift
-  local state="$TMP/rerun-$RANDOM.json"
   echo "release.sh: $name"
-  run_suite "$state" "$@" && return
+  (cd bootstrap/check && env "$@" npx playwright test) && return
   echo "release.sh: $name: rerunning the tests that failed, once"
-  run_suite "$state" "$@" || refuse "$name: a test failed twice"
-}
-
-# run_suite STATE [VAR=VALUE...]: one run of the browser suite; STATE remembers what failed, so a
-# second run reruns only that.
-run_suite() {
-  local state=$1
-  shift
-  (cd bootstrap/check && env "$@" node --test --test-rerun-failures="$state")
+  (cd bootstrap/check && env "$@" npx playwright test --last-failed) || refuse "$name: a test failed twice"
 }
 
 # published_release: the newest Release on main that's published on GitHub (a tag whose release
@@ -122,8 +114,8 @@ stamp_changelog() {
 
 git rev-parse -q --verify "refs/tags/v$RELEASE" >/dev/null && refuse "v$RELEASE is already tagged"
 command -v iroh-relay >/dev/null || refuse "needs iroh-relay: cargo install iroh-relay --features server --version 1.3.0"
-node --help | grep -q -- --test-rerun-failures ||
-  refuse "needs a Node whose test runner has --test-rerun-failures (Node 24 or later)"
+[[ -x bootstrap/check/node_modules/.bin/playwright ]] ||
+  refuse "needs Playwright: cd bootstrap/check && npm ci && npx playwright install chromium"
 
 echo "release.sh: ./check.sh"
 ./check.sh || refuse "./check.sh failed"

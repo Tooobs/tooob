@@ -2,3 +2,4 @@ target/
 www/__tooob/pkg/
 check/node_modules/
 www/__tooob/version.json
+check/**/test-results/

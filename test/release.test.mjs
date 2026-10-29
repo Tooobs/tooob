@@ -1,10 +1,11 @@
 // ./release.sh, run for real in a throwaway clone that pushes to a throwaway bare repo, never to
 // origin (#59). In the clone, check.sh, bootstrap/build.sh and the browser suite are stubs, so a
-// test chooses what passes and fails without building or starting anything.
+// test chooses what passes and fails without building or starting anything. The browser suite's
+// stub runs on Playwright, from this repo's bootstrap/check/node_modules, with no browser.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,8 +31,11 @@ function aClone(t, { changelog = UNRELEASED, browserTest = "test('stub', () => {
   copyFileSync(join(REPO, 'release.sh'), join(work, 'release.sh'));
   writeFileSync(join(work, 'check.sh'), '#!/bin/sh\necho "check.sh: stub"\n', { mode: 0o755 });
   const check = join(work, 'bootstrap/check');
-  for (const f of readdirSync(check).filter((f) => f.endsWith('.test.mjs'))) rmSync(join(check, f));
-  writeFileSync(join(check, 'stub.test.mjs'), `import { test } from 'node:test';\n${browserTest}\n`);
+  for (const f of readdirSync(check).filter((f) => f.endsWith('.spec.mjs'))) rmSync(join(check, f));
+  writeFileSync(join(check, 'stub.spec.mjs'), `import { test } from '@playwright/test';\n${browserTest}\n`);
+  // Not the suite's guarded config: its one-run-at-a-time lock would refuse these while a real run goes.
+  writeFileSync(join(check, 'playwright.config.mjs'), "export default { testDir: '.', testMatch: '*.spec.mjs', workers: 1 };\n");
+  symlinkSync(join(REPO, 'bootstrap/check/node_modules'), join(check, 'node_modules'));
   writeFileSync(join(work, 'CHANGELOG.md'), changelog);
   git(work, 'add', '-A');
   git(work, 'commit', '-q', '-m', 'test setup');
@@ -142,30 +146,41 @@ test("a Release keeps the earlier Releases' sections below its own", (t) => {
   assert.match(changelog, /- Something new\.\n\n## 0\.1\.0 — 2026-01-01\n\n- Old\.\n$/);
 });
 
-/** The source of a browser test that fails its first `times` runs, then passes: it counts runs in a
- *  file outside the clone. */
+/** A browser suite whose test 'flaky' fails its first `times` runs, then passes, beside one that always
+ *  passes: its `source`, and how many times the steady one ran. Runs are counted in files outside
+ *  the clone. */
 function aFlakyBrowserTest(t, times) {
-  const count = join(mkdtempSync(join(tmpdir(), 'tooob-flaky-')), 'runs');
-  t.after(() => rmSync(dirname(count), { recursive: true, force: true }));
-  return `import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+  const dir = mkdtempSync(join(tmpdir(), 'tooob-flaky-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const [flaky, steady] = [join(dir, 'flaky'), join(dir, 'steady')];
+  const source = `import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+const ran = (file) => {
+  const runs = existsSync(file) ? Number(readFileSync(file, 'utf8')) : 0;
+  writeFileSync(file, String(runs + 1));
+  return runs;
+};
 test('flaky', () => {
-  const runs = existsSync(${JSON.stringify(count)}) ? Number(readFileSync(${JSON.stringify(count)}, 'utf8')) : 0;
-  writeFileSync(${JSON.stringify(count)}, String(runs + 1));
+  const runs = ran(${JSON.stringify(flaky)});
   if (runs < ${times}) throw new Error('failed, run ' + (runs + 1));
 });
-test('steady', () => {});`;
+test('steady', () => {
+  ran(${JSON.stringify(steady)});
+});`;
+  return { source, steadyRuns: () => (existsSync(steady) ? Number(readFileSync(steady, 'utf8')) : 0) };
 }
 
-test('a browser test that fails once is rerun, and the Release goes ahead', (t) => {
-  const { work, bare } = aClone(t, { browserTest: aFlakyBrowserTest(t, 1) });
+test('a browser test that fails once is rerun, alone, and the Release goes ahead', (t) => {
+  const suite = aFlakyBrowserTest(t, 1);
+  const { work, bare } = aClone(t, { browserTest: suite.source });
   const result = release(work, '0.2.0');
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /rerunning the tests that failed, once/);
+  assert.equal(suite.steadyRuns(), 1, 'the rerun ran a test that passed');
   assert.equal(git(bare, 'tag', '-l'), 'v0.2.0');
 });
 
 test('a browser test that fails twice stops the Release', (t) => {
-  const { work, bare } = aClone(t, { browserTest: aFlakyBrowserTest(t, 2) });
+  const { work, bare } = aClone(t, { browserTest: aFlakyBrowserTest(t, 2).source });
   const result = release(work, '0.2.0');
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /failed twice/);

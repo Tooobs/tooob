@@ -1,9 +1,8 @@
 #!/bin/sh
 # The fast checks, run before every push (.githooks/pre-push) and by release.sh: formatting,
 # clippy, the Host's tests, the Bootstrap's build, its Bundle's manifest tests, release.sh's tests
-# and deploy/bundle.sh's. Stops at the first that fails and says which. The browser suite and the
-# Relay image's test (deploy/check/relay.test.mjs) aren't here: they run at the end of each issue
-# and before a Release.
+# and deploy/bundle.sh's. Stops at the first that fails and says which. The browser suite isn't
+# here: it opens windows, and runs at the end of each issue and before a Release.
 set -u
 cd "$(dirname "$0")" || exit 1
 

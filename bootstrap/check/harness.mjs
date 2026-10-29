@@ -1,14 +1,15 @@
 // The real pieces on this machine, on free ports: a Relay (stock iroh-relay behind a front that also
 // serves the Bootstrap, www/), a stand-in Site, and Hosts (`tooob add` + `tooob run`) from host/.
-// Headless Chrome then opens real Invite Links, on Key Addresses: `<host key>.localhost`, which
-// Chrome treats as a secure context and resolves to this machine.
+// Playwright's Chromium then opens real Invite Links, on Key Addresses: `<host key>.localhost`, which
+// Chromium treats as a secure context and resolves to this machine. The Hosts and Relays started
+// here go in the run's process record (guards.mjs), so none outlives a run.
 import { execFileSync, spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer, request } from 'node:http';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { extname, join } from 'node:path';
-import puppeteer from 'puppeteer-core';
+import { recordProcess } from './guards.mjs';
 
 const ROOT = new URL('../..', import.meta.url).pathname;
 // TOOOB_BIN and TOOOB_WWW swap in another Release's tooob or Bootstrap Bundle: release.sh's
@@ -50,6 +51,7 @@ function start(cmd, args, env = process.env) {
   child.stdout.on('data', (d) => (out += d));
   child.stderr.on('data', (d) => (out += d));
   children.push(child);
+  recordProcess(child);
   return { child, output: () => out };
 }
 
@@ -202,39 +204,25 @@ export function tooob(args) {
   return execFileSync(TOOOB, args, { encoding: 'utf8', env: ENV }).trim();
 }
 
-export async function launchBrowser() {
-  return puppeteer.launch({ executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
-}
-
 /** A fresh browser profile: its own storage, so its own Visitor Key. */
 export async function newVisitor(browser) {
-  const context = await browser.createBrowserContext();
+  const context = await browser.newContext();
   return context.newPage();
 }
 
 /**
- * Downloads in `page`'s browser profile, as the browser saves them. `next()` waits for the next one
- * to finish: the name the browser saved it under, and its bytes.
+ * Downloads in `page`, from now on. `next()` waits for the next one to finish: the name the browser
+ * saved it under, and its bytes.
  */
-export async function watchDownloads(page) {
-  const dir = mkdtempSync(join(tmpdir(), 'downloads-'));
-  const cdp = await page.browser().target().createCDPSession();
-  await cdp.send('Browser.setDownloadBehavior', {
-    behavior: 'allowAndName', downloadPath: dir, browserContextId: page.browserContext().id, eventsEnabled: true,
-  });
-  const names = new Map();
-  cdp.on('Browser.downloadWillBegin', (e) => names.set(e.guid, e.suggestedFilename));
+export function watchDownloads(page) {
+  const started = [];
+  page.on('download', (download) => started.push(download));
+  const nextStarted = (ms) => (started.length ? Promise.resolve(started.shift()) : page.waitForEvent('download', { timeout: ms }).then(() => started.shift()));
   return {
-    next: (ms = 20000) => new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('no download finished')), ms);
-      const done = (e) => {
-        if (e.state !== 'completed') return;
-        cdp.off('Browser.downloadProgress', done);
-        clearTimeout(timer);
-        resolve({ name: names.get(e.guid), bytes: readFileSync(join(dir, e.guid)) });
-      };
-      cdp.on('Browser.downloadProgress', done);
-    }),
+    next: async (ms = 20000) => {
+      const download = await nextStarted(ms);
+      return { name: download.suggestedFilename(), bytes: readFileSync(await download.path()) };
+    },
   };
 }
 
@@ -245,7 +233,7 @@ export async function statusText(page) {
 
 /** Wait until the status line matches `re`. */
 export async function pillSays(page, re, ms) {
-  await page.waitForFunction((src) => new RegExp(src).test(document.getElementById('status').textContent), { timeout: ms }, re.source);
+  await page.waitForFunction((src) => new RegExp(src).test(document.getElementById('status').textContent), re.source, { timeout: ms });
 }
 
 /** Wait until the Site has loaded in the shell's iframe; return its text. */
@@ -290,19 +278,24 @@ export async function whatTheSiteCanReach(page) {
 }
 
 /**
- * The device sleeps, as a phone does with its screen off: every process of the browser stops, so
- * nothing it holds answers, then carries on as if nothing happened. Stops every page in `browser`.
+ * The phone sleeps, as with its screen off: the page stops (Chrome's debugger pauses its scripts and
+ * its Site's), the network drops its Relay connection's flows (`front`, the page's own Relay front,
+ * goes quiet), and nothing the page holds answers. After `seconds` it carries on and hears it's in
+ * view again. Only the page sleeps: nothing signals any browser process. (Chrome's own freeze,
+ * Page.setWebLifecycleState, never freezes a page Playwright drives: Playwright keeps every page
+ * visible, and Chrome freezes only hidden ones.)
  */
-export async function sleepBrowser(browser, seconds) {
-  const tree = (pid) => {
-    const children = execFileSync('pgrep', ['-P', String(pid)], { encoding: 'utf8' }).split(/\s+/).filter(Boolean);
-    return [pid, ...children.flatMap((c) => { try { return tree(c); } catch { return [c]; } })]; // pgrep fails when there are none
-  };
-  let pids;
-  try { pids = tree(browser.process().pid); } catch { pids = [browser.process().pid]; }
-  pids.forEach((p) => process.kill(Number(p), 'SIGSTOP'));
-  await new Promise((r) => setTimeout(r, seconds * 1000));
-  pids.reverse().forEach((p) => process.kill(Number(p), 'SIGCONT'));
+export async function sleepPage(page, front, seconds) {
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Debugger.enable');
+  await cdp.send('Debugger.pause');
+  front.silence();
+  try {
+    await new Promise((r) => setTimeout(r, seconds * 1000));
+  } finally {
+    await cdp.detach(); // and the page carries on
+  }
+  await wake(page);
 }
 
 /** Fetch `path` from inside the Site's iframe, as a link on the Site would: "<status> <bytes>". */
@@ -319,7 +312,7 @@ export async function siteFetch(page, path) {
  * gathers no ICE candidates.
  */
 export async function breakDirectPath(page, attempts = Infinity) {
-  await page.evaluateOnNewDocument((attempts) => {
+  await page.addInitScript((attempts) => {
     const Real = RTCPeerConnection;
     let made = 0;
     window.RTCPeerConnection = function (config) {
@@ -330,7 +323,7 @@ export async function breakDirectPath(page, attempts = Infinity) {
 
 /** Keep hold of the page's peer connections, so failDirectPath can reach them. */
 export async function watchDirectPath(page) {
-  await page.evaluateOnNewDocument(() => {
+  await page.addInitScript(() => {
     const Real = RTCPeerConnection;
     window.__peers = [];
     window.RTCPeerConnection = function (config) {
@@ -364,7 +357,7 @@ export async function failDirectPath(page) {
  * applies the answer.
  */
 export async function forgeDirectFingerprint(page) {
-  await page.evaluateOnNewDocument(() => {
+  await page.addInitScript(() => {
     const real = RTCPeerConnection.prototype.setRemoteDescription;
     RTCPeerConnection.prototype.setRemoteDescription = function (desc) {
       const sdp = desc.sdp.replace(/(a=fingerprint:sha-256 )([0-9A-F]{2})/gi, (_, k, b) => k + (b === '00' ? '01' : '00'));
@@ -378,7 +371,7 @@ export async function forgeDirectFingerprint(page) {
  * of every candidate pair is a STUN-discovered public address (a documentation one).
  */
 export async function forgeNatPunched(page) {
-  await page.evaluateOnNewDocument(() => {
+  await page.addInitScript(() => {
     const real = RTCPeerConnection.prototype.getStats;
     RTCPeerConnection.prototype.getStats = async function (...args) {
       const report = await real.apply(this, args);

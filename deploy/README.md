@@ -29,4 +29,4 @@ Afterwards, `served.sh` checks that the Relay's domain and a Key Address under i
 
 ## Checks
 
-`cd check && node --test bundle.test.mjs` tests `bundle.sh`. `node --test relay.test.mjs` builds the Relay image and runs it in Docker, and a real Host and headless Chrome open an Invite Link through it. That one needs `bootstrap/build.sh` and `npm install` in `bootstrap/check` first, and leaves out the certificates, which only a real domain can get.
+`cd check && node --test bundle.test.mjs` tests `bundle.sh`. The Relay image itself is checked live, on a real domain with its certificates: deploy it, run `served.sh`, and open an Invite Link through it.

@@ -1,28 +1,27 @@
-// The browser side of an Invite Link, end to end. Run: node --test (after ../build.sh).
+// The browser side of an Invite Link, end to end. Run: npx playwright test (after ../build.sh).
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer, get } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { after, before, test } from 'node:test';
+import { test as guarded } from './guards.mjs';
 import * as h from './harness.mjs';
 
 // iroh-relay itself, and the Relay Hosts name: a front that hands iroh's paths to it and serves the
-// Bootstrap for everything else, as a Relay Operator runs one (ADR 0020).
-let irohRelay, relay, browser;
-
-before(async () => {
-  h.buildHost();
-  [irohRelay, browser] = await Promise.all([h.startRelay(), h.launchBrowser()]);
-  relay = (await h.startRelayFront(irohRelay)).url;
+// Bootstrap for everything else, as a Relay Operator runs one (ADR 0020). One of each per worker.
+const test = guarded.extend({
+  irohRelay: [
+    async ({}, use) => {
+      h.buildHost();
+      await use(await h.startRelay());
+      h.stopAll();
+    },
+    { scope: 'worker' },
+  ],
+  relay: [async ({ irohRelay }, use) => use((await h.startRelayFront(irohRelay)).url), { scope: 'worker' }],
 });
 
-after(async () => {
-  await browser?.close();
-  h.stopAll();
-});
-
-async function hostWithSite() {
+async function hostWithSite(relay) {
   const site = await h.startSite();
   let host = await h.startHost(site, relay);
   const { name } = host;
@@ -35,16 +34,16 @@ async function hostWithSite() {
   return { site, name, invite, start, restart, stop: () => host.stop(), pause: () => host.pause(), resume: () => host.resume() };
 }
 
-test('an Invite Link loads the Site and drops the token from the address bar', async () => {
-  const { invite } = await hostWithSite();
+test('an Invite Link loads the Site and drops the token from the address bar', async ({ browser, relay }) => {
+  const { invite } = await hostWithSite(relay);
   const page = await h.newVisitor(browser);
   await page.goto(invite('mom'));
   assert.match(await h.siteText(page), /site \/ label=mom/);
   assert.ok(!page.url().includes('invite='), `token still in ${page.url()}`);
 });
 
-test('reopening a used Invite Link in another browser says so and never reaches the Site', async () => {
-  const { site, invite } = await hostWithSite();
+test('reopening a used Invite Link in another browser says so and never reaches the Site', async ({ browser, relay }) => {
+  const { site, invite } = await hostWithSite(relay);
   const link = invite('mom');
   const first = await h.newVisitor(browser);
   await first.goto(link);
@@ -53,23 +52,23 @@ test('reopening a used Invite Link in another browser says so and never reaches 
 
   const second = await h.newVisitor(browser);
   await second.goto(link);
-  await second.waitForFunction(() => /already been used/.test(document.getElementById('status').textContent), { timeout: 20000 });
+  await second.waitForFunction(() => /already been used/.test(document.getElementById('status').textContent), null, { timeout: 20000 });
   assert.equal(site.requests, requestsBefore, 'the second browser reached the Site');
 });
 
-test('an approve-first Invite waits, then opens by itself once the owner approves', async () => {
-  const { name, invite } = await hostWithSite();
+test('an approve-first Invite waits, then opens by itself once the owner approves', async ({ browser, relay }) => {
+  const { name, invite } = await hostWithSite(relay);
   const page = await h.newVisitor(browser);
   await page.goto(invite('mom', '--approve'));
-  await page.waitForFunction(() => /Waiting for approval/.test(document.getElementById('status').textContent), { timeout: 20000 });
+  await page.waitForFunction(() => /Waiting for approval/.test(document.getElementById('status').textContent), null, { timeout: 20000 });
 
   const key = h.tooob(['visitors', name]).split(/\s+/)[0];
   h.tooob(['approve', name, key]);
   assert.match(await h.siteText(page), /label=mom/, 'the page opened by itself');
 });
 
-test('after redeeming, a reload still gets in (the device is remembered)', async () => {
-  const { invite } = await hostWithSite();
+test('after redeeming, a reload still gets in (the device is remembered)', async ({ browser, relay }) => {
+  const { invite } = await hostWithSite(relay);
   const page = await h.newVisitor(browser);
   await page.goto(invite('mom'));
   await h.siteText(page);
@@ -77,8 +76,8 @@ test('after redeeming, a reload still gets in (the device is remembered)', async
   assert.match(await h.siteText(page), /label=mom/);
 });
 
-test('a browser with a Visitor Key from before the key store keeps its identity', async () => {
-  const { name, invite } = await hostWithSite();
+test('a browser with a Visitor Key from before the key store keeps its identity', async ({ browser, relay }) => {
+  const { name, invite } = await hostWithSite(relay);
   const link = invite('mom');
   const page = await h.newVisitor(browser);
   await page.goto(new URL('/__tooob/version.json', link).href); // its origin, without starting the shell
@@ -95,8 +94,8 @@ test('a browser with a Visitor Key from before the key store keeps its identity'
   assert.deepEqual(found.exported, [], 'the Site exported the moved Visitor Key');
 });
 
-test("the Site's own scripts can't read the Visitor Key", async () => {
-  const { invite } = await hostWithSite();
+test("the Site's own scripts can't read the Visitor Key", async ({ browser, relay }) => {
+  const { invite } = await hostWithSite(relay);
   const page = await h.newVisitor(browser);
   await page.goto(invite('mom'));
   await h.siteText(page);
@@ -106,17 +105,17 @@ test("the Site's own scripts can't read the Visitor Key", async () => {
   assert.deepEqual(found.exported, [], 'the Site exported the Visitor Key');
 });
 
-test("a link without an Invite tells a stranger they're not invited", async () => {
-  const { site, invite } = await hostWithSite();
+test("a link without an Invite tells a stranger they're not invited", async ({ browser, relay }) => {
+  const { site, invite } = await hostWithSite(relay);
   const plain = invite('mom').replace(/#invite=.*/, ''); // the Host's Key Address, minus the Invite
   const page = await h.newVisitor(browser);
   await page.goto(plain);
-  await page.waitForFunction(() => /not invited/.test(document.getElementById('status').textContent), { timeout: 20000 });
+  await page.waitForFunction(() => /not invited/.test(document.getElementById('status').textContent), null, { timeout: 20000 });
   assert.equal(site.requests, 0);
 });
 
-test('re-tapping your own Invite Link later still opens the Site', async () => {
-  const { invite } = await hostWithSite();
+test('re-tapping your own Invite Link later still opens the Site', async ({ browser, relay }) => {
+  const { invite } = await hostWithSite(relay);
   const link = invite('mom');
   const page = await h.newVisitor(browser);
   await page.goto(link);
@@ -126,8 +125,8 @@ test('re-tapping your own Invite Link later still opens the Site', async () => {
   assert.match(await h.siteText(page), /label=mom/);
 });
 
-test('the Invite token never ends up in browser storage', async () => {
-  const { invite } = await hostWithSite();
+test('the Invite token never ends up in browser storage', async ({ browser, relay }) => {
+  const { invite } = await hostWithSite(relay);
   const page = await h.newVisitor(browser);
   await page.goto(invite('mom'));
   await h.siteText(page);
@@ -136,8 +135,8 @@ test('the Invite token never ends up in browser storage', async () => {
   assert.ok(caches.every((name) => !name.includes('invite')), `cache names: ${caches}`);
 });
 
-test("the injected WebSocket shim keeps the Site's page in standards mode", async () => {
-  const { invite } = await hostWithSite(); // the stand-in Site serves <!doctype html> with no <head>
+test("the injected WebSocket shim keeps the Site's page in standards mode", async ({ browser, relay }) => {
+  const { invite } = await hostWithSite(relay); // the stand-in Site serves <!doctype html> with no <head>
   const page = await h.newVisitor(browser);
   await page.goto(invite('mom'));
   await h.siteText(page);
@@ -146,11 +145,11 @@ test("the injected WebSocket shim keeps the Site's page in standards mode", asyn
   assert.equal(await frame.evaluate(() => typeof window.WebSocket.prototype.send), 'function');
 });
 
-test('a page waiting for approval survives the Host restarting', async () => {
-  const { name, invite, restart } = await hostWithSite();
+test('a page waiting for approval survives the Host restarting', async ({ browser, relay }) => {
+  const { name, invite, restart } = await hostWithSite(relay);
   const page = await h.newVisitor(browser);
   await page.goto(invite('mom', '--approve'));
-  await page.waitForFunction(() => /Waiting for approval/.test(document.getElementById('status').textContent), { timeout: 20000 });
+  await page.waitForFunction(() => /Waiting for approval/.test(document.getElementById('status').textContent), null, { timeout: 20000 });
 
   await restart(); // the page's connection drops while it's waiting
   const key = h.tooob(['visitors', name]).split(/\s+/)[0];
@@ -158,8 +157,8 @@ test('a page waiting for approval survives the Host restarting', async () => {
   assert.match(await h.siteText(page, 40000), /label=mom/, 'the page reconnected and opened by itself');
 });
 
-test('an Invite Link is its Host\'s Key Address, on its Relay\'s domain', async () => {
-  const { name, invite } = await hostWithSite();
+test('an Invite Link is its Host\'s Key Address, on its Relay\'s domain', async ({ relay }) => {
+  const { name, invite } = await hostWithSite(relay);
   const key = h.tooob(['show', name]).match(/Host Key\s+(\S+)/)[1];
   const link = new URL(invite('mom'));
   assert.equal(link.origin, `http://${key}.localhost:${new URL(relay).port}`);
@@ -167,11 +166,11 @@ test('an Invite Link is its Host\'s Key Address, on its Relay\'s domain', async 
   assert.equal(link.search, '', 'no ?relay=: the Relay is the link\'s own domain');
 });
 
-test("two Sites through one Relay are two origins: neither can reach the other's storage or Visitor Key", async () => {
-  const x = await hostWithSite();
-  const y = await hostWithSite();
+test("two Sites through one Relay are two origins: neither can reach the other's storage or Visitor Key", async ({ browser, relay }) => {
+  const x = await hostWithSite(relay);
+  const y = await hostWithSite(relay);
   const tabX = await h.newVisitor(browser);
-  const tabY = await tabX.browserContext().newPage(); // the same browser, so the same profile
+  const tabY = await tabX.context().newPage(); // the same browser, so the same profile
   await tabX.goto(x.invite('mom'));
   await h.siteText(tabX);
   const siteX = await (await tabX.$('iframe')).contentFrame();
@@ -190,14 +189,14 @@ test("two Sites through one Relay are two origins: neither can reach the other's
   assert.notEqual(visitorKey(x), visitorKey(y), 'one Visitor Key for both Sites');
 });
 
-test("a cookie a Site sets for the whole Relay domain stays with that Site", async () => {
+test("a cookie a Site sets for the whole Relay domain stays with that Site", async ({ browser, irohRelay }) => {
   // Without the Public Suffix List, the browser lets a Key Address set a cookie for its whole Relay
   // domain, which every other Host's pages would then see (ADR 0021).
   const shared = (await h.startRelayFront(irohRelay, 'relay.localhost')).url;
   const a = await h.startHost(await h.startSite(), shared);
   const b = await h.startHost(await h.startSite(), shared);
   const tabA = await h.newVisitor(browser);
-  const tabB = await tabA.browserContext().newPage(); // the same browser, so the same cookies
+  const tabB = await tabA.context().newPage(); // the same browser, so the same cookies
   await tabA.goto(h.tooob(['invite', a.name, 'mom']));
   await h.siteText(tabA);
   const siteA = await (await tabA.$('iframe')).contentFrame();
@@ -206,7 +205,7 @@ test("a cookie a Site sets for the whole Relay domain stays with that Site", asy
     await cookieStore.set({ name: 'viaCookieStore', value: 'a', domain: 'relay.localhost', path: '/' });
   });
   // Where the browser keeps them, before any shell of Site B's could clean up after Site A.
-  const kept = (await tabA.browserContext().cookies()).map((c) => `${c.name} for ${c.domain}`).sort();
+  const kept = (await tabA.context().cookies()).map((c) => `${c.name} for ${c.domain}`).sort();
   const keyAddress = new URL(tabA.url()).hostname;
   assert.deepEqual(kept, [`viaCookieStore for ${keyAddress}`, `viaDocument for ${keyAddress}`]);
 
@@ -216,18 +215,18 @@ test("a cookie a Site sets for the whole Relay domain stays with that Site", asy
   assert.equal(await siteB.evaluate(() => document.cookie), '', "Site B read Site A's cookies");
 });
 
-test('a cookie for the whole Relay domain is gone once a shell has started, and the Site keeps its own', async () => {
+test('a cookie for the whole Relay domain is gone once a shell has started, and the Site keeps its own', async ({ browser, irohRelay }) => {
   // Set where the injected script doesn't reach, such as a Site's own service worker (ADR 0021).
   const shared = (await h.startRelayFront(irohRelay, 'relay.localhost')).url;
   const host = await h.startHost(await h.startSite(), shared);
   const link = h.tooob(['invite', host.name, 'mom']);
   const tab = await h.newVisitor(browser);
-  const jar = tab.browserContext();
-  await jar.setCookie(
+  const jar = tab.context();
+  await jar.addCookies([
     { name: 'stray', value: 'relay-wide', domain: '.relay.localhost', path: '/' },
     { name: '__Secure-stray', value: 'relay-wide', domain: '.relay.localhost', path: '/', secure: true }, // deleted only by a Secure deletion
     { name: 'stray', value: 'mine', domain: new URL(link).hostname, path: '/' },
-  );
+  ]);
   await tab.goto(link);
   await h.siteText(tab);
   const left = (await jar.cookies()).map((c) => `${c.name}=${c.value} for ${c.domain}`);
@@ -264,11 +263,11 @@ test('the Relay serves the Bundle for process isolation, and passes no Cookie on
   }
 });
 
-test('two tabs on two different Sites each get their own Site', async () => {
-  const x = await hostWithSite();
-  const y = await hostWithSite();
+test('two tabs on two different Sites each get their own Site', async ({ browser, relay }) => {
+  const x = await hostWithSite(relay);
+  const y = await hostWithSite(relay);
   const tabX = await h.newVisitor(browser);
-  const tabY = await tabX.browserContext().newPage(); // same browser, so same service worker
+  const tabY = await tabX.context().newPage(); // same browser, so same service worker
   await tabX.goto(x.invite('mom'));
   assert.match(await h.siteText(tabX), /label=mom/);
   await tabY.goto(y.invite('dad'));
@@ -277,35 +276,35 @@ test('two tabs on two different Sites each get their own Site', async () => {
   assert.match(await h.siteText(tabX), /label=mom/);
 });
 
-test('two tabs on the same Site both keep working', async () => {
-  const { invite } = await hostWithSite();
+test('two tabs on the same Site both keep working', async ({ browser, relay }) => {
+  const { invite } = await hostWithSite(relay);
   const first = await h.newVisitor(browser);
   await first.goto(invite('mom'));
   await h.siteText(first);
-  const second = await first.browserContext().newPage();
+  const second = await first.context().newPage();
   await second.goto(first.url()); // the plain link, as a second tab would open it
   assert.match(await h.siteText(second), /label=mom/);
   await first.reload(); // the first tab still gets through
   assert.match(await h.siteText(first), /label=mom/);
 });
 
-test("a tab still waiting for approval never swallows another tab's requests", async () => {
-  const x = await hostWithSite();
-  const y = await hostWithSite();
+test("a tab still waiting for approval never swallows another tab's requests", async ({ browser, relay }) => {
+  const x = await hostWithSite(relay);
+  const y = await hostWithSite(relay);
   const openWaiting = async (page) => {
     await page.goto(x.invite('mom', '--approve'));
-    await page.waitForFunction(() => /Waiting for approval/.test(document.getElementById('status').textContent), { timeout: 20000 });
+    await page.waitForFunction(() => /Waiting for approval/.test(document.getElementById('status').textContent), null, { timeout: 20000 });
   };
   // Waiting tabs on both sides of the allowed one, so tab order can't hide a wrong pick.
   const first = await h.newVisitor(browser);
   await openWaiting(first);
-  const allowed = await first.browserContext().newPage();
+  const allowed = await first.context().newPage();
   await allowed.goto(y.invite('dad'));
   await h.siteText(allowed);
-  await openWaiting(await first.browserContext().newPage());
+  await openWaiting(await first.context().newPage());
 
   // The browser stops idle service workers, forgetting which tab is whose.
-  const cdp = await allowed.createCDPSession();
+  const cdp = await allowed.context().newCDPSession(allowed);
   await cdp.send('ServiceWorker.enable');
   await cdp.send('ServiceWorker.stopAllWorkers');
   const frame = await (await allowed.$('iframe')).contentFrame();
@@ -316,35 +315,37 @@ test("a tab still waiting for approval never swallows another tab's requests", a
   assert.match(text, /site \/again label=dad/);
 });
 
-test("the Site's traffic goes over the Direct Path, not the Relay", async () => {
-  const { invite } = await hostWithSite();
+test("the Site's traffic goes over the Direct Path, not the Relay", async ({ browser, relay }) => {
+  const { invite } = await hostWithSite(relay);
   const page = await h.newVisitor(browser);
   await page.goto(invite('mom'));
   await h.siteText(page);
-  await page.waitForFunction(() => window.__tooobStats.path === 'direct', { timeout: 20000 });
+  await page.waitForFunction(() => window.__tooobStats.path === 'direct', null, { timeout: 20000 });
   const bytes = await h.bytesForReload(page);
   assert.ok(bytes.direct > 0, `nothing came direct: ${JSON.stringify(bytes)}`);
   assert.equal(bytes.relay, 0, `the Relay carried Site bytes: ${JSON.stringify(bytes)}`);
 });
 
-test('after the phone sleeps, the Site still loads and goes back onto the Direct Path', async () => {
-  const { invite } = await hostWithSite();
+test('after the phone sleeps, the Site still loads and goes back onto the Direct Path', async ({ browser, relay, irohRelay }) => {
+  const { invite } = await hostWithSite(relay);
+  const front = await h.startRelayFront(irohRelay); // the browser's alone, so silencing it leaves the Host's be
   const page = await h.newVisitor(browser);
-  await page.goto(invite('mom'));
+  const link = new URL(invite('mom'));
+  link.port = front.port;
+  await page.goto(link.href);
   await h.siteText(page);
-  await page.waitForFunction(() => window.__tooobStats.path === 'direct', { timeout: 10000 });
+  await page.waitForFunction(() => window.__tooobStats.path === 'direct', null, { timeout: 10000 });
 
-  await h.sleepBrowser(browser, 35); // past iroh's 30 s idle timeout: the Host drops the connection
+  await h.sleepPage(page, front, 35); // past iroh's 30 s idle timeout: the Host drops the connection
   assert.equal(await h.siteFetch(page, '/bytes/20000000'), '200 20000000', 'a download right after waking');
-  await page.waitForFunction(() => window.__tooobStats.path === 'direct', { timeout: 20000 });
-  await page.browserContext().close();
+  await page.waitForFunction(() => window.__tooobStats.path === 'direct', null, { timeout: 20000 });
 });
 
-test("after a phone's deep sleep silences its Relay connection, the Site loads as soon as it wakes", async () => {
+test("after a phone's deep sleep silences its Relay connection, the Site loads as soon as it wakes", async ({ browser, relay, irohRelay }) => {
   // Firefox for Android in Doze: the page and iroh's timers freeze, the network drops the old
   // flows, and on waking iroh still thinks its connection is up, so a request waits ~30 s for
   // its idle timeout. Relay only, so nothing can come by the Direct Path instead.
-  const { invite } = await hostWithSite();
+  const { invite } = await hostWithSite(relay);
   const front = await h.startRelayFront(irohRelay); // the browser's alone, so silencing it leaves the Host's be
   const page = await h.newVisitor(browser);
   await h.breakDirectPath(page);
@@ -360,38 +361,38 @@ test("after a phone's deep sleep silences its Relay connection, the Site loads a
   assert.equal(await Promise.race([download, late]), '200 20000000');
 });
 
-test('a Direct Path that drops and comes back carries the Site again, without a reload', async () => {
-  const { invite, pause, resume } = await hostWithSite();
+test('a Direct Path that drops and comes back carries the Site again, without a reload', async ({ browser, relay }) => {
+  const { invite, pause, resume } = await hostWithSite(relay);
   const page = await h.newVisitor(browser);
   await page.goto(invite('mom'));
   await h.siteText(page);
-  await page.waitForFunction(() => window.__tooobStats.path === 'direct', { timeout: 20000 });
+  await page.waitForFunction(() => window.__tooobStats.path === 'direct', null, { timeout: 20000 });
 
   pause(); // the browser's ICE checks go unanswered, as when a phone backgrounds the tab
   try {
-    await page.waitForFunction(() => /paused/.test(window.__tooobStats.path), { timeout: 20000 });
+    await page.waitForFunction(() => /paused/.test(window.__tooobStats.path), null, { timeout: 20000 });
   } finally {
     resume();
   }
-  await page.waitForFunction(() => window.__tooobStats.path === 'direct', { timeout: 20000 });
+  await page.waitForFunction(() => window.__tooobStats.path === 'direct', null, { timeout: 20000 });
   const bytes = await h.bytesForReload(page);
   assert.ok(bytes.direct > 0, `nothing came direct: ${JSON.stringify(bytes)}`);
   assert.equal(bytes.relay, 0, `the Relay carried Site bytes: ${JSON.stringify(bytes)}`);
 });
 
-test('a Direct Path that fails mid-visit is renegotiated each time, and a download in flight survives', async () => {
-  const { invite } = await hostWithSite();
+test('a Direct Path that fails mid-visit is renegotiated each time, and a download in flight survives', async ({ browser, relay }) => {
+  const { invite } = await hostWithSite(relay);
   const page = await h.newVisitor(browser);
   await h.watchDirectPath(page);
   await page.goto(invite('mom'));
   await h.siteText(page);
-  await page.waitForFunction(() => window.__tooobStats.path === 'direct', { timeout: 20000 });
+  await page.waitForFunction(() => window.__tooobStats.path === 'direct', null, { timeout: 20000 });
   const frame = await (await page.$('iframe')).contentFrame();
   const download = frame.evaluate(() => fetch('/bytes/20971520').then((r) => r.arrayBuffer()).then((b) => b.byteLength));
 
   for (let i = 0; i < 5; i++) { // more failures than any retry budget
     assert.notEqual(await h.failDirectPath(page), 'direct', `failure ${i + 1} went unnoticed`);
-    await page.waitForFunction(() => window.__tooobStats.path === 'direct', { timeout: 3000 });
+    await page.waitForFunction(() => window.__tooobStats.path === 'direct', null, { timeout: 3000 });
   }
   assert.equal(await download, 20971520);
   const bytes = await h.bytesForReload(page);
@@ -399,60 +400,60 @@ test('a Direct Path that fails mid-visit is renegotiated each time, and a downlo
   assert.equal(bytes.relay, 0, `the Relay carried Site bytes: ${JSON.stringify(bytes)}`);
 });
 
-test('the pill says the Direct Path is on the home network', async () => {
-  const { invite } = await hostWithSite();
+test('the pill says the Direct Path is on the home network', async ({ browser, relay }) => {
+  const { invite } = await hostWithSite(relay);
   const page = await h.newVisitor(browser);
   await page.goto(invite('mom'));
   await h.siteText(page);
-  await page.waitForFunction(() => / · direct · LAN$/.test(document.getElementById('status').textContent), { timeout: 20000 });
+  await page.waitForFunction(() => / · direct · LAN$/.test(document.getElementById('status').textContent), null, { timeout: 20000 });
   assert.doesNotMatch(await h.statusText(page), /\d+\.\d+\.\d+\.\d+|::/, 'the pill shows an address');
 });
 
-test('the pill says a Direct Path from elsewhere was punched through NAT, without its address', async () => {
-  const { invite } = await hostWithSite();
+test('the pill says a Direct Path from elsewhere was punched through NAT, without its address', async ({ browser, relay }) => {
+  const { invite } = await hostWithSite(relay);
   const page = await h.newVisitor(browser);
   await h.forgeNatPunched(page);
   await page.goto(invite('mom'));
   await h.siteText(page);
-  await page.waitForFunction(() => / · direct · NAT punched$/.test(document.getElementById('status').textContent), { timeout: 20000 });
+  await page.waitForFunction(() => / · direct · NAT punched$/.test(document.getElementById('status').textContent), null, { timeout: 20000 });
   assert.doesNotMatch(await h.statusText(page), /203\.0\.113/);
 });
 
-test('the pill says the Site is coming over the Relay when the Direct Path fails', async () => {
-  const { invite } = await hostWithSite();
+test('the pill says the Site is coming over the Relay when the Direct Path fails', async ({ browser, relay }) => {
+  const { invite } = await hostWithSite(relay);
   const page = await h.newVisitor(browser);
   await h.breakDirectPath(page);
   await page.goto(invite('mom'));
   await h.siteText(page);
-  await page.waitForFunction(() => / · relay$/.test(document.getElementById('status').textContent), { timeout: 20000 });
+  await page.waitForFunction(() => / · relay$/.test(document.getElementById('status').textContent), null, { timeout: 20000 });
 });
 
-test('when the Direct Path fails, the Site still loads over the Relay', async () => {
-  const { invite } = await hostWithSite();
+test('when the Direct Path fails, the Site still loads over the Relay', async ({ browser, relay }) => {
+  const { invite } = await hostWithSite(relay);
   const page = await h.newVisitor(browser);
   await h.breakDirectPath(page);
   await page.goto(invite('mom'));
   assert.match(await h.siteText(page), /label=mom/);
-  await page.waitForFunction(() => window.__tooobStats.path === 'relay', { timeout: 20000 });
+  await page.waitForFunction(() => window.__tooobStats.path === 'relay', null, { timeout: 20000 });
   const bytes = await h.bytesForReload(page);
   assert.ok(bytes.relay > 0, `nothing came over the Relay: ${JSON.stringify(bytes)}`);
   assert.equal(bytes.direct, 0);
 });
 
-test('a Direct Path attempt that fails is retried, and the Site moves onto it', async () => {
-  const { invite } = await hostWithSite();
+test('a Direct Path attempt that fails is retried, and the Site moves onto it', async ({ browser, relay }) => {
+  const { invite } = await hostWithSite(relay);
   const page = await h.newVisitor(browser);
   await h.breakDirectPath(page, 1); // like an attempt right after a network switch
   await page.goto(invite('mom'));
   assert.match(await h.siteText(page), /label=mom/);
-  await page.waitForFunction(() => window.__tooobStats.path === 'direct', { timeout: 30000 });
+  await page.waitForFunction(() => window.__tooobStats.path === 'direct', null, { timeout: 30000 });
   const bytes = await h.bytesForReload(page);
   assert.ok(bytes.direct > 0, `nothing came direct: ${JSON.stringify(bytes)}`);
   assert.equal(bytes.relay, 0, `the Relay carried Site bytes: ${JSON.stringify(bytes)}`);
 });
 
-test('the first page waits at most ~800 ms for a Direct Path that never comes', async () => {
-  const { invite } = await hostWithSite();
+test('the first page waits at most ~800 ms for a Direct Path that never comes', async ({ browser, relay }) => {
+  const { invite } = await hostWithSite(relay);
   const page = await h.newVisitor(browser);
   await h.breakDirectPath(page); // it never connects, so only the cap ends the wait
   await page.goto(invite('mom'));
@@ -461,23 +462,23 @@ test('the first page waits at most ~800 ms for a Direct Path that never comes', 
   assert.ok(waited >= 700 && waited <= 1000, `waited ${waited} ms`);
 });
 
-test("the browser refuses a Direct Path whose certificate isn't the one the Host sent over iroh", async () => {
-  const { invite } = await hostWithSite();
+test("the browser refuses a Direct Path whose certificate isn't the one the Host sent over iroh", async ({ browser, relay }) => {
+  const { invite } = await hostWithSite(relay);
   const page = await h.newVisitor(browser);
   await h.forgeDirectFingerprint(page);
   await page.goto(invite('mom'));
   assert.match(await h.siteText(page), /label=mom/);
-  await page.waitForFunction(() => window.__tooobStats.path === 'relay', { timeout: 20000 });
+  await page.waitForFunction(() => window.__tooobStats.path === 'relay', null, { timeout: 20000 });
   const bytes = await h.bytesForReload(page);
   assert.equal(bytes.direct, 0, 'Site bytes went over the forged Direct Path');
 });
 
-test('bursts over the Direct Path never stall (SCTP loses a burst and waits >= 1 s to resend)', async () => {
-  const { invite } = await hostWithSite();
+test('bursts over the Direct Path never stall (SCTP loses a burst and waits >= 1 s to resend)', async ({ browser, relay }) => {
+  const { invite } = await hostWithSite(relay);
   const page = await h.newVisitor(browser);
   await page.goto(invite('mom'));
   await h.siteText(page);
-  await page.waitForFunction(() => window.__tooobStats.path === 'direct', { timeout: 20000 });
+  await page.waitForFunction(() => window.__tooobStats.path === 'direct', null, { timeout: 20000 });
   const frame = await (await page.$('iframe')).contentFrame();
   // Like a page of photos: 8 × 320 KB at once, ten times over.
   const rounds = await frame.evaluate(async () => {
@@ -494,12 +495,12 @@ test('bursts over the Direct Path never stall (SCTP loses a burst and waits >= 1
   assert.ok(rounds.every((ms) => ms < 1000), `rounds took ${rounds.join(' / ')} ms`);
 });
 
-test('a refused upload leaves the Direct Path carrying the next request', async () => {
-  const { name, invite } = await hostWithSite();
+test('a refused upload leaves the Direct Path carrying the next request', async ({ browser, relay }) => {
+  const { name, invite } = await hostWithSite(relay);
   const page = await h.newVisitor(browser);
   await page.goto(invite('mom'));
   await h.siteText(page);
-  await page.waitForFunction(() => window.__tooobStats.path === 'direct', { timeout: 20000 });
+  await page.waitForFunction(() => window.__tooobStats.path === 'direct', null, { timeout: 20000 });
   const key = h.tooob(['visitors', name]).split(/\s+/)[0];
   const frame = await (await page.$('iframe')).contentFrame();
 
@@ -516,12 +517,12 @@ test('a refused upload leaves the Direct Path carrying the next request', async 
   assert.ok((await page.evaluate(() => window.__tooobStats.bytes.direct)) > before, 'the next request left the Direct Path');
 });
 
-test('a 20 MB upload goes through on the Direct Path', async () => {
-  const { invite } = await hostWithSite();
+test('a 20 MB upload goes through on the Direct Path', async ({ browser, relay }) => {
+  const { invite } = await hostWithSite(relay);
   const page = await h.newVisitor(browser);
   await page.goto(invite('mom'));
   await h.siteText(page);
-  await page.waitForFunction(() => window.__tooobStats.path === 'direct', { timeout: 20000 });
+  await page.waitForFunction(() => window.__tooobStats.path === 'direct', null, { timeout: 20000 });
   const before = await page.evaluate(() => window.__tooobStats.bytes.direct);
   const frame = await (await page.$('iframe')).contentFrame();
   const reply = await frame.evaluate(() => fetch('/upload', { method: 'POST', body: new Uint8Array(20 << 20) }).then((r) => r.text()));
@@ -529,19 +530,19 @@ test('a 20 MB upload goes through on the Direct Path', async () => {
   assert.ok((await page.evaluate(() => window.__tooobStats.bytes.direct)) > before, 'the upload left the Direct Path');
 });
 
-test("when the Host can't be reached the page says so and keeps the Invite for a retry", async () => {
-  const { invite, stop } = await hostWithSite();
+test("when the Host can't be reached the page says so and keeps the Invite for a retry", async ({ browser, relay }) => {
+  const { invite, stop } = await hostWithSite(relay);
   const link = invite('mom');
   await stop();
   const page = await h.newVisitor(browser);
   await page.goto(link);
-  await page.waitForFunction(() => /Couldn't reach/.test(document.getElementById('status').textContent), { timeout: 60000 });
+  await page.waitForFunction(() => /Couldn't reach/.test(document.getElementById('status').textContent), null, { timeout: 60000 });
   assert.ok(page.url().includes('invite='), 'the Invite should stay so a reload can retry');
 });
 
 
-test('when the Host goes away the pill says it is reconnecting, and counts the tries', async () => {
-  const { invite, stop } = await hostWithSite();
+test('when the Host goes away the pill says it is reconnecting, and counts the tries', async ({ browser, relay }) => {
+  const { invite, stop } = await hostWithSite(relay);
   const page = await h.newVisitor(browser);
   await page.goto(invite('mom'));
   await h.siteText(page);
@@ -552,11 +553,11 @@ test('when the Host goes away the pill says it is reconnecting, and counts the t
   await h.pillSays(page, /^Reconnecting… \(try 2 of 5, next in 4 s\)$/, 20000);
   await h.pillSays(page, /^Reconnecting… \(try 2 of 5, next in 3 s\)$/, 2000);
   await h.pillSays(page, /^Reconnecting… \(try 3 of 5/, 5000);
-  await page.browserContext().close(); // stop it trying
+  await page.context().close(); // stop it trying
 });
 
-test('when the Host comes back during the tries, the Site loads again without a reload', async () => {
-  const { invite, stop, start } = await hostWithSite();
+test('when the Host comes back during the tries, the Site loads again without a reload', async ({ browser, relay }) => {
+  const { invite, stop, start } = await hostWithSite(relay);
   const page = await h.newVisitor(browser);
   await page.goto(invite('mom'));
   await h.siteText(page);
@@ -568,11 +569,11 @@ test('when the Host comes back during the tries, the Site loads again without a 
   await h.pillSays(page, /^connected in \d+ ms · page \d+ ms · (relay|direct)/, 20000);
   assert.match(await h.siteFetch(page, '/bytes/1000'), /^200 1000$/);
   assert.ok(await page.evaluate(() => window.notReloaded), 'the shell reloaded');
-  await page.waitForFunction(() => window.__tooobStats.path === 'direct', { timeout: 20000 }); // and the Direct Path is back
+  await page.waitForFunction(() => window.__tooobStats.path === 'direct', null, { timeout: 20000 }); // and the Direct Path is back
 });
 
-test("when the Host stays away the pill gives up and offers a reload, and tapping it reloads", async () => {
-  const { invite, stop } = await hostWithSite();
+test("when the Host stays away the pill gives up and offers a reload, and tapping it reloads", async ({ browser, relay }) => {
+  const { invite, stop } = await hostWithSite(relay);
   const page = await h.newVisitor(browser);
   await page.goto(invite('mom'));
   await h.siteText(page);
@@ -590,8 +591,8 @@ test("when the Host stays away the pill gives up and offers a reload, and tappin
   await Promise.all([page.waitForNavigation(), page.click('#status')]);
 });
 
-test('a phone that wakes after the shell gave up tries again by itself', async () => {
-  const { invite, stop, start } = await hostWithSite();
+test('a phone that wakes after the shell gave up tries again by itself', async ({ browser, relay }) => {
+  const { invite, stop, start } = await hostWithSite(relay);
   const page = await h.newVisitor(browser);
   await page.goto(invite('mom'));
   await h.siteText(page);
@@ -618,25 +619,25 @@ function aFolder() {
   return root;
 }
 
-async function visitSharedFolder(path) {
+async function visitSharedFolder(path, { browser, relay }) {
   const host = await h.startShare(path, relay);
   const page = await h.newVisitor(browser);
-  const downloads = await h.watchDownloads(page);
+  const downloads = h.watchDownloads(page);
   await page.goto(h.tooob(['invite', host.name, 'friend']));
   const frame = await (await page.waitForSelector('iframe', { timeout: 20000 })).contentFrame();
   return { page, frame, downloads };
 }
 
-test('a Visitor browses a Shared Folder into a subfolder and opens a photo', async () => {
-  const { frame } = await visitSharedFolder(aFolder());
+test('a Visitor browses a Shared Folder into a subfolder and opens a photo', async ({ browser, relay }) => {
+  const { frame } = await visitSharedFolder(aFolder(), { browser, relay });
   await frame.waitForSelector('a[href="Holiday%20photos/"]', { timeout: 20000 });
   await Promise.all([frame.waitForNavigation(), frame.click('a[href="Holiday%20photos/"]')]);
   await Promise.all([frame.waitForNavigation(), frame.click('a[href="beach.png"]')]);
   assert.equal(await frame.evaluate(() => document.contentType), 'image/png', 'the browser shows the photo');
 });
 
-test("a file in a Shared Folder that the browser can't show downloads under its own name", async () => {
-  const { frame, downloads } = await visitSharedFolder(aFolder());
+test("a file in a Shared Folder that the browser can't show downloads under its own name", async ({ browser, relay }) => {
+  const { frame, downloads } = await visitSharedFolder(aFolder(), { browser, relay });
   await frame.waitForSelector('a[href="Trip%20photos.zip"]', { timeout: 20000 });
   const download = downloads.next();
   await frame.click('a[href="Trip%20photos.zip"]');
@@ -645,13 +646,13 @@ test("a file in a Shared Folder that the browser can't show downloads under its 
   assert.equal(bytes.toString(), 'PK zip bytes');
 });
 
-test('a single shared photo opens in the browser', async () => {
-  const { frame } = await visitSharedFolder(join(aFolder(), 'Holiday photos', 'beach.png'));
-  await frame.waitForFunction(() => document.contentType === 'image/png', { timeout: 20000 });
+test('a single shared photo opens in the browser', async ({ browser, relay }) => {
+  const { frame } = await visitSharedFolder(join(aFolder(), 'Holiday photos', 'beach.png'), { browser, relay });
+  await frame.waitForFunction(() => document.contentType === 'image/png', null, { timeout: 20000 });
 });
 
-test('a single shared zip downloads under its own name', async () => {
-  const { downloads } = await visitSharedFolder(join(aFolder(), 'Trip photos.zip'));
+test('a single shared zip downloads under its own name', async ({ browser, relay }) => {
+  const { downloads } = await visitSharedFolder(join(aFolder(), 'Trip photos.zip'), { browser, relay });
   const { name, bytes } = await downloads.next();
   assert.equal(name, 'Trip photos.zip');
   assert.equal(bytes.toString(), 'PK zip bytes');
