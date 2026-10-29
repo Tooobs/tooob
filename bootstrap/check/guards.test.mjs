@@ -3,12 +3,13 @@
 // Run: node --test guards.test.mjs
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { createServer } from 'node:net';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { connect, createServer } from 'node:net';
 import { test } from 'node:test';
-import { alive } from './guards.mjs';
+import { alive } from './processes.mjs';
 
 const CHECK = new URL('.', import.meta.url).pathname;
-
 
 /**
  * `npx playwright test` on guards/SPEC, in a process group of its own: once it ends, its exit code,
@@ -87,14 +88,20 @@ test("the limits can't be stretched", async () => {
   assert.match(output, /limits: test 90000 ms, run 900000 ms/, output);
 });
 
-test('a second run started during a run refuses, and says so', async () => {
+const LOCK_PORT = 27182;
+const RESULT = join(CHECK, 'guards/test-results/hang-hangs/result'); // what hang.spec.mjs leaves
+
+test('a second run started during a run refuses, says so, and leaves the first run\'s results be', async () => {
   const first = run('hang.spec.mjs', { env: { TOOOB_GUARDS_LIMITS_MS: '30000,30000' } });
   try {
     await first.saw(/hangs/);
+    for (let waited = 0; !existsSync(RESULT) && waited < 5000; waited += 100) await new Promise((r) => setTimeout(r, 100));
+    assert.ok(existsSync(RESULT), 'the first run left no result to keep');
     const second = await run('limits.spec.mjs');
     assert.notEqual(second.status, 0, second.output);
     assert.match(second.output, /another run of the browser suite is going/, second.output);
     assert.doesNotMatch(second.output, /limits:/, 'the second run ran its tests');
+    assert.ok(existsSync(RESULT), "the second run wiped the first run's results");
   } finally {
     process.kill(-first.group, 'SIGINT'); // its group: npm, the runner and its worker, never the browser
     await first;
@@ -119,15 +126,50 @@ async function killHard(killed, spared = []) {
 
 const both = (results) => results.map((r) => r.output).join('\n----\n');
 
-test("a run refuses when something else holds its lock's port, and says so", async () => {
-  const squatter = createServer((socket) => socket.end());
-  await new Promise((r) => squatter.listen(39812, '127.0.0.1', r));
+/** Something else on the lock's port, answering every connection with `answer`, while `during` runs. */
+async function squatting(answer, during) {
+  const open = new Set();
+  const squatter = createServer((socket) => (open.add(socket), answer(socket)));
+  await new Promise((r) => squatter.listen(LOCK_PORT, '127.0.0.1', r));
   try {
+    await during();
+  } finally {
+    open.forEach((socket) => socket.destroy());
+    await new Promise((r) => squatter.close(r));
+  }
+}
+
+test("a run refuses when something else holds its lock's port, and says so", async () => {
+  await squatting((socket) => socket.end(), async () => {
     const { status, output } = await run('limits.spec.mjs');
     assert.notEqual(status, 0, output);
-    assert.match(output, /port 39812.*is taken by something else/, output);
+    assert.match(output, /port 27182.*is taken by something else/, output);
+  });
+});
+
+test("a run refuses promptly when something on its lock's port never answers", async () => {
+  await squatting(() => {}, async () => {
+    const { status, output, ms } = await run('limits.spec.mjs');
+    assert.notEqual(status, 0, output);
+    assert.match(output, /port 27182.*is taken by something else/, output);
+    assert.ok(ms < 15000, `took ${ms} ms`);
+  });
+});
+
+test("whoever knocks on a run's lock, the run goes on and ends on time", async () => {
+  const going = run('hang.spec.mjs', { env: { TOOOB_GUARDS_LIMITS_MS: '6000,30000' } });
+  await going.saw(/hangs/);
+  // One that resets at once, before the run can answer, and one that never closes its end.
+  connect(LOCK_PORT, '127.0.0.1').on('connect', function () { this.resetAndDestroy(); }).on('error', () => {});
+  const lingering = connect(LOCK_PORT, '127.0.0.1').on('error', () => {});
+  lingering.allowHalfOpen = true;
+  try {
+    const { output, ms } = await going;
+    assert.match(output, /Test timeout of 6000ms exceeded/, output);
+    assert.doesNotMatch(output, /ECONNRESET|EPIPE/, output);
+    assert.ok(ms < 20000, `took ${ms} ms: its teardown waited on a connection`);
   } finally {
-    await new Promise((r) => squatter.close(r));
+    lingering.destroy();
   }
 });
 
@@ -139,7 +181,6 @@ test('after a run is killed, of two runs started at the same moment, one goes ah
   assert.equal(results.filter((r) => /another run of the browser suite is going/.test(r.output)).length, 1, both(results));
   assert.equal(results.filter((r) => /Test timeout of 4000ms exceeded/.test(r.output)).length, 1, both(results));
 });
-
 
 test('a run killed hard leaves Hosts and Relays behind, and the next run stops them first', async () => {
   const killed = run('leave-behind.spec.mjs', { env: { TOOOB_GUARDS_LIMITS_MS: '120000,120000' } });
@@ -160,10 +201,28 @@ test('a run killed hard leaves Hosts and Relays behind, and the next run stops t
   }
 });
 
+test("a run killed hard mid-build leaves cargo building, and the next run stops it first", async () => {
+  const killed = run('building.spec.mjs', { env: { TOOOB_GUARDS_LIMITS_MS: '120000,120000' } });
+  const [cargo] = (await killed.saw(/cargo: \d+\./)).match(/cargo: (\d+)\./).slice(1);
+  try {
+    await killHard(killed, [cargo]);
+    assert.ok(alive(cargo), 'cargo was done before the run was killed: nothing to test');
+    const next = await run('no-leftovers.spec.mjs', { env: { LEFTOVERS: cargo } });
+    assert.equal(next.status, 0, next.output);
+  } finally {
+    if (alive(cargo)) process.kill(Number(cargo), 'SIGKILL');
+  }
+});
+
 test("a run that ends, even failing, leaves none of its Hosts and Relays running", async () => {
   const failing = run('leave-behind.spec.mjs', { env: { TOOOB_GUARDS_LIMITS_MS: '20000,60000' } });
   const pids = (await failing.saw(/started: [\d,]+\./)).match(/started: ([\d,]+)\./)[1].split(',');
   const { status, output } = await failing;
   assert.notEqual(status, 0, output);
   assert.deepEqual(pids.filter(alive), [], output);
+});
+
+test("a process ID that isn't one is never alive", () => {
+  for (const pid of ['', '0', '-1', 'x', undefined]) assert.equal(alive(pid), false, `alive(${JSON.stringify(pid)})`);
+  assert.equal(alive(process.pid), true);
 });

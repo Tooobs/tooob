@@ -3,11 +3,13 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { connect, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, test as base } from '@playwright/test';
+import { alive } from './processes.mjs';
 
 export { expect } from '@playwright/test';
+export { alive } from './processes.mjs';
 
 /** The most tabs open at once, across every context: no test needs more than 3. */
 export const TAB_CAP = 4;
@@ -22,8 +24,13 @@ function limits() {
   return { test: shrunk(90_000, test), run: shrunk(15 * 60_000, run) };
 }
 
-/** A Playwright config with the guards on; `config` says where the specs are. */
-export function guarded(config) {
+/**
+ * A Playwright config with the guards on; `config` says where the specs are. In the runner, it first
+ * takes the one-run lock, or refuses: before Playwright clears the output folder, so a refused run
+ * leaves a going run's results be. (Workers load the config too, under their runner's lock.)
+ */
+export async function guarded(config) {
+  if (process.env.TEST_WORKER_INDEX === undefined) await lock();
   const limit = limits();
   return defineConfig({
     testMatch: '*.spec.mjs',
@@ -94,36 +101,40 @@ export const test = base.extend({
 // What runs on this machine keep between them: what each started, in the temp folder, so a run in
 // another checkout of tooob sees it too.
 const STATE = join(tmpdir(), 'tooob-browser-suite');
-const RECORD = join(STATE, 'processes'); // a line per Host or Relay: its process ID, then its command line
-
-/** Whether process `pid` is still running. */
-export const alive = (pid) => {
-  try {
-    process.kill(Number(pid), 0);
-    return true;
-  } catch (e) {
-    return e.code === 'EPERM';
-  }
-};
+const RECORD = join(STATE, 'processes'); // a line per process: its ID, then its command line
 
 /**
- * The lock that says a run is going: this port, listened on from global setup to teardown. The
- * operating system frees it the moment a run ends or is killed, so it's never left behind, and two
- * runs can't both have it. Whoever connects is told the holder's process ID.
+ * The lock that says a run is going: this port, listened on by the runner from loading its config
+ * to its global teardown. The operating system frees it the moment a run ends or is killed, so it's
+ * never left behind, and two runs can't both have it. Whoever connects is told the holder's
+ * process ID. On macOS something on the wildcard address (*:port) goes unnoticed: harmless, since
+ * every run binds 127.0.0.1.
  */
-const LOCK_PORT = 39812;
+const LOCK_PORT = 27182; // below every common ephemeral range, so no outgoing connection takes it
 
-/** Take the lock, or refuse, naming the run that has it. Resolves to the lock's server. */
+/** Take the lock, or refuse, naming the run that has it. */
 async function lock() {
-  const server = createServer((socket) => socket.end(String(process.pid)));
+  if (globalThis.tooobSuiteLock) return; // this runner has it
+  const open = new Set();
+  const server = createServer((socket) => {
+    open.add(socket);
+    socket.on('error', () => {}).on('close', () => open.delete(socket)); // a prober's reset is its own business
+    socket.end(String(process.pid));
+  });
   const taken = await new Promise((resolve, reject) => {
     server.once('error', (e) => (e.code === 'EADDRINUSE' ? resolve(true) : reject(e)));
     server.listen(LOCK_PORT, '127.0.0.1', () => resolve(false));
   });
-  if (!taken) return server.unref();
+  if (!taken) {
+    server.unref();
+    globalThis.tooobSuiteLock = { release: () => (open.forEach((socket) => socket.destroy()), server.close()) };
+    return;
+  }
   const holder = await new Promise((resolve) => {
     let said = '';
-    connect(LOCK_PORT, '127.0.0.1').on('data', (d) => (said += d)).on('close', () => resolve(said)).on('error', () => resolve(''));
+    connect(LOCK_PORT, '127.0.0.1')
+      .setTimeout(2000, function () { this.destroy(); }) // whatever holds the port isn't saying
+      .on('data', (d) => (said += d)).on('close', () => resolve(said)).on('error', () => resolve(''));
   });
   throw new Error(
     /^\d+$/.test(holder)
@@ -132,7 +143,7 @@ async function lock() {
   );
 }
 
-/** Note a Host or Relay the harness started, so no run leaves it running. */
+/** Note a process the harness started (a Host, a Relay, a build), so no run leaves it running. */
 export function recordProcess(child) {
   mkdirSync(STATE, { recursive: true });
   appendFileSync(RECORD, `${child.pid} ${child.spawnargs.join(' ')}\n`);
@@ -148,14 +159,26 @@ function commandLine(pid) {
 }
 
 /**
- * Stop every Host and Relay in the record that's still running, then clear it. A process ID only
+ * Whether command line `running` is still the `recorded` one: the same arguments, and a program of
+ * the same name (rustup's cargo hands over to its toolchain's, by full path).
+ */
+function sameCommand(running, recorded) {
+  const split = (line) => {
+    const space = line.indexOf(' ');
+    return space < 0 ? [basename(line), ''] : [basename(line.slice(0, space)), line.slice(space)];
+  };
+  return running !== '' && split(running).join() === split(recorded).join();
+}
+
+/**
+ * Stop every process in the record that's still running, then clear it. A process ID only
  * counts while its command line is still the one recorded: IDs get reused.
  */
 async function stopRecorded() {
   if (!existsSync(RECORD)) return;
   const running = readFileSync(RECORD, 'utf8').split('\n').filter(Boolean)
     .map((line) => [line.slice(0, line.indexOf(' ')), line.slice(line.indexOf(' ') + 1)])
-    .filter(([pid, command]) => commandLine(pid) === command)
+    .filter(([pid, command]) => sameCommand(commandLine(pid), command))
     .map(([pid]) => Number(pid));
   const signal = (name) => running.filter(alive).forEach((pid) => {
     try {
@@ -169,14 +192,15 @@ async function stopRecorded() {
 }
 
 /**
- * Playwright's global setup, before a run starts: take the lock, and stop what a run killed before
- * its teardown left running. Returns the global teardown, which stops what this run left running.
+ * Playwright's global setup, before a run starts, under the lock: stop what a run killed before its
+ * teardown left running. Returns the global teardown, which stops what this run left running and
+ * lets the lock go.
  */
 export default async function setup() {
-  const held = await lock();
   await stopRecorded();
   return async () => {
     await stopRecorded();
-    await new Promise((r) => held.close(r));
+    globalThis.tooobSuiteLock?.release();
+    delete globalThis.tooobSuiteLock;
   };
 }

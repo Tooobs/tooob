@@ -2,10 +2,10 @@
 // origin (#59). In the clone, check.sh, bootstrap/build.sh and the browser suite are stubs, so a
 // test chooses what passes and fails without building or starting anything. The browser suite's
 // stub runs on Playwright, from this repo's bootstrap/check/node_modules, with no browser.
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,7 +22,7 @@ const git = (dir, ...args) => execFileSync('git', ['-C', dir, ...args], { encodi
  */
 const STUB_CONFIG = "export default { testDir: '.', testMatch: 'stub.spec.mjs', workers: 1 };\n";
 
-function aClone(t, { changelog = UNRELEASED, browserTest = "test('stub', () => {});", browserConfig = STUB_CONFIG } = {}) {
+function aClone(t, { changelog = UNRELEASED, browserTest = "test('stub', () => {});", browserConfig = STUB_CONFIG, nodeModules } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'tooob-release-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const [bare, work] = [join(dir, 'origin.git'), join(dir, 'work')];
@@ -38,7 +38,7 @@ function aClone(t, { changelog = UNRELEASED, browserTest = "test('stub', () => {
   // Not the suite's guarded config: its one-run-at-a-time lock would refuse these while a real run
   // goes. Only the stub: guards/ holds specs too, for the guards' own tests.
   writeFileSync(join(check, 'playwright.config.mjs'), browserConfig);
-  const modules = join(REPO, 'bootstrap/check/node_modules');
+  const modules = nodeModules ?? join(REPO, 'bootstrap/check/node_modules');
   assert.ok(existsSync(modules), 'needs Playwright: cd bootstrap/check && npm ci');
   symlinkSync(modules, join(check, 'node_modules'));
   writeFileSync(join(work, 'CHANGELOG.md'), changelog);
@@ -48,11 +48,21 @@ function aClone(t, { changelog = UNRELEASED, browserTest = "test('stub', () => {
   return { work, bare };
 }
 
+/** Where Playwright looks for browsers in these tests: a stand-in Chromium, so they need no real one. */
+const BROWSERS = mkdtempSync(join(tmpdir(), 'tooob-browsers-'));
+after(() => rmSync(BROWSERS, { recursive: true, force: true }));
+const chromium = execFileSync(
+  'node', ['-e', 'import("@playwright/test").then(({ chromium }) => console.log(chromium.executablePath()))'],
+  { cwd: join(REPO, 'bootstrap/check'), env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: BROWSERS }, encoding: 'utf8' },
+).trim();
+mkdirSync(dirname(chromium), { recursive: true });
+writeFileSync(chromium, '#!/bin/sh\nexit 1\n', { mode: 0o755 }); // never launched: the stub suite opens no browser
+
 /** ./release.sh VERSION in the clone. Without NODE_TEST_CONTEXT, which this test runner passes to
  *  its children: release.sh's own tools should see the environment a person's shell gives them. */
 function release(work, version, extraEnv = {}) {
   const { NODE_TEST_CONTEXT, ...env } = process.env;
-  return spawnSync('./release.sh', [version], { cwd: work, encoding: 'utf8', env: { ...env, ...extraEnv } });
+  return spawnSync('./release.sh', [version], { cwd: work, encoding: 'utf8', env: { ...env, PLAYWRIGHT_BROWSERS_PATH: BROWSERS, ...extraEnv } });
 }
 
 /** A PATH whose `gh` says `tag` is a published GitHub Release and nothing else is: GitHub can't see
@@ -243,18 +253,61 @@ test("a Release is refused up front without Playwright's Chromium, naming it", (
   assert.equal(git(bare, 'tag', '-l'), '');
 });
 
-test('a browser suite that fails before any test runs stops the Release, saying so', (t) => {
-  const { work, bare } = aClone(t, {
-    // As when another run of the suite is going: its global setup refuses.
-    browserConfig: `export default { testDir: '.', testMatch: 'stub.spec.mjs', workers: 1, globalSetup: './refuse.mjs' };\n`,
-  });
-  writeFileSync(join(work, 'bootstrap/check/refuse.mjs'), "export default () => { throw new Error('another run of the browser suite is going'); };\n");
-  git(work, 'add', '-A');
-  git(work, 'commit', '-q', '-m', 'a suite that refuses');
-  git(work, 'push', '-q', 'origin', 'HEAD:main');
+/** A clone whose browser suite fails outside its tests: `config` is its Playwright config's source, and
+ *  `files` other files beside it. */
+function aCloneFailingOutsideTests(t, config, files = {}) {
+  const clone = aClone(t, { browserConfig: config });
+  if (!Object.keys(files).length) return clone;
+  for (const [name, source] of Object.entries(files)) writeFileSync(join(clone.work, 'bootstrap/check', name), source);
+  git(clone.work, 'add', '-A');
+  git(clone.work, 'commit', '-q', '-m', 'a suite that fails outside its tests');
+  git(clone.work, 'push', '-q', 'origin', 'HEAD:main');
+  return clone;
+}
+
+/** release.sh stopped, saying the suite failed outside its tests, with no rerun and no Release. */
+function refusedOutsideTests(result, bare) {
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /the browser suite: it failed outside its tests/, result.stderr);
+  assert.doesNotMatch(result.stdout, /rerunning/);
+  assert.equal(git(bare, 'tag', '-l'), '');
+}
+
+test('a browser suite refused before any test runs stops the Release, saying so', (t) => {
+  // As when another run of the suite is going: its config refuses to load. An earlier run's failures
+  // are still on file, and must not be rerun as if they were this run's.
+  const { work, bare } = aCloneFailingOutsideTests(t, "throw new Error('another run of the browser suite is going');\n");
+  mkdirSync(join(work, 'bootstrap/check/test-results'));
+  writeFileSync(join(work, 'bootstrap/check/test-results/.last-run.json'), '{"status":"failed","failedTests":["an-old-one"]}');
+  refusedOutsideTests(release(work, '0.2.0'), bare);
+});
+
+test('a browser suite whose setup fails stops the Release, saying so', (t) => {
+  const { work, bare } = aCloneFailingOutsideTests(
+    t,
+    "export default { testDir: '.', testMatch: 'stub.spec.mjs', workers: 1, globalSetup: './setup.mjs' };\n",
+    { 'setup.mjs': "export default () => { throw new Error('setup failed'); };\n" },
+  );
+  refusedOutsideTests(release(work, '0.2.0'), bare);
+});
+
+test('a browser suite whose tests pass but whose teardown fails stops the Release, saying so', (t) => {
+  const { work, bare } = aCloneFailingOutsideTests(
+    t,
+    "export default { testDir: '.', testMatch: 'stub.spec.mjs', workers: 1, globalTeardown: './teardown.mjs' };\n",
+    { 'teardown.mjs': "export default () => { throw new Error('teardown failed'); };\n" },
+  );
+  refusedOutsideTests(release(work, '0.2.0'), bare);
+});
+
+test("a Release is refused up front when Playwright can't say where its Chromium is", (t) => {
+  const modules = mkdtempSync(join(tmpdir(), 'tooob-node-modules-'));
+  t.after(() => rmSync(modules, { recursive: true, force: true }));
+  mkdirSync(join(modules, '.bin'));
+  writeFileSync(join(modules, '.bin/playwright'), '#!/bin/sh\n', { mode: 0o755 }); // and no @playwright/test
+  const { work, bare } = aClone(t, { nodeModules: modules });
   const result = release(work, '0.2.0');
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /the browser suite: it failed before any test ran/);
-  assert.doesNotMatch(result.stdout, /rerunning/);
+  assert.match(result.stderr, /needs Playwright's Chromium: .*npx playwright install chromium/);
   assert.equal(git(bare, 'tag', '-l'), '');
 });

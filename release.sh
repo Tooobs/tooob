@@ -45,22 +45,29 @@ fi
 
 # browser_suite NAME [VAR=VALUE...]: the browser suite, on Playwright in windows you can watch, with
 # VAR=VALUE in its environment. The tests that failed (or never ran, in a run that ran out of time)
-# rerun once, saying so; failing twice stops the Release. A run that failed before any test ran
-# (another run was going, or its setup failed) stops the Release, since a rerun would run nothing.
+# rerun once, saying so; failing twice stops the Release. A run that failed outside its tests
+# (another run was going, or its setup or teardown failed) stops the Release: a rerun of its failed
+# tests would run none.
 browser_suite() {
-  local name=$1
+  local name=$1 started
   shift
   echo "release.sh: $name"
+  started=$(node -p 'Date.now()')
   (cd bootstrap/check && env "$@" npx playwright test) && return
-  [[ $(failed_tests) -gt 0 ]] || refuse "$name: it failed before any test ran (see above)"
+  [[ $(failed_tests "$started") -gt 0 ]] || refuse "$name: it failed outside its tests (see above)"
   echo "release.sh: $name: rerunning the tests that failed, once"
   (cd bootstrap/check && env "$@" npx playwright test --last-failed) || refuse "$name: a test failed twice"
 }
 
-# failed_tests: how many tests the browser suite's last run says failed or never ran.
+# failed_tests SINCE: how many tests the browser suite's last run says failed or never ran, if that
+# run wrote its record at SINCE (milliseconds since the epoch) or later; otherwise 0.
 failed_tests() {
-  node -e 'try { console.log(require(process.argv[1]).failedTests.length) } catch { console.log(0) }' \
-    "$PWD/bootstrap/check/test-results/.last-run.json"
+  node -e '
+    const [file, since] = process.argv.slice(1);
+    try {
+      const { mtimeMs } = require("fs").statSync(file);
+      console.log(mtimeMs >= Number(since) ? require(file).failedTests.length : 0);
+    } catch { console.log(0) }' "$PWD/bootstrap/check/test-results/.last-run.json" "$1"
 }
 
 # published_release: the newest Release on main that's published on GitHub (a tag whose release
@@ -124,7 +131,7 @@ git rev-parse -q --verify "refs/tags/v$RELEASE" >/dev/null && refuse "v$RELEASE 
 command -v iroh-relay >/dev/null || refuse "needs iroh-relay: cargo install iroh-relay --features server --version 1.3.0"
 [[ -x bootstrap/check/node_modules/.bin/playwright ]] ||
   refuse "needs Playwright: cd bootstrap/check && npm ci && npx playwright install chromium"
-chromium=$(cd bootstrap/check && node -e 'import("@playwright/test").then(({ chromium }) => console.log(chromium.executablePath()))')
+chromium=$(cd bootstrap/check && node -e 'import("@playwright/test").then(({ chromium }) => console.log(chromium.executablePath()))' 2>/dev/null) || true
 [[ -x $chromium ]] || refuse "needs Playwright's Chromium: cd bootstrap/check && npx playwright install chromium"
 
 echo "release.sh: ./check.sh"

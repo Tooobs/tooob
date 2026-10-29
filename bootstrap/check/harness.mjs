@@ -23,6 +23,8 @@ const sockets = []; // proxied connections: a server can't close while they're o
 export async function buildHost() {
   if (process.env.TOOOB_BIN) return;
   const cargo = spawn('cargo', ['build', '-q', '--manifest-path', join(ROOT, 'host/Cargo.toml')], { stdio: ['ignore', 'inherit', 'inherit'] });
+  children.push(cargo);
+  recordProcess(cargo); // a run that ends mid-build stops it, or it keeps the build folder locked
   const status = await new Promise((resolve, reject) => cargo.on('error', reject).on('exit', resolve));
   if (status !== 0) throw new Error(`cargo build failed (${status})`);
 }
