@@ -120,7 +120,7 @@ A folder kept in step across the Owner's devices and the people they invite, lik
 
 ## Develop
 
-- `./check.sh`: formatting, clippy, `cargo test`, the Bootstrap's build and the Bootstrap Bundle's manifest tests; `git config core.hooksPath .githooks` (once per clone) runs it before every push.
+- `./check.sh`: formatting, clippy, `cargo test`, the Bootstrap's build, the Bootstrap Bundle's manifest tests and `release.sh`'s tests (which need `npm ci` in `bootstrap/check` once); `git config core.hooksPath .githooks` (once per clone) runs it before every push.
 - `./release.sh X.Y.Z`: cuts a Release from a clean, up-to-date `main` (checks, the browser suite, the cross-Release check, then the Release number in both `Cargo.toml`s, `CHANGELOG.md`, a commit and its tag, pushed); CI then builds and publishes it. Add what each change does to `CHANGELOG.md`'s "Unreleased" as you go.
 - The browser suite: end-to-end tests against real Hosts and a local Relay (`cargo install iroh-relay --features server --version 1.3.0`), on [Playwright](https://playwright.dev), in Chromium windows you can watch. Once: `cd bootstrap/check && npm ci && npx playwright install chromium`. Then `bootstrap/build.sh`, and in `bootstrap/check`, `npx playwright test` (one test: `-g '<name>'`; `SLOWMO=500` to follow along). A run can't take over the machine: one at a time, one worker, at most 4 tabs, 90 s a test and 15 minutes a run, and no Host or Relay it started outlives it, even if it's killed. `node --test guards.test.mjs` there tests those guards.
 - `GLOSSARY.md` is the vocabulary, `DESIGN.md` the plan, and `docs/adr/` the decisions that are hard to reverse. `CLAUDE.md` is how we work, with or without an agent.

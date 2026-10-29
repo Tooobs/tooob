@@ -33,9 +33,12 @@ function aClone(t, { changelog = UNRELEASED, browserTest = "test('stub', () => {
   const check = join(work, 'bootstrap/check');
   for (const f of readdirSync(check).filter((f) => f.endsWith('.spec.mjs'))) rmSync(join(check, f));
   writeFileSync(join(check, 'stub.spec.mjs'), `import { test } from '@playwright/test';\n${browserTest}\n`);
-  // Not the suite's guarded config: its one-run-at-a-time lock would refuse these while a real run goes.
-  writeFileSync(join(check, 'playwright.config.mjs'), "export default { testDir: '.', testMatch: '*.spec.mjs', workers: 1 };\n");
-  symlinkSync(join(REPO, 'bootstrap/check/node_modules'), join(check, 'node_modules'));
+  // Not the suite's guarded config: its one-run-at-a-time lock would refuse these while a real run
+  // goes. Only the stub: guards/ holds specs too, for the guards' own tests.
+  writeFileSync(join(check, 'playwright.config.mjs'), "export default { testDir: '.', testMatch: 'stub.spec.mjs', workers: 1 };\n");
+  const modules = join(REPO, 'bootstrap/check/node_modules');
+  assert.ok(existsSync(modules), 'needs Playwright: cd bootstrap/check && npm ci');
+  symlinkSync(modules, join(check, 'node_modules'));
   writeFileSync(join(work, 'CHANGELOG.md'), changelog);
   git(work, 'add', '-A');
   git(work, 'commit', '-q', '-m', 'test setup');

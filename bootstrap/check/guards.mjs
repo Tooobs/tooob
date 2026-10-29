@@ -66,6 +66,8 @@ function capTabs(browser, popped) {
   browser.newContext = async (options) => guard(await newContext(options));
 }
 
+const popups = []; // tabs past the cap that pages opened themselves, in the test running now
+
 export const test = base.extend({
   // The worker's one browser, with the tab cap.
   browser: [
@@ -86,8 +88,6 @@ export const test = base.extend({
     { auto: true },
   ],
 });
-
-const popups = []; // tabs past the cap that pages opened themselves, in the test running now
 
 // What runs on this machine keep between them: which one is going, and what it started. In the
 // temp folder, so a run in another checkout of tooob sees them too.
@@ -117,7 +117,7 @@ function lock() {
         if (e.code !== 'EEXIST') throw e;
       }
       const holder = Number(readFileSync(LOCK, 'utf8'));
-      if (alive(holder)) {
+      if (alive(holder) && commandLine(holder).includes('playwright')) { // not some later process with its ID
         throw new Error(`another run of the browser suite is going (process ${holder}): one run at a time`);
       }
       rmSync(LOCK, { force: true }); // its run was killed
@@ -136,7 +136,7 @@ export function recordProcess(child) {
 /** The command line of process `pid`, or nothing if it's gone. */
 function commandLine(pid) {
   try {
-    return execFileSync('ps', ['-o', 'command=', '-p', pid], { encoding: 'utf8' }).trim();
+    return execFileSync('ps', ['-ww', '-o', 'command=', '-p', String(pid)], { encoding: 'utf8' }).trim();
   } catch {
     return '';
   }

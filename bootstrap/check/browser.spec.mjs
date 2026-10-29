@@ -4,12 +4,12 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer, get } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test as guarded } from './guards.mjs';
+import { test as base } from './guards.mjs';
 import * as h from './harness.mjs';
 
 // iroh-relay itself, and the Relay Hosts name: a front that hands iroh's paths to it and serves the
 // Bootstrap for everything else, as a Relay Operator runs one (ADR 0020). One of each per worker.
-const test = guarded.extend({
+const test = base.extend({
   irohRelay: [
     async ({}, use) => {
       h.buildHost();
@@ -52,7 +52,7 @@ test('reopening a used Invite Link in another browser says so and never reaches 
 
   const second = await h.newVisitor(browser);
   await second.goto(link);
-  await second.waitForFunction(() => /already been used/.test(document.getElementById('status').textContent), null, { timeout: 20000 });
+  await h.pillSays(second, /already been used/, 20000);
   assert.equal(site.requests, requestsBefore, 'the second browser reached the Site');
 });
 
@@ -60,7 +60,7 @@ test('an approve-first Invite waits, then opens by itself once the owner approve
   const { name, invite } = await hostWithSite(relay);
   const page = await h.newVisitor(browser);
   await page.goto(invite('mom', '--approve'));
-  await page.waitForFunction(() => /Waiting for approval/.test(document.getElementById('status').textContent), null, { timeout: 20000 });
+  await h.pillSays(page, /Waiting for approval/, 20000);
 
   const key = h.tooob(['visitors', name]).split(/\s+/)[0];
   h.tooob(['approve', name, key]);
@@ -110,7 +110,7 @@ test("a link without an Invite tells a stranger they're not invited", async ({ b
   const plain = invite('mom').replace(/#invite=.*/, ''); // the Host's Key Address, minus the Invite
   const page = await h.newVisitor(browser);
   await page.goto(plain);
-  await page.waitForFunction(() => /not invited/.test(document.getElementById('status').textContent), null, { timeout: 20000 });
+  await h.pillSays(page, /not invited/, 20000);
   assert.equal(site.requests, 0);
 });
 
@@ -149,7 +149,7 @@ test('a page waiting for approval survives the Host restarting', async ({ browse
   const { name, invite, restart } = await hostWithSite(relay);
   const page = await h.newVisitor(browser);
   await page.goto(invite('mom', '--approve'));
-  await page.waitForFunction(() => /Waiting for approval/.test(document.getElementById('status').textContent), null, { timeout: 20000 });
+  await h.pillSays(page, /Waiting for approval/, 20000);
 
   await restart(); // the page's connection drops while it's waiting
   const key = h.tooob(['visitors', name]).split(/\s+/)[0];
@@ -293,7 +293,7 @@ test("a tab still waiting for approval never swallows another tab's requests", a
   const y = await hostWithSite(relay);
   const openWaiting = async (page) => {
     await page.goto(x.invite('mom', '--approve'));
-    await page.waitForFunction(() => /Waiting for approval/.test(document.getElementById('status').textContent), null, { timeout: 20000 });
+    await h.pillSays(page, /Waiting for approval/, 20000);
   };
   // Waiting tabs on both sides of the allowed one, so tab order can't hide a wrong pick.
   const first = await h.newVisitor(browser);
@@ -405,7 +405,7 @@ test('the pill says the Direct Path is on the home network', async ({ browser, r
   const page = await h.newVisitor(browser);
   await page.goto(invite('mom'));
   await h.siteText(page);
-  await page.waitForFunction(() => / · direct · LAN$/.test(document.getElementById('status').textContent), null, { timeout: 20000 });
+  await h.pillSays(page, / · direct · LAN$/, 20000);
   assert.doesNotMatch(await h.statusText(page), /\d+\.\d+\.\d+\.\d+|::/, 'the pill shows an address');
 });
 
@@ -415,7 +415,7 @@ test('the pill says a Direct Path from elsewhere was punched through NAT, withou
   await h.forgeNatPunched(page);
   await page.goto(invite('mom'));
   await h.siteText(page);
-  await page.waitForFunction(() => / · direct · NAT punched$/.test(document.getElementById('status').textContent), null, { timeout: 20000 });
+  await h.pillSays(page, / · direct · NAT punched$/, 20000);
   assert.doesNotMatch(await h.statusText(page), /203\.0\.113/);
 });
 
@@ -425,7 +425,7 @@ test('the pill says the Site is coming over the Relay when the Direct Path fails
   await h.breakDirectPath(page);
   await page.goto(invite('mom'));
   await h.siteText(page);
-  await page.waitForFunction(() => / · relay$/.test(document.getElementById('status').textContent), null, { timeout: 20000 });
+  await h.pillSays(page, / · relay$/, 20000);
 });
 
 test('when the Direct Path fails, the Site still loads over the Relay', async ({ browser, relay }) => {
@@ -536,7 +536,7 @@ test("when the Host can't be reached the page says so and keeps the Invite for a
   await stop();
   const page = await h.newVisitor(browser);
   await page.goto(link);
-  await page.waitForFunction(() => /Couldn't reach/.test(document.getElementById('status').textContent), null, { timeout: 60000 });
+  await h.pillSays(page, /Couldn't reach/, 60000);
   assert.ok(page.url().includes('invite='), 'the Invite should stay so a reload can retry');
 });
 
