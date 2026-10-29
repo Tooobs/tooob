@@ -49,6 +49,104 @@ test('an Invite Link loads the Site and drops the token from the address bar', a
   assert.ok(!page.url().includes('invite='), `token still in ${page.url()}`);
 });
 
+/** `link`'s Key Address at `path` instead: the address of one of the Site's pages. */
+const pageAddress = (link, path) => new URL(path, link).href;
+
+/** Wait until the address bar is `path` on `page`'s Key Address. */
+const addressIs = (page, path) => page.waitForFunction((path) => location.pathname + location.search + location.hash === path, path, { timeout: 10000 });
+
+/** Wait until the tab's title is `title`. */
+const titleIs = (page, title) => page.waitForFunction((title) => document.title === title, title, { timeout: 10000 });
+
+/** The Site's page in the shell's iframe. */
+const siteFrame = async (page) => (await page.$('iframe')).contentFrame();
+
+test("a Visitor opening a page's own address sees that page, with the service worker installed and without", async ({ browser, relay }) => {
+  const { invite } = await hostWithSite(relay);
+  const link = invite('mom');
+  const first = await h.newVisitor(browser);
+  await first.goto(link);
+  await h.siteText(first);
+
+  const again = await first.context().newPage(); // the same device, its service worker installed
+  await again.goto(pageAddress(link, '/subfolder/page.html?q=1'));
+  assert.match(await h.siteText(again), /site \/subfolder\/page\.html\?q=1 label=mom/);
+
+  // The browser cleared the service worker, and kept the Visitor Key.
+  const cdp = await again.context().newCDPSession(again);
+  await cdp.send('Storage.clearDataForOrigin', { origin: new URL(link).origin, storageTypes: 'service_workers' });
+  await cdp.detach();
+  const cleared = await first.context().newPage();
+  await cleared.goto(pageAddress(link, '/subfolder/page.html'));
+  assert.match(await h.siteText(cleared), /site \/subfolder\/page\.html label=mom/);
+});
+
+test("an Invite Link at a page's own address opens that page, and drops the token", async ({ browser, relay }) => {
+  const { invite } = await hostWithSite(relay);
+  const link = new URL(invite('mom'));
+  const page = await h.newVisitor(browser);
+  await page.goto(pageAddress(link, '/subfolder/page.html' + link.hash));
+  assert.match(await h.siteText(page), /site \/subfolder\/page\.html label=mom/);
+  assert.equal(page.url(), pageAddress(link, '/subfolder/page.html'));
+});
+
+test("once the service worker is installed, the Relay never sees a page's path", async ({ browser, relay, irohRelay }) => {
+  // It serves the shell for every page load itself, fetched from the Relay as / (ADR 0023).
+  const { invite } = await hostWithSite(relay);
+  const front = await h.startRelayFront(irohRelay); // the browser's alone, so what it's asked is the browser's
+  const link = new URL(invite('mom'));
+  link.port = front.port;
+  const first = await h.newVisitor(browser);
+  await first.goto(link.href);
+  await h.siteText(first);
+
+  const asked = front.asked.length;
+  const again = await first.context().newPage();
+  await again.goto(pageAddress(link, '/subfolder/page.html'));
+  assert.match(await h.siteText(again), /site \/subfolder\/page\.html label=mom/);
+  const pages = front.asked.slice(asked).filter((path) => !path.startsWith('/__tooob/') && path !== '/tooob-sw.js');
+  assert.deepEqual(pages, ['/']);
+});
+
+test("the Site's pushState and #anchors put the address bar on the page shown, and a reload stays there", async ({ browser, relay }) => {
+  const { invite } = await hostWithSite(relay);
+  const page = await h.newVisitor(browser);
+  await page.goto(invite('mom'));
+  await h.siteText(page);
+  const site = await siteFrame(page);
+
+  await site.evaluate(() => history.pushState({}, '', '/albums/2026?sort=new'));
+  await addressIs(page, '/albums/2026?sort=new');
+  await site.evaluate(() => (location.hash = 'beach'));
+  await addressIs(page, '/albums/2026?sort=new#beach');
+  await site.evaluate(() => history.back()); // to before the anchor, within the Site's page
+  await addressIs(page, '/albums/2026?sort=new');
+  await site.evaluate(() => History.prototype.replaceState.call(history, {}, '', '/albums/2026?sort=old#beach'));
+  await addressIs(page, '/albums/2026?sort=old#beach');
+
+  await page.reload();
+  assert.match(await h.siteText(page), /site \/albums\/2026\?sort=old label=mom/);
+  assert.equal(await (await siteFrame(page)).evaluate(() => location.hash), '#beach');
+  assert.equal(new URL(page.url()).hash, '#beach');
+});
+
+test("the Site's pushState still works when the browser refuses to move the address bar", async ({ browser, relay }) => {
+  // As Safari does past 100 history calls in 30 s: it throws, and the shell carries on.
+  const { invite } = await hostWithSite(relay);
+  const page = await h.newVisitor(browser);
+  await page.goto(invite('mom'));
+  await h.siteText(page);
+  const shown = page.url();
+  await page.evaluate(() => {
+    history.replaceState = () => {
+      throw new DOMException('Attempt to use history.replaceState() more than 100 times per 30 seconds', 'SecurityError');
+    };
+  });
+  const site = await siteFrame(page);
+  assert.equal(await site.evaluate(() => (history.pushState({}, '', '/albums/2026'), location.pathname)), '/albums/2026');
+  assert.equal(page.url(), shown, 'the address bar moved anyway');
+});
+
 test('reopening a used Invite Link in another browser says so and never reaches the Site', async ({ browser, relay }) => {
   const { site, invite } = await hostWithSite(relay);
   const link = invite('mom');
@@ -118,6 +216,15 @@ test("a link without an Invite tells a stranger they're not invited", async ({ b
   const page = await h.newVisitor(browser);
   await page.goto(plain);
   await h.pillSays(page, /not invited/, 20000);
+  assert.equal(site.requests, 0);
+});
+
+test("a stranger at a page's own address is told the same, and the Host is never asked for the page", async ({ browser, relay }) => {
+  const { site, invite } = await hostWithSite(relay);
+  const page = await h.newVisitor(browser);
+  await page.goto(pageAddress(invite('mom'), '/subfolder/page.html'));
+  await h.pillSays(page, /not invited/, 20000);
+  assert.equal(await h.statusText(page), "You're not invited to this site. Ask its owner for an Invite Link.");
   assert.equal(site.requests, 0);
 });
 
@@ -267,6 +374,28 @@ test('the Relay serves the Bundle for process isolation, and passes no Cookie on
     assert.deepEqual(seen.map((headers) => headers.cookie), [undefined, undefined]);
   } finally {
     upstream.close();
+  }
+});
+
+test("the Relay serves the shell at any page's path, and a missing Bundle file is still a 404", async ({ irohRelay }) => {
+  // In step with the Relay image's front.caddy (ADR 0023): for a first visit, before the service
+  // worker is installed.
+  const front = await h.startRelayFront(irohRelay);
+  const ask = (path) => new Promise((resolve, reject) => {
+    get({ host: '127.0.0.1', port: front.port, path }, (res) => {
+      let body = '';
+      res.on('data', (d) => (body += d)).on('end', () => resolve({ status: res.statusCode, body, type: res.headers['content-type'] }));
+    }).on('error', reject);
+  });
+  const shell = readFileSync(new URL('../www/index.html', import.meta.url), 'utf8');
+  for (const path of ['/subfolder/', '/subfolder/page.html', '/photo.png?size=big', '/a/b/c', '/tooob-sw.js/x']) {
+    const res = await ask(path);
+    assert.equal(res.status, 200, path);
+    assert.equal(res.body, shell, path);
+    assert.match(res.type, /^text\/html/, path);
+  }
+  for (const path of ['/__tooob/missing.js', '/__tooob/', '/__tooob/pkg/missing.wasm']) {
+    assert.equal((await ask(path)).status, 404, path);
   }
 });
 
@@ -634,6 +763,62 @@ async function visitSharedFolder(path, { browser, relay }) {
   const frame = await (await page.waitForSelector('iframe', { timeout: 20000 })).contentFrame();
   return { page, frame, downloads };
 }
+
+/** A folder of web pages to share: a front page linking to a page in a subfolder, and one with no title. */
+function aWebsite() {
+  const root = mkdtempSync(join(tmpdir(), 'website-'));
+  mkdirSync(join(root, 'trip'));
+  writeFileSync(join(root, 'index.html'), '<!doctype html><title>Our holiday</title><p id="site">front page</p><a id="next" href="trip/day-one.html">Day one</a>');
+  writeFileSync(join(root, 'trip', 'day-one.html'), '<!doctype html><title>Day one</title><p id="site">day one</p><a id="next" href="../untitled.html">More</a>');
+  writeFileSync(join(root, 'untitled.html'), '<!doctype html><p id="site">no title</p>');
+  return root;
+}
+
+test('a link in the Site puts the address bar on the page shown, a reload stays there, and Back goes back', async ({ browser, relay }) => {
+  const { page, frame } = await visitSharedFolder(aWebsite(), { browser, relay });
+  await frame.waitForSelector('#next', { timeout: 20000 });
+  await Promise.all([frame.waitForNavigation(), frame.click('#next')]);
+  await addressIs(page, '/trip/day-one.html');
+
+  await page.reload();
+  assert.equal(await h.siteText(page), 'day one');
+  assert.equal(new URL(page.url()).pathname, '/trip/day-one.html');
+
+  const site = await siteFrame(page);
+  await Promise.all([site.waitForNavigation(), site.click('#next')]);
+  await addressIs(page, '/untitled.html');
+  await Promise.all([site.waitForNavigation(), site.evaluate(() => history.back())]);
+  await addressIs(page, '/trip/day-one.html');
+});
+
+test("the tab's title follows the Site's, and is tooob before the Site has one", async ({ browser, relay }) => {
+  const host = await h.startShare(aWebsite(), relay);
+  const page = await h.newVisitor(browser);
+  await page.goto(h.tooob(['invite', host.name, 'friend', '--approve']));
+  await h.pillSays(page, /Waiting for approval/, 20000);
+  assert.equal(await page.title(), 'tooob', 'while waiting for approval');
+
+  h.tooob(['approve', host.name, h.tooob(['visitors', host.name]).split(/\s+/)[0]]);
+  assert.equal(await h.siteText(page), 'front page');
+  await titleIs(page, 'Our holiday');
+  const site = await siteFrame(page);
+  await Promise.all([site.waitForNavigation(), site.click('#next')]);
+  await titleIs(page, 'Day one');
+  await Promise.all([site.waitForNavigation(), site.click('#next')]);
+  await titleIs(page, 'tooob'); // a page with no <title>
+});
+
+test("the tab's title follows a title the Site changes without moving", async ({ browser, relay }) => {
+  const { page, frame } = await visitSharedFolder(aWebsite(), { browser, relay });
+  await frame.waitForSelector('#next', { timeout: 20000 });
+  await titleIs(page, 'Our holiday');
+  await frame.evaluate(() => (document.title = '(3) Our holiday')); // an unread count
+  await titleIs(page, '(3) Our holiday');
+  await frame.evaluate(() => (document.querySelector('title').firstChild.data = 'Our holiday, seen'));
+  await titleIs(page, 'Our holiday, seen');
+  await frame.evaluate(() => document.querySelector('title').remove());
+  await titleIs(page, 'tooob');
+});
 
 test('a Visitor browses a Shared Folder into a subfolder and opens a photo', async ({ browser, relay }) => {
   const { frame } = await visitSharedFolder(aFolder(), { browser, relay });

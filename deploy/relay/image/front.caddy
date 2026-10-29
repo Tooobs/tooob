@@ -1,5 +1,6 @@
 # What a Relay serves on its domain and on every Key Address under it (ADR 0020): iroh's paths go to
-# iroh-relay (iroh-relay.toml), and everything else is the Bootstrap Bundle.
+# iroh-relay (iroh-relay.toml), and everything else is the Bootstrap Bundle: its files, and its shell
+# (index.html) at every other path, which is a page of a Site's (ADR 0023).
 # No Cookie goes on: a Relay needs none, and a Site that fills the Relay's domain with cookies would
 # otherwise have iroh-relay refuse every other Host's Visitors (ADR 0021).
 request_header -Cookie
@@ -17,5 +18,12 @@ handle {
 	# elsewhere, and COOP's same-origin would break login popups.
 	header Origin-Agent-Cluster "?1"
 	header Cross-Origin-Opener-Policy "same-origin-allow-popups"
+	# A page's own address, opened before the service worker is installed (a first visit), is the
+	# shell, which opens that page. A missing Bundle file stays a 404.
+	@page {
+		not path /__tooob/* /tooob-sw.js
+		not file
+	}
+	rewrite @page /index.html
 	file_server
 }

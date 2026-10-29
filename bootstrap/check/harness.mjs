@@ -4,7 +4,7 @@
 // Chromium treats as a secure context and resolves to this machine. The Hosts and Relays started
 // here go in the run's process record (guards.mjs), so none outlives a run.
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, request } from 'node:http';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -83,12 +83,13 @@ const IROH_PATHS = ['/relay', '/ping', '/generate_204', '/healthz'];
  * needs one a label longer, such as `relay.localhost`.
  * `silence()` makes every Relay connection open so far go quiet both ways while staying open, as a
  * phone's network does to the flows it had when it comes out of deep sleep; connections made
- * afterwards work.
+ * afterwards work. `asked` is every path it was asked for other than iroh's, in order.
  */
 export async function startRelayFront(relayUrl, domain = 'localhost') {
   const relay = new URL(relayUrl);
   const www = process.env.TOOOB_WWW || join(ROOT, 'bootstrap/www');
   const open = new Set();
+  const asked = [];
   const server = createServer((req, res) => {
     // As the Relay image's front.caddy does (ADR 0021): no Cookie goes on, and the Bundle asks
     // browsers for a process of its own.
@@ -102,9 +103,15 @@ export async function startRelayFront(relayUrl, domain = 'localhost') {
       upstream.on('error', () => res.destroy());
       return req.pipe(upstream);
     }
+    asked.push(path);
+    // Any other path is a page of the Site's, opened before the service worker is installed: the
+    // shell, which opens it (ADR 0023). A missing Bundle file is still missing.
+    const bundleFile = path.startsWith('/__tooob/') || path === '/tooob-sw.js';
+    const file = path.endsWith('/') ? join(path, 'index.html') : path;
+    const page = bundleFile ? file : existsSync(join(www, file)) && statSync(join(www, file)).isFile() ? file : '/index.html';
     try {
-      const body = readFileSync(join(www, path === '/' ? 'index.html' : path));
-      res.setHeader('content-type', TYPES[extname(path)] ?? 'text/html');
+      const body = readFileSync(join(www, page));
+      res.setHeader('content-type', TYPES[extname(page)] ?? 'text/html');
       res.setHeader('cache-control', 'no-store');
       res.setHeader('origin-agent-cluster', '?1');
       res.setHeader('cross-origin-opener-policy', 'same-origin-allow-popups');
@@ -136,6 +143,7 @@ export async function startRelayFront(relayUrl, domain = 'localhost') {
   return {
     url: `http://${domain}:${port}/`,
     port,
+    asked,
     silence: () => open.forEach((pair) => (pair.quiet = true)),
   };
 }

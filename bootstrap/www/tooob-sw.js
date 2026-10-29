@@ -1,13 +1,15 @@
 // Service worker: every same-origin request is the site's (iframe, its subresources, its workers)
-// and is carried over iroh by the shell page. Only the top-level shell page and /__tooob/ assets
-// go to the network.
+// and is carried over iroh by the shell page. Only the shell itself and /__tooob/ assets go to the
+// network.
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
 
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (url.origin !== location.origin || url.pathname.startsWith('/__tooob/') || url.pathname === '/tooob-sw.js') return;
-  if (e.request.destination === 'document') return; // the shell itself
+  // A page load, at any of the Site's paths, is the shell, which opens that page (ADR 0023): fetched
+  // as /, so the Relay never sees which page, and a Bundle upgrade arrives with the next load.
+  if (e.request.destination === 'document') return e.respondWith(fetch('/'));
   e.respondWith(shellFor(e).then((shell) => tunnel(e.request, shell)));
 });
 

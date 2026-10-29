@@ -55,7 +55,7 @@ https://kgjwugk89iaan7dtoyuju7pts5r7j3f1zxm3zp8k98nepg1hq46y.relay.example/#invi
 - **Together, the Key Address** (`<host key>.<relay domain>`): each Host is an origin of its own, so no Site's scripts can reach another's browser storage or Visitor Key. It lasts as long as the Host Key and the Relay: a new Relay, or a deleted Host, means new Invites for everyone.
 - **After `#`, the Invite**: browsers never send this part to a server, so the Relay never sees it. It works once, for one device, and the page drops it from the address bar once it's used.
 
-Links within a Site work as they would anywhere: a page links to `subfolder/index.html` and the Visitor goes there. The address bar stays on the Key Address, though, and opening a page's own address directly (`https://<host key>.<relay domain>/subfolder/`) isn't served yet: start from the Key Address.
+Each of a Site's pages has its own address on the Key Address: `https://<host key>.<relay domain>/subfolder/` opens that page ([ADR 0023](docs/adr/0023-site-pages-have-real-paths-on-their-key-address.md)). Links within a Site work as they would anywhere, and the address bar and the tab's title follow the Site, so a reload, a bookmark or a shared link lands on the page it was.
 
 ## What you can try
 
@@ -93,6 +93,8 @@ Everything here is in the first Release, **0.1.0 (not out yet)**: until then, th
   - A Relay of your own doesn't need the list, and [`deploy/README.md`](deploy/README.md) says when one shared with others does. `curl -sI https://<host key>.<your relay>/` shows `Origin-Agent-Cluster` and `Cross-Origin-Opener-Policy`. A cookie a Site sets for the whole Relay domain stays with that Site.
 - **[#82](https://github.com/Tooobs/tooob/issues/82) The browser suite runs on Playwright, and can't take over the machine** · 2026-10-29 · 0.1.0 (not out yet)
   - For contributors: `npx playwright install chromium` once in `bootstrap/check`, then `npx playwright test` there runs the browser suite in headless Chromium (`HEADED=1` opens windows you can watch). A second run started meanwhile refuses, a test that hangs fails at 90 s, and a run killed halfway leaves no Host or Relay running: the next run stops them first.
+- **[#77](https://github.com/Tooobs/tooob/issues/77) A page's own address opens that page, and the address bar follows the Site** · 2026-10-29 · 0.1.0 (not out yet)
+  - Open a Site and click into a subfolder: the address bar shows that page's path, and the tab shows its title, as the page changes it too (an unread count). Reload, or copy the address to another device that's a Visitor: it opens on the same page. An Invite Link works at a page's address too (`https://<host key>.<your relay>/subfolder/#invite=…`).
 
 ## Still to come
 

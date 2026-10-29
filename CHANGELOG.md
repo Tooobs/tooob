@@ -30,4 +30,8 @@ The first Release, for technical early adopters on Linux and macOS.
   no `Cookie` header on, and asks browsers for a process per Key Address (`Origin-Agent-Cluster`,
   `Cross-Origin-Opener-Policy`). A Relay shared by people who don't trust each other still goes on
   the list, for password managers: `deploy/README.md` says why.
+- **A Site's pages have their own addresses** (ADR 0023): `https://<host key>.<relay domain>/<path>`
+  opens that page, and the address bar and the tab's title follow the Site, so a reload, a bookmark
+  or a shared link lands where it was. A Relay serves the shell at any path that isn't iroh's or a
+  Bundle file; once installed, the service worker serves it for every page load, fetched as `/`.
 - **`tooob --version`** prints the Release and the Protocol Version; a starting Host logs them.

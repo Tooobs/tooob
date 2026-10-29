@@ -3,6 +3,7 @@
 # clippy, the Host's tests, the Bootstrap's build, its Bundle's manifest tests, release.sh's tests
 # and deploy/bundle.sh's. Stops at the first that fails and says which. The browser suite isn't
 # here: it starts a browser and real Hosts, and runs at the end of each issue and before a Release.
+# Nor is the Relay image: a Relay is checked live, on its own domain, after each deploy.
 set -u
 cd "$(dirname "$0")" || exit 1
 
