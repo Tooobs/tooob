@@ -1,6 +1,7 @@
 // The browser suite's guards (#82), so a run can't take over the machine.
 import { execFileSync } from 'node:child_process';
-import { appendFileSync, existsSync, linkSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { connect, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -47,7 +48,7 @@ const tabs = (browser) => browser.contexts().flatMap((context) => context.pages(
  * Keep `browser` to TAB_CAP tabs: opening one more through newPage throws at once. A tab the page
  * opens itself (a popup) can't be refused, so it's closed, and the test fails when it ends.
  */
-function capTabs(browser, popped) {
+function capTabs(browser) {
   const guard = (context) => {
     const newPage = context.newPage.bind(context);
     context.newPage = async () => {
@@ -56,7 +57,7 @@ function capTabs(browser, popped) {
     };
     context.on('page', (page) => {
       if (tabs(browser).length > TAB_CAP) {
-        popped.push(capError());
+        tabsPastCap.push(capError());
         page.close().catch(() => {});
       }
     });
@@ -66,65 +67,69 @@ function capTabs(browser, popped) {
   browser.newContext = async (options) => guard(await newContext(options));
 }
 
-const popups = []; // tabs past the cap that pages opened themselves, in the test running now
+const tabsPastCap = []; // the errors for tabs past the cap that pages opened themselves, in the test running now
 
 export const test = base.extend({
   // The worker's one browser, with the tab cap.
   browser: [
     async ({ browser }, use) => {
-      capTabs(browser, popups);
+      capTabs(browser);
       await use(browser);
     },
     { scope: 'worker' },
   ],
-  // Every tab and context a test opened closes when it ends, however it ends.
-  closeTabs: [
+  // Every tab and context a test opened closes when it ends, however it ends; and a test whose page
+  // opened a tab past the cap fails.
+  closeTabsAndCheckCap: [
     async ({ browser }, use) => {
       await use();
       await Promise.all(browser.contexts().map((context) => context.close()));
-      const popped = popups.splice(0);
-      if (popped.length) throw popped[0];
+      const errors = tabsPastCap.splice(0);
+      if (errors.length) throw errors[0];
     },
     { auto: true },
   ],
 });
 
-// What runs on this machine keep between them: which one is going, and what it started. In the
-// temp folder, so a run in another checkout of tooob sees them too.
+// What runs on this machine keep between them: what each started, in the temp folder, so a run in
+// another checkout of tooob sees it too.
 const STATE = join(tmpdir(), 'tooob-browser-suite');
-const LOCK = join(STATE, 'running');
 const RECORD = join(STATE, 'processes'); // a line per Host or Relay: its process ID, then its command line
 
-const alive = (pid) => {
+/** Whether process `pid` is still running. */
+export const alive = (pid) => {
   try {
-    process.kill(pid, 0);
+    process.kill(Number(pid), 0);
     return true;
   } catch (e) {
     return e.code === 'EPERM';
   }
 };
 
-/** Take the lock that says a run is going, or refuse if another run has it. */
-function lock() {
-  mkdirSync(STATE, { recursive: true });
-  const mine = `${LOCK}.${process.pid}`; // written whole, then linked: the lock is never half-written
-  writeFileSync(mine, String(process.pid));
-  try {
-    for (;;) {
-      try {
-        return linkSync(mine, LOCK);
-      } catch (e) {
-        if (e.code !== 'EEXIST') throw e;
-      }
-      const holder = Number(readFileSync(LOCK, 'utf8'));
-      if (alive(holder) && commandLine(holder).includes('playwright')) { // not some later process with its ID
-        throw new Error(`another run of the browser suite is going (process ${holder}): one run at a time`);
-      }
-      rmSync(LOCK, { force: true }); // its run was killed
-    }
-  } finally {
-    rmSync(mine, { force: true });
-  }
+/**
+ * The lock that says a run is going: this port, listened on from global setup to teardown. The
+ * operating system frees it the moment a run ends or is killed, so it's never left behind, and two
+ * runs can't both have it. Whoever connects is told the holder's process ID.
+ */
+const LOCK_PORT = 39812;
+
+/** Take the lock, or refuse, naming the run that has it. Resolves to the lock's server. */
+async function lock() {
+  const server = createServer((socket) => socket.end(String(process.pid)));
+  const taken = await new Promise((resolve, reject) => {
+    server.once('error', (e) => (e.code === 'EADDRINUSE' ? resolve(true) : reject(e)));
+    server.listen(LOCK_PORT, '127.0.0.1', () => resolve(false));
+  });
+  if (!taken) return server.unref();
+  const holder = await new Promise((resolve) => {
+    let said = '';
+    connect(LOCK_PORT, '127.0.0.1').on('data', (d) => (said += d)).on('close', () => resolve(said)).on('error', () => resolve(''));
+  });
+  throw new Error(
+    /^\d+$/.test(holder)
+      ? `another run of the browser suite is going (process ${holder}): one run at a time`
+      : `port ${LOCK_PORT}, the browser suite's one-run-at-a-time lock, is taken by something else`,
+  );
 }
 
 /** Note a Host or Relay the harness started, so no run leaves it running. */
@@ -168,10 +173,10 @@ async function stopRecorded() {
  * its teardown left running. Returns the global teardown, which stops what this run left running.
  */
 export default async function setup() {
-  lock();
+  const held = await lock();
   await stopRecorded();
   return async () => {
     await stopRecorded();
-    rmSync(LOCK, { force: true });
+    await new Promise((r) => held.close(r));
   };
 }

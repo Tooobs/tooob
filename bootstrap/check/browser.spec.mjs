@@ -7,12 +7,19 @@ import { join } from 'node:path';
 import { test as base } from './guards.mjs';
 import * as h from './harness.mjs';
 
-// iroh-relay itself, and the Relay Hosts name: a front that hands iroh's paths to it and serves the
-// Bootstrap for everything else, as a Relay Operator runs one (ADR 0020). One of each per worker.
+// The tooob the Hosts run, built once per worker with time of its own: a cold build isn't the first
+// test's to wait out. Then iroh-relay itself, and the Relay Hosts name: a front that hands iroh's
+// paths to it and serves the Bootstrap for everything else, as a Relay Operator runs one (ADR 0020).
 const test = base.extend({
-  irohRelay: [
+  tooob: [
     async ({}, use) => {
-      h.buildHost();
+      await h.buildHost();
+      await use();
+    },
+    { scope: 'worker', timeout: 10 * 60_000 },
+  ],
+  irohRelay: [
+    async ({ tooob }, use) => {
       await use(await h.startRelay());
       h.stopAll();
     },
@@ -320,7 +327,7 @@ test("the Site's traffic goes over the Direct Path, not the Relay", async ({ bro
   const page = await h.newVisitor(browser);
   await page.goto(invite('mom'));
   await h.siteText(page);
-  await page.waitForFunction(() => window.__tooobStats.path === 'direct', null, { timeout: 20000 });
+  await h.pathIs(page, 'direct', 20000);
   const bytes = await h.bytesForReload(page);
   assert.ok(bytes.direct > 0, `nothing came direct: ${JSON.stringify(bytes)}`);
   assert.equal(bytes.relay, 0, `the Relay carried Site bytes: ${JSON.stringify(bytes)}`);
@@ -334,11 +341,11 @@ test('after the phone sleeps, the Site still loads and goes back onto the Direct
   link.port = front.port;
   await page.goto(link.href);
   await h.siteText(page);
-  await page.waitForFunction(() => window.__tooobStats.path === 'direct', null, { timeout: 10000 });
+  await h.pathIs(page, 'direct', 10000);
 
   await h.sleepPage(page, front, 35); // past iroh's 30 s idle timeout: the Host drops the connection
   assert.equal(await h.siteFetch(page, '/bytes/20000000'), '200 20000000', 'a download right after waking');
-  await page.waitForFunction(() => window.__tooobStats.path === 'direct', null, { timeout: 20000 });
+  await h.pathIs(page, 'direct', 20000);
 });
 
 test("after a phone's deep sleep silences its Relay connection, the Site loads as soon as it wakes", async ({ browser, relay, irohRelay }) => {
@@ -366,7 +373,7 @@ test('a Direct Path that drops and comes back carries the Site again, without a 
   const page = await h.newVisitor(browser);
   await page.goto(invite('mom'));
   await h.siteText(page);
-  await page.waitForFunction(() => window.__tooobStats.path === 'direct', null, { timeout: 20000 });
+  await h.pathIs(page, 'direct', 20000);
 
   pause(); // the browser's ICE checks go unanswered, as when a phone backgrounds the tab
   try {
@@ -374,7 +381,7 @@ test('a Direct Path that drops and comes back carries the Site again, without a 
   } finally {
     resume();
   }
-  await page.waitForFunction(() => window.__tooobStats.path === 'direct', null, { timeout: 20000 });
+  await h.pathIs(page, 'direct', 20000);
   const bytes = await h.bytesForReload(page);
   assert.ok(bytes.direct > 0, `nothing came direct: ${JSON.stringify(bytes)}`);
   assert.equal(bytes.relay, 0, `the Relay carried Site bytes: ${JSON.stringify(bytes)}`);
@@ -386,13 +393,13 @@ test('a Direct Path that fails mid-visit is renegotiated each time, and a downlo
   await h.watchDirectPath(page);
   await page.goto(invite('mom'));
   await h.siteText(page);
-  await page.waitForFunction(() => window.__tooobStats.path === 'direct', null, { timeout: 20000 });
+  await h.pathIs(page, 'direct', 20000);
   const frame = await (await page.$('iframe')).contentFrame();
   const download = frame.evaluate(() => fetch('/bytes/20971520').then((r) => r.arrayBuffer()).then((b) => b.byteLength));
 
   for (let i = 0; i < 5; i++) { // more failures than any retry budget
     assert.notEqual(await h.failDirectPath(page), 'direct', `failure ${i + 1} went unnoticed`);
-    await page.waitForFunction(() => window.__tooobStats.path === 'direct', null, { timeout: 3000 });
+    await h.pathIs(page, 'direct', 3000);
   }
   assert.equal(await download, 20971520);
   const bytes = await h.bytesForReload(page);
@@ -434,7 +441,7 @@ test('when the Direct Path fails, the Site still loads over the Relay', async ({
   await h.breakDirectPath(page);
   await page.goto(invite('mom'));
   assert.match(await h.siteText(page), /label=mom/);
-  await page.waitForFunction(() => window.__tooobStats.path === 'relay', null, { timeout: 20000 });
+  await h.pathIs(page, 'relay', 20000);
   const bytes = await h.bytesForReload(page);
   assert.ok(bytes.relay > 0, `nothing came over the Relay: ${JSON.stringify(bytes)}`);
   assert.equal(bytes.direct, 0);
@@ -446,7 +453,7 @@ test('a Direct Path attempt that fails is retried, and the Site moves onto it', 
   await h.breakDirectPath(page, 1); // like an attempt right after a network switch
   await page.goto(invite('mom'));
   assert.match(await h.siteText(page), /label=mom/);
-  await page.waitForFunction(() => window.__tooobStats.path === 'direct', null, { timeout: 30000 });
+  await h.pathIs(page, 'direct', 30000);
   const bytes = await h.bytesForReload(page);
   assert.ok(bytes.direct > 0, `nothing came direct: ${JSON.stringify(bytes)}`);
   assert.equal(bytes.relay, 0, `the Relay carried Site bytes: ${JSON.stringify(bytes)}`);
@@ -468,7 +475,7 @@ test("the browser refuses a Direct Path whose certificate isn't the one the Host
   await h.forgeDirectFingerprint(page);
   await page.goto(invite('mom'));
   assert.match(await h.siteText(page), /label=mom/);
-  await page.waitForFunction(() => window.__tooobStats.path === 'relay', null, { timeout: 20000 });
+  await h.pathIs(page, 'relay', 20000);
   const bytes = await h.bytesForReload(page);
   assert.equal(bytes.direct, 0, 'Site bytes went over the forged Direct Path');
 });
@@ -478,7 +485,7 @@ test('bursts over the Direct Path never stall (SCTP loses a burst and waits >= 1
   const page = await h.newVisitor(browser);
   await page.goto(invite('mom'));
   await h.siteText(page);
-  await page.waitForFunction(() => window.__tooobStats.path === 'direct', null, { timeout: 20000 });
+  await h.pathIs(page, 'direct', 20000);
   const frame = await (await page.$('iframe')).contentFrame();
   // Like a page of photos: 8 × 320 KB at once, ten times over.
   const rounds = await frame.evaluate(async () => {
@@ -500,7 +507,7 @@ test('a refused upload leaves the Direct Path carrying the next request', async 
   const page = await h.newVisitor(browser);
   await page.goto(invite('mom'));
   await h.siteText(page);
-  await page.waitForFunction(() => window.__tooobStats.path === 'direct', null, { timeout: 20000 });
+  await h.pathIs(page, 'direct', 20000);
   const key = h.tooob(['visitors', name]).split(/\s+/)[0];
   const frame = await (await page.$('iframe')).contentFrame();
 
@@ -522,7 +529,7 @@ test('a 20 MB upload goes through on the Direct Path', async ({ browser, relay }
   const page = await h.newVisitor(browser);
   await page.goto(invite('mom'));
   await h.siteText(page);
-  await page.waitForFunction(() => window.__tooobStats.path === 'direct', null, { timeout: 20000 });
+  await h.pathIs(page, 'direct', 20000);
   const before = await page.evaluate(() => window.__tooobStats.bytes.direct);
   const frame = await (await page.$('iframe')).contentFrame();
   const reply = await frame.evaluate(() => fetch('/upload', { method: 'POST', body: new Uint8Array(20 << 20) }).then((r) => r.text()));
@@ -569,7 +576,7 @@ test('when the Host comes back during the tries, the Site loads again without a 
   await h.pillSays(page, /^connected in \d+ ms · page \d+ ms · (relay|direct)/, 20000);
   assert.match(await h.siteFetch(page, '/bytes/1000'), /^200 1000$/);
   assert.ok(await page.evaluate(() => window.notReloaded), 'the shell reloaded');
-  await page.waitForFunction(() => window.__tooobStats.path === 'direct', null, { timeout: 20000 }); // and the Direct Path is back
+  await h.pathIs(page, 'direct', 20000); // and the Direct Path is back
 });
 
 test("when the Host stays away the pill gives up and offers a reload, and tapping it reloads", async ({ browser, relay }) => {

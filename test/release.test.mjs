@@ -20,7 +20,9 @@ const git = (dir, ...args) => execFileSync('git', ['-C', dir, ...args], { encodi
  * A clone of this repo whose origin is a bare repo of its own, with the working tree's release.sh
  * and stubs for everything slow: check.sh and the browser suite pass unless a test says otherwise.
  */
-function aClone(t, { changelog = UNRELEASED, browserTest = "test('stub', () => {});" } = {}) {
+const STUB_CONFIG = "export default { testDir: '.', testMatch: 'stub.spec.mjs', workers: 1 };\n";
+
+function aClone(t, { changelog = UNRELEASED, browserTest = "test('stub', () => {});", browserConfig = STUB_CONFIG } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'tooob-release-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const [bare, work] = [join(dir, 'origin.git'), join(dir, 'work')];
@@ -35,7 +37,7 @@ function aClone(t, { changelog = UNRELEASED, browserTest = "test('stub', () => {
   writeFileSync(join(check, 'stub.spec.mjs'), `import { test } from '@playwright/test';\n${browserTest}\n`);
   // Not the suite's guarded config: its one-run-at-a-time lock would refuse these while a real run
   // goes. Only the stub: guards/ holds specs too, for the guards' own tests.
-  writeFileSync(join(check, 'playwright.config.mjs'), "export default { testDir: '.', testMatch: 'stub.spec.mjs', workers: 1 };\n");
+  writeFileSync(join(check, 'playwright.config.mjs'), browserConfig);
   const modules = join(REPO, 'bootstrap/check/node_modules');
   assert.ok(existsSync(modules), 'needs Playwright: cd bootstrap/check && npm ci');
   symlinkSync(modules, join(check, 'node_modules'));
@@ -46,8 +48,8 @@ function aClone(t, { changelog = UNRELEASED, browserTest = "test('stub', () => {
   return { work, bare };
 }
 
-/** ./release.sh VERSION in the clone. Without NODE_TEST_CONTEXT, which this test runner passes
- *  to its children: the browser suite's own `node --test` would report to this runner instead. */
+/** ./release.sh VERSION in the clone. Without NODE_TEST_CONTEXT, which this test runner passes to
+ *  its children: release.sh's own tools should see the environment a person's shell gives them. */
 function release(work, version, extraEnv = {}) {
   const { NODE_TEST_CONTEXT, ...env } = process.env;
   return spawnSync('./release.sh', [version], { cwd: work, encoding: 'utf8', env: { ...env, ...extraEnv } });
@@ -228,4 +230,31 @@ test("an earlier version's test Release still gets the cross-Release check", (t)
   assert.equal(result.status, 0, result.stderr);
   assert.doesNotMatch(result.stdout, /is a test Release of/);
   assert.match(result.stdout, /cross-Release check: skipped, 0\.1\.0-rc\.1 has no tooob for this machine/); // the stand-in gh lists no assets
+});
+
+test("a Release is refused up front without Playwright's Chromium, naming it", (t) => {
+  const { work, bare } = aClone(t);
+  const none = mkdtempSync(join(tmpdir(), 'tooob-no-browsers-'));
+  t.after(() => rmSync(none, { recursive: true, force: true }));
+  const result = release(work, '0.2.0', { PLAYWRIGHT_BROWSERS_PATH: none });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /needs Playwright's Chromium: .*npx playwright install chromium/);
+  assert.doesNotMatch(result.stdout, /the browser suite/, 'the suite ran');
+  assert.equal(git(bare, 'tag', '-l'), '');
+});
+
+test('a browser suite that fails before any test runs stops the Release, saying so', (t) => {
+  const { work, bare } = aClone(t, {
+    // As when another run of the suite is going: its global setup refuses.
+    browserConfig: `export default { testDir: '.', testMatch: 'stub.spec.mjs', workers: 1, globalSetup: './refuse.mjs' };\n`,
+  });
+  writeFileSync(join(work, 'bootstrap/check/refuse.mjs'), "export default () => { throw new Error('another run of the browser suite is going'); };\n");
+  git(work, 'add', '-A');
+  git(work, 'commit', '-q', '-m', 'a suite that refuses');
+  git(work, 'push', '-q', 'origin', 'HEAD:main');
+  const result = release(work, '0.2.0');
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /the browser suite: it failed before any test ran/);
+  assert.doesNotMatch(result.stdout, /rerunning/);
+  assert.equal(git(bare, 'tag', '-l'), '');
 });

@@ -3,13 +3,14 @@ import { test } from '../guards.mjs';
 import * as h from '../harness.mjs';
 
 test('starts a Relay and a Host, then hangs', async () => {
-  h.buildHost();
+  await h.buildHost();
   const relay = await h.startRelay();
   await h.startHost(await h.startSite(), relay);
-  // This worker's children, but for its browser: the Relay and the Host.
+  // This worker's children: the Relay and the Host it started, and its browser.
   const children = execFileSync('pgrep', ['-P', String(process.pid)], { encoding: 'utf8' }).trim().split(/\s+/);
-  const listed = execFileSync('ps', ['-o', 'pid=,comm=', '-p', children.join(',')], { encoding: 'utf8' });
-  const started = listed.split('\n').filter((line) => /tooob|iroh-relay/.test(line)).map((line) => line.trim().split(/\s+/)[0]);
-  console.log(`started: ${started.join(',')}.`);
+  const listed = execFileSync('ps', ['-o', 'pid=,comm=', '-p', children.join(',')], { encoding: 'utf8' })
+    .trim().split('\n').map((line) => line.trim().split(/\s+/));
+  const pids = (re) => listed.filter(([, command]) => re.test(command)).map(([pid]) => pid).join(',');
+  console.log(`started: ${pids(/tooob|iroh-relay/)}. browser: ${pids(/chrom/i)}.`);
   await new Promise(() => {});
 });

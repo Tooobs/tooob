@@ -3,9 +3,12 @@
 // Run: node --test guards.test.mjs
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
+import { createServer } from 'node:net';
 import { test } from 'node:test';
+import { alive } from './guards.mjs';
 
 const CHECK = new URL('.', import.meta.url).pathname;
+
 
 /**
  * `npx playwright test` on guards/SPEC, in a process group of its own: once it ends, its exit code,
@@ -93,31 +96,62 @@ test('a second run started during a run refuses, and says so', async () => {
     assert.match(second.output, /another run of the browser suite is going/, second.output);
     assert.doesNotMatch(second.output, /limits:/, 'the second run ran its tests');
   } finally {
-    process.kill(-first.group, 'SIGINT');
+    process.kill(-first.group, 'SIGINT'); // its group: npm, the runner and its worker, never the browser
     await first;
   }
   const third = await run('limits.spec.mjs');
   assert.equal(third.status, 0, `a run after the first ended refused:\n${third.output}`);
 });
 
-const alive = (pid) => {
+/**
+ * Kill a run hard, as a killed terminal or agent does: SIGKILL every process in its group but
+ * `spared` (its Hosts and Relays). Those are npm, the runner and its worker: Playwright starts the
+ * browser in a group of its own, so no signal reaches it here.
+ */
+async function killHard(killed, spared = []) {
+  const group = execFileSync('ps', ['-ww', '-o', 'pid=,command=', '-g', String(killed.group)], { encoding: 'utf8' })
+    .trim().split('\n').map((line) => line.trim().split(/\s+/));
+  const doomed = group.filter(([pid]) => !spared.includes(pid));
+  assert.deepEqual(doomed.filter(([, command]) => /chrom/i.test(command)), [], 'a browser process is in the run\'s group');
+  for (const [pid] of doomed) process.kill(Number(pid), 'SIGKILL');
+  await killed;
+}
+
+const both = (results) => results.map((r) => r.output).join('\n----\n');
+
+test("a run refuses when something else holds its lock's port, and says so", async () => {
+  const squatter = createServer((socket) => socket.end());
+  await new Promise((r) => squatter.listen(39812, '127.0.0.1', r));
   try {
-    return process.kill(Number(pid), 0);
-  } catch {
-    return false;
+    const { status, output } = await run('limits.spec.mjs');
+    assert.notEqual(status, 0, output);
+    assert.match(output, /port 39812.*is taken by something else/, output);
+  } finally {
+    await new Promise((r) => squatter.close(r));
   }
-};
+});
+
+test('after a run is killed, of two runs started at the same moment, one goes ahead and the other refuses', async () => {
+  const killed = run('hang.spec.mjs', { env: { TOOOB_GUARDS_LIMITS_MS: '30000,30000' } });
+  await killed.saw(/hangs/);
+  await killHard(killed);
+  const results = await Promise.all([0, 1].map(() => run('hang.spec.mjs', { env: { TOOOB_GUARDS_LIMITS_MS: '4000,30000' } })));
+  assert.equal(results.filter((r) => /another run of the browser suite is going/.test(r.output)).length, 1, both(results));
+  assert.equal(results.filter((r) => /Test timeout of 4000ms exceeded/.test(r.output)).length, 1, both(results));
+});
+
 
 test('a run killed hard leaves Hosts and Relays behind, and the next run stops them first', async () => {
   const killed = run('leave-behind.spec.mjs', { env: { TOOOB_GUARDS_LIMITS_MS: '120000,120000' } });
-  const pids = (await killed.saw(/started: [\d,]+\./)).match(/started: ([\d,]+)\./)[1].split(',');
+  const said = (await killed.saw(/browser: [\d,]+\./)).match(/started: ([\d,]+)\. browser: ([\d,]+)\./);
+  const [pids, browser] = [said[1].split(','), said[2].split(',')];
   assert.equal(pids.length, 2, `expected a Relay and a Host: ${pids}`);
   try {
-    // Everything the run is but its Hosts and Relays, killed at once: the runner, its worker, the browser.
-    const group = execFileSync('pgrep', ['-g', String(killed.group)], { encoding: 'utf8' }).split(/\s+/).filter(Boolean);
-    for (const pid of group.filter((p) => !pids.includes(p))) process.kill(Number(pid), 'SIGKILL');
-    await killed;
+    await killHard(killed, pids);
     assert.deepEqual(pids.filter(alive), pids, 'the killed run took its Host and Relay with it: nothing to test');
+    // The browser, never signalled, ends by itself once its worker is gone.
+    for (let waited = 0; waited < 10000 && browser.some(alive); waited += 200) await new Promise((r) => setTimeout(r, 200));
+    assert.deepEqual(browser.filter(alive), [], 'the browser outlived its killed worker');
 
     const next = await run('no-leftovers.spec.mjs', { env: { LEFTOVERS: pids.join(',') } });
     assert.equal(next.status, 0, next.output);

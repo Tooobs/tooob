@@ -19,9 +19,12 @@ const children = [];
 const servers = [];
 const sockets = []; // proxied connections: a server can't close while they're open
 
-export function buildHost() {
+/** Build the tooob the Hosts run (unless TOOOB_BIN names one), without blocking: time limits stay live. */
+export async function buildHost() {
   if (process.env.TOOOB_BIN) return;
-  execFileSync('cargo', ['build', '-q', '--manifest-path', join(ROOT, 'host/Cargo.toml')], { stdio: 'inherit' });
+  const cargo = spawn('cargo', ['build', '-q', '--manifest-path', join(ROOT, 'host/Cargo.toml')], { stdio: ['ignore', 'inherit', 'inherit'] });
+  const status = await new Promise((resolve, reject) => cargo.on('error', reject).on('exit', resolve));
+  if (status !== 0) throw new Error(`cargo build failed (${status})`);
 }
 
 function listen(server) {
@@ -234,6 +237,11 @@ export async function statusText(page) {
 /** Wait until the status line matches `re`. */
 export async function pillSays(page, re, ms) {
   await page.waitForFunction((src) => new RegExp(src).test(document.getElementById('status').textContent), re.source, { timeout: ms });
+}
+
+/** Wait until the shell says the Site comes by `path`: 'direct' (the Direct Path) or 'relay'. */
+export async function pathIs(page, path, ms) {
+  await page.waitForFunction((path) => window.__tooobStats.path === path, path, { timeout: ms });
 }
 
 /** Wait until the Site has loaded in the shell's iframe; return its text. */
