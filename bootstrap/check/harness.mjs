@@ -3,7 +3,7 @@
 // Playwright's Chromium then opens real Invite Links, on Key Addresses: `<host key>.localhost`, which
 // Chromium treats as a secure context and resolves to this machine. The Hosts and Relays started
 // here go in the run's process record (guards.mjs), so none outlives a run.
-import { execFileSync, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, request } from 'node:http';
 import { connect } from 'node:net';
@@ -192,7 +192,7 @@ let hosts = 0;
 export async function startHost(site, relay, name) {
   if (!name) {
     name = `site-${++hosts}`;
-    tooob(['add', name, site.addr, '--relay', relay]);
+    await add([name, site.addr, '--relay', relay]);
   }
   return runHost(name);
 }
@@ -200,7 +200,7 @@ export async function startHost(site, relay, name) {
 /** A Host sharing PATH (a Shared Folder, or a single file), through a Relay, running. */
 export async function startShare(path, relay) {
   const name = `share-${++hosts}`;
-  tooob(['add', name, path, '--relay', relay]);
+  await add([name, path, '--relay', relay]);
   return runHost(name);
 }
 
@@ -215,6 +215,16 @@ async function runHost(name) {
     pause: () => host.child.kill('SIGSTOP'),
     resume: () => host.child.kill('SIGCONT'),
   };
+}
+
+/**
+ * `tooob add ARGS`, without blocking: it asks the Relay for its Bootstrap first (ADR 0020), and
+ * the Relay's front answers from this same process.
+ */
+function add(args) {
+  return new Promise((resolve, reject) =>
+    execFile(TOOOB, ['add', ...args], { encoding: 'utf8', env: ENV }, (error, stdout) => (error ? reject(error) : resolve(stdout.trim()))),
+  );
 }
 
 export function tooob(args) {

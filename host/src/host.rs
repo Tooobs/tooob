@@ -102,6 +102,7 @@ impl Host {
             changes,
             jars,
             stop: Default::default(),
+            bootstrap: Default::default(),
         };
         let router = Router::builder(endpoint).accept(ALPN, admission).spawn();
         let control_socket = crate::control::listen(&config.data_dir, control.clone())?;

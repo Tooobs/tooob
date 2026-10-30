@@ -12,6 +12,7 @@ use std::{
 use tokio::signal::unix::{SignalKind, signal};
 use tooob::Network;
 use tooob::access::InviteOptions;
+use tooob::bootstrap::{self, Bootstrap, Problem, RelaysBootstrap};
 use tooob::control::{Client, ControlError};
 use tooob::host::{Host, HostConfig, Site};
 use tooob::hosts::{
@@ -114,7 +115,7 @@ async fn run() -> Result<()> {
         Some("add") => {
             exactly(3, &["relay", "local"])?;
             let (name, target) = (arg(1)?, arg(2)?);
-            let relay = new_host_relay(&flags, false)?;
+            let relay = new_host_relay(&flags, false).await?;
             home.add(&name, &target, &relay)?;
         }
         Some("run") => {
@@ -128,7 +129,7 @@ async fn run() -> Result<()> {
         }
         Some("show") => {
             exactly(2, &[])?;
-            show_host(&home.find(&arg(1)?)?);
+            show_host(&home.find(&arg(1)?)?).await;
         }
         Some("rm") => {
             exactly(2, &[])?;
@@ -155,19 +156,24 @@ fn relay(flags: &Flags) -> Result<Option<String>> {
 }
 
 /// A new Host's Relay, as `--relay URL` (or `--local`) says: never a guess (ADR 0015). With `ask`,
-/// a person at the keyboard is asked for it; otherwise it's an error.
-fn new_host_relay(flags: &Flags, ask: bool) -> Result<String> {
-    match relay(flags)? {
+/// a person at the keyboard is asked for it; otherwise it's an error. A Relay whose Bootstrap won't
+/// do for this tooob is refused before the Host is made (ADR 0020).
+async fn new_host_relay(flags: &Flags, ask: bool) -> Result<String> {
+    let relay = match relay(flags)? {
         Some(relay) => {
             check_relay(&relay)?;
-            Ok(relay)
+            relay
         }
-        None if ask => ask::relay(),
+        None if ask => ask::relay()?,
         None => bail!(
             "say which Relay its Visitors reach it through (--relay URL, or --local for this \
              network only): {RUN_YOUR_OWN}\n{USAGE}"
         ),
+    };
+    if relay != NO_RELAY {
+        relays_bootstrap(&relay).await.context("no Host added")?;
     }
+    Ok(relay)
 }
 
 /// What `share` serves from: the Host already serving the path, or a new one, added only once the
@@ -202,7 +208,7 @@ async fn share(home: &Home, words: &[String], flags: &Flags, invitees: &[String]
             (Sharing::Reused(host), can_invite)
         }
         None => {
-            let relay = new_host_relay(flags, terminal())?;
+            let relay = new_host_relay(flags, terminal()).await?;
             let why = no_key_address(&relay);
             if let Some(why) = why.filter(|_| !invitees.is_empty()) {
                 bail!(no_invite_links("the new Host", why));
@@ -278,6 +284,8 @@ async fn ls(home: &Home, json: bool) -> Result<()> {
         state: &'static str,
         enabled: bool,
         visitors: Option<usize>,
+        /// Its Relay's Bootstrap won't do for this tooob (ADR 0020): only a running Host knows.
+        bootstrap_mismatch: bool,
         serves: String,
     }
     let mut rows = Vec::new();
@@ -290,15 +298,20 @@ async fn ls(home: &Home, json: bool) -> Result<()> {
             }
         };
         let running = host.running().is_some();
-        let visitors = match running {
-            true => Client::new(&host.state_dir).visitors().await.ok(),
-            false => None,
+        let client = Client::new(&host.state_dir);
+        let (visitors, bootstrap) = match running {
+            true => (
+                client.visitors().await.ok(),
+                client.relays_bootstrap().await.ok(),
+            ),
+            false => (None, None),
         };
         rows.push(Row {
             name,
             state: if running { "running" } else { "stopped" },
             enabled: false, // until `tooob enable` (#27)
             visitors: visitors.map(|v| v.len()),
+            bootstrap_mismatch: bootstrap.is_some_and(|b| b.mismatch.is_some()),
             serves: host.settings.serves,
         });
     }
@@ -306,38 +319,63 @@ async fn ls(home: &Home, json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
     }
+    let state = |r: &Row| match r.bootstrap_mismatch {
+        true => format!("{} (bootstrap mismatch)", r.state),
+        false => r.state.to_string(),
+    };
     let width = rows.iter().map(|r| r.name.len()).max().unwrap_or(0).max(4);
+    let states = rows
+        .iter()
+        .map(|r| state(r).len())
+        .max()
+        .unwrap_or(0)
+        .max(7);
     println!(
-        "{:<width$}  {:<7}  {:<7}  {:>8}  SERVES",
+        "{:<width$}  {:<states$}  {:<7}  {:>8}  SERVES",
         "NAME", "STATE", "ENABLED", "VISITORS"
     );
-    for r in rows {
+    for r in &rows {
         let visitors = r.visitors.map_or("-".into(), |n| n.to_string());
         let enabled = if r.enabled { "yes" } else { "no" };
         println!(
-            "{:<width$}  {:<7}  {enabled:<7}  {visitors:>8}  {}",
-            r.name, r.state, r.serves
+            "{:<width$}  {:<states$}  {enabled:<7}  {visitors:>8}  {}",
+            r.name,
+            state(r),
+            r.serves
         );
     }
     Ok(())
 }
 
-/// `tooob show`: one Host's settings, Host Key, and where its files are.
-fn show_host(host: &Entry) {
+/// `tooob show`: one Host's settings, Host Key, and where its files are; and while it runs, its
+/// Relay's Bootstrap.
+async fn show_host(host: &Entry) {
     let state = match host.running() {
         Some(pid) => format!("running (pid {pid})"),
         None => "stopped".into(),
     };
     println!("{}: {state}", host.name);
     let key = host.host_key().unwrap_or_else(|| "none yet".into());
+    let bootstrap = match host.running() {
+        Some(_) => Client::new(&host.state_dir).relays_bootstrap().await.ok(),
+        None => None,
+    };
+    let bootstrap = bootstrap.and_then(|b| match b.mismatch {
+        Some(why) => Some(format!("bootstrap mismatch: {why}")),
+        None => b.serves,
+    });
     for (label, value) in [
         ("serves", host.settings.serves.clone()),
         ("relay", host.settings.relay.clone()),
+    ]
+    .into_iter()
+    .chain(bootstrap.map(|b| ("Bootstrap", b)))
+    .chain([
         ("Host Key", key),
         ("settings file", host.settings_file.display().to_string()),
         ("state folder", host.state_dir.display().to_string()),
         ("log", host.log_file().display().to_string()),
-    ] {
+    ]) {
         println!("  {label:<14} {value}");
     }
 }
@@ -535,7 +573,120 @@ async fn serve(host: &Entry, invitees: Vec<ask::Invitee>) -> Result<()> {
         .settings
         .network()
         .with_context(|| format!("in {}", host.settings_file.display()))?;
-    serve_here(host, site, network, invitees).await
+    let bootstrap = match network {
+        Network::LocalOnly => None,
+        _ => Some(
+            relays_bootstrap(&host.settings.relay)
+                .await
+                .with_context(|| {
+                    format!(
+                        "{} won't start ({} names its Relay)",
+                        host.name,
+                        host.settings_file.display()
+                    )
+                })?,
+        ),
+    };
+    serve_here(host, site, network, bootstrap, invitees).await
+}
+
+/// How often a running Host checks its Relay's Bootstrap again: every 10 minutes, or as
+/// `TOOOB_BOOTSTRAP_CHECK_EVERY` says (`1s`, `30m`), which tests use.
+fn check_every() -> Result<Duration> {
+    let Some(every) = std::env::var_os("TOOOB_BOOTSTRAP_CHECK_EVERY") else {
+        return Ok(Duration::from_secs(10 * 60));
+    };
+    let every = every.to_string_lossy();
+    match seconds(&every).context("in TOOOB_BOOTSTRAP_CHECK_EVERY")? {
+        0 => bail!("TOOOB_BOOTSTRAP_CHECK_EVERY can't be 0"),
+        secs => Ok(Duration::from_secs(secs)),
+    }
+}
+
+/// A running Host checking its Relay's Bootstrap now and then (ADR 0020). One that stops doing for
+/// this tooob is a warning in its log and a bootstrap mismatch in `tooob ls` and `tooob show`, and
+/// the Host keeps serving: Visitors already connected keep working. A Relay it can't reach for a
+/// while is a warning only.
+struct KeepChecking {
+    name: String,
+    relay: String,
+    control: tooob::control::Control,
+    every: Duration,
+}
+
+impl KeepChecking {
+    async fn run(self, first: Bootstrap) {
+        let (name, relay) = (&self.name, &self.relay);
+        let mut good = first;
+        let mut last: Result<(), Problem> = Ok(());
+        self.control.found_relays_bootstrap(RelaysBootstrap {
+            serves: Some(good.to_string()),
+            mismatch: None,
+        });
+        loop {
+            tokio::time::sleep(self.every).await;
+            let now = bootstrap::check(relay).await;
+            let same = match (&now, &last) {
+                (Ok(b), Ok(())) => *b == good,
+                (Err(Problem::Unreachable(_)), Err(Problem::Unreachable(_))) => true,
+                (Err(p), Err(q)) => p == q,
+                _ => false,
+            };
+            if same {
+                continue;
+            }
+            match &now {
+                Ok(b) if *b == good => {
+                    eprintln!("tooob: {name}: its Relay {relay} serves Bootstrap {b} again")
+                }
+                Ok(b) => eprintln!("tooob: {name}: its Relay {relay} now serves Bootstrap {b}"),
+                Err(problem @ Problem::Unreachable(_)) => {
+                    eprintln!("tooob: {name}: warning: its Relay {relay} {problem}")
+                }
+                Err(problem) => eprintln!(
+                    "tooob: {name}: warning: its Relay {relay} {problem}; Visitors already \
+                     connected keep working"
+                ),
+            }
+            match &now {
+                Ok(b) => {
+                    good = b.clone();
+                    self.control.found_relays_bootstrap(RelaysBootstrap {
+                        serves: Some(b.to_string()),
+                        mismatch: None,
+                    });
+                }
+                Err(Problem::Unreachable(_)) => {} // what it last found still stands
+                Err(problem) => {
+                    let serves = match problem {
+                        Problem::Mismatch(theirs) => Some(theirs.to_string()),
+                        _ => None,
+                    };
+                    self.control.found_relays_bootstrap(RelaysBootstrap {
+                        serves,
+                        mismatch: Some(format!("its Relay {relay} {problem}")),
+                    });
+                }
+            }
+            last = now.map(drop);
+        }
+    }
+}
+
+/// A task that ends when this is dropped.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// The Bootstrap the Relay at `relay` serves, if it's one this tooob's Hosts work with (ADR 0020).
+async fn relays_bootstrap(relay: &str) -> Result<Bootstrap> {
+    bootstrap::check(relay)
+        .await
+        .map_err(|problem| anyhow::anyhow!("its Relay {relay} {problem}"))
 }
 
 /// Run the Host in this process until it's told to stop: Ctrl-C, SIGTERM from Docker or a
@@ -545,8 +696,10 @@ async fn serve_here(
     host: &Entry,
     site: Site,
     network: Network,
+    bootstrap: Option<Bootstrap>,
     invitees: Vec<ask::Invitee>,
 ) -> Result<()> {
+    let check_every = check_every()?;
     // Listening from before the Host starts, so a stop while it's still coming up is clean too.
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;
@@ -567,7 +720,13 @@ async fn serve_here(
         Network::Relay(url) => format!("Relay {url}"),
         Network::Default => "n0's Relays".to_string(),
     };
-    eprintln!("tooob: {name}: starting {}", release_and_protocol_version());
+    let beside = bootstrap
+        .as_ref()
+        .map_or(String::new(), |b| format!(", Bootstrap {b}"));
+    eprintln!(
+        "tooob: {name}: starting {}{beside}",
+        release_and_protocol_version()
+    );
     let running = Host::start(HostConfig {
         site,
         data_dir: host.state_dir.clone(),
@@ -578,6 +737,16 @@ async fn serve_here(
         "tooob: {name}: Host {}, through {through}",
         running.address().id.to_z32()
     );
+    // Aborted when this returns: the Host stops, and its checks with it.
+    let _checking = bootstrap.map(|first| {
+        let checks = KeepChecking {
+            name: name.clone(),
+            relay: host.settings.relay.clone(),
+            control: running.control(),
+            every: check_every,
+        };
+        AbortOnDrop(tokio::spawn(checks.run(first)))
+    });
     // Browsers reach a Host only through its Relay, so until it's there, its links lead nowhere.
     let online = async {
         let wait = Duration::from_secs(15);

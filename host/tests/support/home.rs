@@ -2,6 +2,7 @@
 use std::{
     path::Path,
     process::{Child, Command, ExitStatus, Output, Stdio},
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -9,22 +10,55 @@ use std::{
 pub const BOOTSTRAP: &str = "https://bootstrap.example/";
 
 /// The Relay the tests' stopped Hosts name when they need Invite Links: nothing reaches it, so it
-/// needn't exist. A Host that runs needs a TestRelay: with no Relay answering, it isn't serving
-/// for 15 s.
+/// needn't exist, and such a Host is made with `Home::add_naming`. A Host that runs needs a
+/// TestRelay: one whose Relay serves no Bootstrap won't start (ADR 0020).
 pub const RELAY: &str = "https://relay.example/";
 
-/// A real Relay on this machine (iroh-relay's own server), stopped when dropped. It's on
-/// `localhost`, a domain, so its Hosts have Key Addresses.
+/// A real Relay on this machine (iroh-relay's own server) behind a front that serves its
+/// Bootstrap's `/__tooob/version.json`, as a Relay does (ADR 0020), and hands everything else to
+/// iroh-relay. Stopped when dropped. It's on `localhost`, a domain, so its Hosts have Key
+/// Addresses.
 pub struct TestRelay {
     pub url: String,
+    /// The same Relay at an IP address: its Hosts have no Key Address.
+    pub ip_url: String,
+    version_json: Arc<Mutex<Option<String>>>,
     _stop: tokio::sync::oneshot::Sender<()>,
 }
 
+/// The version.json a Bundle of `release` speaking `protocol_version` has.
+pub fn version_json(release: &str, protocol_version: &str) -> String {
+    format!(r#"{{"release": "{release}", "protocolVersion": "{protocol_version}", "files": {{}}}}"#)
+}
+
+/// This build's own Bootstrap's version.json.
+pub fn this_version_json() -> String {
+    version_json(env!("CARGO_PKG_VERSION"), tooob::PROTOCOL_VERSION)
+}
+
 impl TestRelay {
+    /// A Relay serving a Bootstrap that speaks this tooob's Protocol Version.
     pub fn start() -> TestRelay {
+        TestRelay::spawn(true)
+    }
+
+    /// Only the front, with no Relay behind it: it serves a Bootstrap, but a Host never gets
+    /// online through it.
+    pub fn bootstrap_only() -> TestRelay {
+        TestRelay::spawn(false)
+    }
+
+    /// From now on, serve `version_json` as its Bootstrap's, or no Bootstrap at all (a 404).
+    pub fn serve_bootstrap(&self, version_json: Option<String>) {
+        *self.version_json.lock().unwrap() = version_json;
+    }
+
+    fn spawn(with_relay: bool) -> TestRelay {
         use iroh_relay::server::{RelayConfig, Server, ServerConfig};
+        let version_json = Arc::new(Mutex::new(Some(this_version_json())));
         let (port_tx, port_rx) = std::sync::mpsc::channel();
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let served = version_json.clone();
         // A runtime of its own, so sync and async tests alike can start one.
         std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
@@ -32,18 +66,89 @@ impl TestRelay {
                 .build()
                 .unwrap();
             runtime.block_on(async {
-                let mut config = ServerConfig::default();
-                config.relay = Some(RelayConfig::new(([127, 0, 0, 1], 0)));
-                let server = Server::spawn(config).await.unwrap();
-                port_tx.send(server.http_addr().unwrap().port()).unwrap();
-                let _ = stopped.await;
-                let _ = server.shutdown().await;
+                let server = match with_relay {
+                    true => {
+                        let mut config = ServerConfig::default();
+                        config.relay = Some(RelayConfig::new(([127, 0, 0, 1], 0)));
+                        Some(Server::spawn(config).await.unwrap())
+                    }
+                    false => None,
+                };
+                let relay = server.as_ref().map(|s| s.http_addr().unwrap());
+                let front = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                port_tx.send(front.local_addr().unwrap().port()).unwrap();
+                let fronting = async {
+                    while let Ok((conn, _)) = front.accept().await {
+                        tokio::spawn(answer(conn, relay, served.clone()));
+                    }
+                };
+                tokio::select! {
+                    _ = fronting => {}
+                    _ = stopped => {}
+                }
+                if let Some(server) = server {
+                    let _ = server.shutdown().await;
+                }
             });
         });
+        let port = port_rx.recv().unwrap();
         TestRelay {
-            url: format!("http://localhost:{}/", port_rx.recv().unwrap()),
+            url: format!("http://localhost:{port}/"),
+            ip_url: format!("http://127.0.0.1:{port}/"),
+            version_json,
             _stop: stop,
         }
+    }
+}
+
+/// One connection to the front: its Bootstrap's version.json, or handed whole to iroh-relay.
+async fn answer(
+    mut conn: tokio::net::TcpStream,
+    relay: Option<std::net::SocketAddr>,
+    version_json: Arc<Mutex<Option<String>>>,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut head = Vec::new();
+    let mut buf = [0; 4096];
+    while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+        match conn.read(&mut buf).await {
+            Ok(0) | Err(_) => return,
+            Ok(n) => head.extend_from_slice(&buf[..n]),
+        }
+    }
+    let path = String::from_utf8_lossy(&head)
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or_default()
+        .to_string();
+    let reply = |status: &str, body: &str| {
+        format!(
+            "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
+             connection: close\r\n\r\n{body}",
+            body.len()
+        )
+    };
+    let upstream = match (path.as_str(), relay) {
+        ("/__tooob/version.json", _) => {
+            let served = version_json.lock().unwrap().clone();
+            let reply = match served {
+                Some(body) => reply("200 OK", &body),
+                None => reply("404 Not Found", ""),
+            };
+            let _ = conn.write_all(reply.as_bytes()).await;
+            return;
+        }
+        (_, Some(relay)) => relay,
+        (_, None) => {
+            let _ = conn.write_all(reply("404 Not Found", "").as_bytes()).await;
+            return;
+        }
+    };
+    let Ok(mut upstream) = tokio::net::TcpStream::connect(upstream).await else {
+        return;
+    };
+    if upstream.write_all(&head).await.is_ok() {
+        let _ = tokio::io::copy_bidirectional(&mut conn, &mut upstream).await;
     }
 }
 
@@ -100,6 +205,24 @@ impl Home {
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
+    /// `tooob add NAME TARGET` for a Host whose settings name `relay`, a Relay nothing here
+    /// reaches (so `add` itself would refuse it): added through a stand-in serving a Bootstrap,
+    /// then its settings file edited to name `relay`, as an Owner may. It won't run, and Owner
+    /// commands work on it as on any stopped Host.
+    pub fn add_naming(&self, name: &str, target: &str, relay: &str) {
+        let stand_in = TestRelay::bootstrap_only();
+        self.ok(&["add", name, target, "--relay", &stand_in.url]);
+        let file = self.shown(name, "settings file");
+        let settings = std::fs::read_to_string(&file).unwrap();
+        let named = format!("relay = \"{}\"", stand_in.url);
+        assert!(settings.contains(&named), "{settings}");
+        std::fs::write(
+            &file,
+            settings.replace(&named, &format!("relay = \"{relay}\"")),
+        )
+        .unwrap();
+    }
+
     /// `tooob run NAME` in the background, once it's serving.
     pub fn start(&self, name: &str) -> Running {
         let running = self.spawn(&["run", name]);
@@ -107,11 +230,24 @@ impl Home {
         running
     }
 
+    /// `tooob run NAME` in the background with `env` set too, once it's serving.
+    pub fn start_with(&self, name: &str, env: &[(&str, &str)]) -> Running {
+        let running = self.spawn_with(&["run", name], env);
+        running.until_it_says("serving");
+        running
+    }
+
     /// `tooob ARGS` in the background, its output kept in a log of its own.
     pub fn spawn(&self, args: &[&str]) -> Running {
+        self.spawn_with(args, &[])
+    }
+
+    /// `tooob ARGS` in the background with `env` set too.
+    pub fn spawn_with(&self, args: &[&str], env: &[(&str, &str)]) -> Running {
         let log = tempfile::NamedTempFile::new_in(self.0.path()).unwrap();
         let child = self
             .command(args)
+            .envs(env.iter().copied())
             .stdout(log.reopen().unwrap())
             .stderr(log.reopen().unwrap())
             .spawn()

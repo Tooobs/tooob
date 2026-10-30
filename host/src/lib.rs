@@ -1,5 +1,6 @@
 //! tooob v1: a Host makes one Site reachable to the Visitors its Owner invites.
 pub mod access;
+pub mod bootstrap;
 pub mod control;
 mod direct;
 pub mod host;

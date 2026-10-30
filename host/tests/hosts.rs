@@ -123,19 +123,21 @@ fn share_without_a_terminal_says_what_a_new_host_needs_and_a_reused_one_keeps_it
 fn an_old_settings_file_naming_a_bootstrap_still_runs_and_its_links_are_on_its_relay() {
     let home = Home::new();
     let folder = a_folder();
+    let relay = TestRelay::start();
     home.ok(&[
         "add",
         "photos",
         folder.path().to_str().unwrap(),
         "--relay",
-        RELAY,
+        &relay.url,
     ]);
     let file = home.shown("photos", "settings file");
     let settings = std::fs::read_to_string(&file).unwrap();
     assert!(!settings.contains("bootstrap"), "{settings}");
     std::fs::write(&file, format!("{settings}bootstrap = \"{BOOTSTRAP}\"\n")).unwrap();
     let key = home.shown("photos", "Host Key");
-    let on_its_relay = format!("https://{key}.relay.example/#invite=");
+    let port = relay.url.trim_end_matches('/').rsplit(':').next().unwrap();
+    let on_its_relay = format!("http://{key}.localhost:{port}/#invite=");
 
     let stopped = home.ok(&["invite", "photos", "alice"]);
     assert!(stopped.starts_with(&on_its_relay), "{stopped}");
@@ -145,8 +147,7 @@ fn an_old_settings_file_naming_a_bootstrap_still_runs_and_its_links_are_on_its_r
             .to_lowercase()
             .contains("bootstrap")
     );
-    let running = home.spawn(&["run", "photos"]); // never online: no Relay answers there
-    running.until_it_says("through Relay");
+    let _running = home.start("photos");
     let paired = home.ok(&["pair", "photos", "my phone"]);
     assert!(paired.starts_with(&on_its_relay), "{paired}");
 }
@@ -156,13 +157,7 @@ fn an_invite_link_is_its_hosts_key_address_on_its_relays_domain() {
     let home = Home::new();
     let folder = a_folder();
     let path = folder.path().to_str().unwrap();
-    home.ok(&[
-        "add",
-        "photos",
-        path,
-        "--relay",
-        "https://relay.example:8443/",
-    ]);
+    home.add_naming("photos", path, "https://relay.example:8443/");
     let key = home.shown("photos", "Host Key");
     assert!(
         key.len() == 52 && key.chars().all(|c| Z_BASE_32.contains(c)),
@@ -179,9 +174,10 @@ fn an_invite_link_is_its_hosts_key_address_on_its_relays_domain() {
 
 #[test]
 fn a_host_with_no_relay_or_a_relay_at_an_ip_address_has_no_key_address_so_no_invites() {
+    let at_an_ip = TestRelay::bootstrap_only();
     for (relay, why) in [
         (vec!["--local"], "no Relay"),
-        (vec!["--relay", "http://127.0.0.1:9/"], "IP address"),
+        (vec!["--relay", at_an_ip.ip_url.as_str()], "IP address"),
     ] {
         let home = Home::new();
         let folder = a_folder();
@@ -373,7 +369,7 @@ fn rm_while_owner_commands_are_made_deletes_the_host_completely() {
         let home = Home::new();
         let folder = a_folder();
         let path = folder.path().to_str().unwrap();
-        home.ok(&["add", "photos", path, "--relay", RELAY]);
+        home.add_naming("photos", path, RELAY);
         let state = home.shown("photos", "state folder");
         let removed = std::thread::scope(|s| {
             for n in 0..8 {
@@ -396,16 +392,23 @@ fn editing_the_relay_in_the_settings_file_changes_it_on_the_next_run() {
     assert!(first.log().contains("no Relay"), "{}", first.log());
     first.stop();
 
+    let relay = TestRelay::start();
     let file = home.shown("photos", "settings file");
     let settings = std::fs::read_to_string(&file).unwrap();
     std::fs::write(
         &file,
-        settings.replace("\"none\"", "\"http://127.0.0.1:9/\""),
+        settings.replace("\"none\"", &format!("\"{}\"", relay.url)),
     )
     .unwrap();
-    assert_eq!(home.shown("photos", "relay"), "http://127.0.0.1:9/");
-    let again = home.spawn(&["run", "photos"]);
-    again.until_it_says("Relay http://127.0.0.1:9/");
+    assert_eq!(home.shown("photos", "relay"), relay.url);
+    let again = home.start("photos");
+    assert!(
+        again
+            .log()
+            .contains(&format!("through Relay {}", relay.url)),
+        "{}",
+        again.log()
+    );
 }
 
 #[test]
@@ -581,8 +584,10 @@ fn run_stops_cleanly_on_sigterm_ctrl_c_and_a_closing_terminal() {
 fn a_host_still_waiting_for_its_relay_stops_when_asked() {
     let home = Home::new();
     let folder = a_folder();
-    // A Relay that never answers: the Host waits up to 15 s for it before it says it's serving.
-    let dead = "http://127.0.0.1:9/";
+    // A Relay that serves its Bootstrap but never lets a Host on: the Host waits up to 15 s for it
+    // before it says it's serving.
+    let stuck = TestRelay::bootstrap_only();
+    let dead = stuck.url.as_str();
     home.ok(&[
         "add",
         "photos",

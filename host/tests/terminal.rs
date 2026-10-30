@@ -115,13 +115,7 @@ fn sharing_a_folder_with_a_git_history_warns_and_declining_shares_nothing() {
 fn invite_with_no_name_asks_which_host_and_with_everything_given_asks_nothing() {
     let home = Home::new();
     let folder = a_folder();
-    home.ok(&[
-        "add",
-        "photos",
-        folder.path().to_str().unwrap(),
-        "--relay",
-        RELAY,
-    ]);
+    home.add_naming("photos", folder.path().to_str().unwrap(), RELAY);
     home.ok(&["add", "films", "127.0.0.1:8096", "--local"]);
 
     let mut t = in_terminal(&home, &["invite"]);
@@ -208,13 +202,7 @@ fn a_host_with_no_key_address_says_so_before_asking_anything() {
 fn pair_with_no_label_asks_which_device_it_is_for() {
     let home = Home::new();
     let folder = a_folder();
-    home.ok(&[
-        "add",
-        "photos",
-        folder.path().to_str().unwrap(),
-        "--relay",
-        RELAY,
-    ]);
+    home.add_naming("photos", folder.path().to_str().unwrap(), RELAY);
 
     let mut t = in_terminal(&home, &["pair", "photos"]);
     t.expect("Which device is it for?").unwrap();
@@ -252,9 +240,15 @@ fn an_invite_given_on_the_command_line_is_made_along_with_the_ones_answered() {
 fn backing_out_of_the_questions_adds_no_host() {
     let home = Home::new();
     let folder = a_folder();
+    let relay = TestRelay::bootstrap_only();
     let mut t = in_terminal(
         &home,
-        &["share", folder.path().to_str().unwrap(), "--relay", RELAY],
+        &[
+            "share",
+            folder.path().to_str().unwrap(),
+            "--relay",
+            &relay.url,
+        ],
     );
 
     t.expect("Who's it for?").unwrap();

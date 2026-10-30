@@ -1,6 +1,7 @@
 //! The Owner's operations on a running Host (ADR 0010). The CLI reaches them over a local socket,
 //! Owner Devices over tooob; both end up here.
 use crate::access::{Access, ChangeError, Invite, InviteInfo, InviteOptions, VisitorInfo};
+use crate::bootstrap::RelaysBootstrap;
 use crate::wire;
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -25,6 +26,8 @@ pub struct Control {
     pub(crate) jars: Arc<crate::jars::Jars>,
     /// Rung when the Owner asks the Host to stop; whoever runs the Host shuts it down.
     pub(crate) stop: Arc<tokio::sync::Notify>,
+    /// What whoever runs the Host last found its Relay's Bootstrap to be (ADR 0020).
+    pub(crate) bootstrap: Arc<Mutex<RelaysBootstrap>>,
 }
 
 impl Control {
@@ -36,6 +39,7 @@ impl Control {
             changes: Arc::new(watch::Sender::new(())),
             jars: Arc::new(crate::jars::Jars::open(data_dir.join("jars"))?),
             stop: Default::default(),
+            bootstrap: Default::default(),
         })
     }
 
@@ -64,6 +68,16 @@ impl Control {
 
     pub fn unblock(&self, visitor_key: &str) -> Result<(), ChangeError> {
         self.access.lock().unwrap().unblock(visitor_key)
+    }
+
+    /// What its Relay's Bootstrap was, last it was checked.
+    pub fn relays_bootstrap(&self) -> RelaysBootstrap {
+        self.bootstrap.lock().unwrap().clone()
+    }
+
+    /// Say what its Relay's Bootstrap is now, for `tooob ls` and `tooob show` to tell the Owner.
+    pub fn found_relays_bootstrap(&self, found: RelaysBootstrap) {
+        *self.bootstrap.lock().unwrap() = found;
     }
 
     /// Ask the Host to stop, as Ctrl-C would: every Visitor's connection closes at once.
@@ -207,6 +221,7 @@ fn reply(control: &Control, request: &Value) -> Value {
             json!({"ok": null})
         }
         Some("visitors") => json!({"ok": control.visitors()}),
+        Some("bootstrap") => json!({"ok": control.relays_bootstrap()}),
         Some("invites") => json!({"ok": control.invites()}),
         Some("revoke") => outcome(control.revoke(request["id"].as_str().unwrap_or_default())),
         Some(op @ ("block" | "approve" | "unblock")) => {
@@ -304,6 +319,11 @@ impl Client {
 
     pub async fn visitors(&self) -> Result<Vec<VisitorInfo>, ControlError> {
         decode(self.ask(json!({"op": "visitors"})).await?)
+    }
+
+    /// What the running Host last found its Relay's Bootstrap to be. Only a running Host knows.
+    pub async fn relays_bootstrap(&self) -> Result<RelaysBootstrap, ControlError> {
+        decode(self.ask_running(&json!({"op": "bootstrap"})).await?)
     }
 
     /// Block a Visitor, named by their key or a unique prefix of it.
