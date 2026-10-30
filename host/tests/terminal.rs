@@ -1,14 +1,15 @@
-//! The `tooob` command with a person at the keyboard: questions and pickers, in a real (pseudo)
-//! terminal. Everything else is in tests/hosts.rs, run as a script would.
+//! The `tooob` command with a person at the keyboard, in a real (pseudo) terminal: it asks nothing
+//! there either (ADR 0022). Each command finishes, serves, or fails with what's missing, and none
+//! waits for input. Everything else is in tests/hosts.rs, run as a script would.
 mod support;
 
-use expectrl::{Expect, Session, session::OsSession};
+use expectrl::{Expect, Session, process::unix::WaitStatus, session::OsSession};
 use std::{process::Command, time::Duration};
 use support::home::{Home, RELAY, TestRelay, a_folder, name_of};
 
-/// `tooob` in a terminal of its own, under the test's TOOOB_HOME.
-fn in_terminal(home: &Home, args: &[&str]) -> OsSession {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_tooob"));
+/// `program ARGS` in a terminal of its own, under the test's TOOOB_HOME.
+fn spawn_in_terminal(home: &Home, program: &str, args: &[&str]) -> OsSession {
+    let mut cmd = Command::new(program);
     cmd.args(args)
         .env("TOOOB_HOME", home.0.path())
         .env("HOME", home.0.path())
@@ -18,247 +19,143 @@ fn in_terminal(home: &Home, args: &[&str]) -> OsSession {
     session
 }
 
-const ENTER: &str = "\r";
+/// `tooob ARGS` in a terminal of its own.
+fn in_terminal(home: &Home, args: &[&str]) -> OsSession {
+    spawn_in_terminal(home, env!("CARGO_BIN_EXE_tooob"), args)
+}
+
+/// Run `tooob ARGS` in a terminal, sending it nothing: everything it said, once it has ended,
+/// and whether it succeeded. It must end within 10 s, so a command waiting for input fails.
+fn said_in_terminal(home: &Home, args: &[&str]) -> (String, bool) {
+    let mut t = in_terminal(home, args);
+    t.set_expect_timeout(Some(Duration::from_secs(10)));
+    let said = t
+        .expect(expectrl::Eof)
+        .unwrap_or_else(|e| panic!("{args:?} is still waiting: {e}"));
+    let said = String::from_utf8_lossy(said.get(0).unwrap()).into_owned();
+    let ok = matches!(t.get_process().wait().unwrap(), WaitStatus::Exited(_, 0));
+    (said, ok)
+}
 
 /// The Host Name `share` gives a folder.
 fn host_name(folder: &std::path::Path) -> String {
     name_of(folder).to_lowercase()
 }
 
-/// Only the heading: no Host was added.
-fn no_hosts(home: &Home) -> bool {
-    home.ok(&["ls"]).lines().count() == 1
-}
-
 #[test]
-fn guided_share_asks_what_and_who_then_serves_here_until_ctrl_c() {
+fn share_with_everything_given_asks_nothing_prints_the_link_and_serves_until_ctrl_c() {
     let home = Home::new();
     let folder = a_folder();
     let name = host_name(folder.path());
     let relay = TestRelay::start();
-    let mut t = in_terminal(&home, &["share", "--relay", &relay.url]);
+    let path = folder.path().to_str().unwrap();
+    let args = [
+        "share",
+        path,
+        "--relay",
+        &relay.url,
+        "--invite",
+        "Alice",
+        "--expires",
+        "1d",
+    ];
+    let mut t = in_terminal(&home, &args);
 
-    t.expect("What do you want to share?").unwrap();
-    t.send_line(folder.path().to_str().unwrap()).unwrap();
-    t.expect("1 file").unwrap();
-    t.expect("Who's it for?").unwrap();
-    t.send_line("Alice").unwrap();
-    t.expect("How long should the link work?").unwrap();
-    t.send_line("1d").unwrap();
-    t.expect("Approve their device").unwrap();
-    t.send(ENTER).unwrap();
-    t.expect("Who else?").unwrap();
-    t.send(ENTER).unwrap();
-    t.expect(format!("{name}: serving")).unwrap();
-    t.expect(format!("Invite for Alice to {name}, works for 1 day"))
+    let said = t
+        .expect(format!("Invite for Alice to {name}, works for 1 day"))
         .unwrap();
+    let said = String::from_utf8_lossy(said.before()).into_owned();
+    assert!(said.contains(&format!("{name}: serving")), "{said}");
+    assert!(!said.contains('?'), "asked something: {said}");
     t.expect(".localhost:").unwrap();
     t.expect("/#invite=").unwrap();
     assert!(home.row(&name).contains("running"));
+    assert!(home.ok(&["invites", &name]).contains("Alice"));
 
-    t.send("\x03").unwrap();
+    t.send("\x03").unwrap(); // Ctrl-C
     t.expect(format!("{name}: stopped")).unwrap();
     t.expect(expectrl::Eof).unwrap();
     assert!(home.row(&name).contains("stopped"));
 }
 
 #[test]
-fn share_of_a_new_folder_asks_for_its_relay_and_never_guesses() {
+fn share_started_with_an_ampersand_prints_the_link_and_keeps_serving_in_the_background() {
     let home = Home::new();
     let folder = a_folder();
     let name = host_name(folder.path());
     let relay = TestRelay::start();
-    let mut t = in_terminal(&home, &["share", folder.path().to_str().unwrap()]);
+    let mut sh = spawn_in_terminal(&home, "/bin/bash", &["--norc", "--noprofile", "-i"]);
+    sh.send_line("PS1='$ '").unwrap();
 
-    t.expect("Which Relay do Visitors reach it through?")
-        .unwrap();
-    t.send_line(&relay.url).unwrap();
-    t.expect("Who's it for?").unwrap();
-    t.send_line("Alice").unwrap();
-    t.expect("How long should the link work?").unwrap();
-    t.send(ENTER).unwrap();
-    t.expect("Approve their device").unwrap();
-    t.send(ENTER).unwrap();
-    t.expect("Who else?").unwrap();
-    t.send(ENTER).unwrap();
-    t.expect("/#invite=").unwrap();
-    assert_eq!(home.shown(&name, "relay"), relay.url);
-    t.send("\x03").unwrap();
-    t.expect(expectrl::Eof).unwrap();
+    sh.send_line(format!(
+        "'{}' share '{}' --relay {} --invite Alice &",
+        env!("CARGO_BIN_EXE_tooob"),
+        folder.path().display(),
+        relay.url
+    ))
+    .unwrap();
+    sh.expect("/#invite=").unwrap();
+    // A job that read the terminal from the background would be stopped by the shell.
+    sh.send_line("sleep 1; jobs -l").unwrap();
+    sh.expect("Running").unwrap();
+    assert!(home.row(&name).contains("running"));
+    assert!(home.ok(&["invites", &name]).contains("Alice"));
 
-    let script = home.tooob(&["share", a_folder().path().to_str().unwrap()]);
-    assert!(
-        !script.status.success(),
-        "a script is never asked, nor guessed for"
-    );
+    sh.send_line("kill %1").unwrap();
+    sh.expect(format!("{name}: stopped")).unwrap();
+    sh.send_line("exit").unwrap();
+    sh.expect(expectrl::Eof).unwrap();
 }
 
 #[test]
-fn sharing_a_folder_with_a_git_history_warns_and_declining_shares_nothing() {
+fn every_command_missing_something_fails_at_once_with_the_command_to_type() {
     let home = Home::new();
-    let folder = a_folder();
-    std::fs::create_dir(folder.path().join(".git")).unwrap();
-    let mut t = in_terminal(
-        &home,
-        &["share", folder.path().to_str().unwrap(), "--local"],
-    );
+    let (photos, other, repo) = (a_folder(), a_folder(), a_folder());
+    std::fs::create_dir(repo.path().join(".git")).unwrap();
+    home.add_naming("photos", photos.path().to_str().unwrap(), RELAY);
+    home.ok(&["add", "films", "127.0.0.1:8096", "--local"]);
+    let other = other.path().to_str().unwrap();
+    let repo = repo.path().to_str().unwrap();
 
-    t.expect("it includes .git").unwrap();
-    t.expect("Share it anyway?").unwrap();
-    t.send("n").unwrap();
-    t.expect("nothing shared").unwrap();
-    t.expect(expectrl::Eof).unwrap();
-    assert!(no_hosts(&home), "{}", home.ok(&["ls"]));
+    for (args, says) in [
+        (vec!["share"], "tooob share PATH"),
+        (vec!["share", other], "--relay https://RELAY/"),
+        (vec!["add", "other", other], "--relay https://RELAY/"),
+        (vec!["share", repo, "--local"], "--include-git --local"),
+        (vec!["invite"], "(Hosts here: films, photos)"),
+        (vec!["pair"], "(Hosts here: films, photos)"),
+        (vec!["stop"], "(none is running)"),
+        (vec!["invite", "photos"], "tooob invite photos LABEL"),
+        (vec!["pair", "photos"], "tooob pair photos LABEL"),
+        (vec!["invite", "films"], "no Key Address"),
+        (vec!["pair", "films"], "no Key Address"),
+    ] {
+        let (said, ok) = said_in_terminal(&home, &args);
+        assert!(!ok, "{args:?} succeeded: {said}");
+        assert!(said.contains(says), "{args:?}: {said}");
+        assert!(!said.contains('?'), "{args:?} asked: {said}");
+    }
+    assert_eq!(home.ok(&["ls"]).lines().count(), 3, "nothing was added");
+    assert!(home.ok(&["invites", "photos"]).is_empty(), "no Invite made");
 }
 
 #[test]
-fn invite_with_no_name_asks_which_host_and_with_everything_given_asks_nothing() {
+fn invite_with_everything_given_prints_only_the_link() {
     let home = Home::new();
     let folder = a_folder();
     home.add_naming("photos", folder.path().to_str().unwrap(), RELAY);
-    home.ok(&["add", "films", "127.0.0.1:8096", "--local"]);
 
-    let mut t = in_terminal(&home, &["invite"]);
-    t.expect("Which Host is this Invite for?").unwrap();
-    t.expect("photos").unwrap();
-    t.send("\x1b").unwrap(); // Esc
-    t.expect("No Invite made").unwrap();
-    t.expect(expectrl::Eof).unwrap();
-    assert!(home.ok(&["invites", "photos"]).is_empty());
-
-    let mut t = in_terminal(&home, &["invite", "photos", "Bob"]);
-    let said = t.expect(expectrl::Eof).unwrap();
-    let said = String::from_utf8_lossy(said.get(0).unwrap()).into_owned();
+    let (said, ok) = said_in_terminal(&home, &["invite", "photos", "Bob"]);
+    assert!(ok, "{said}");
     let key = home.shown("photos", "Host Key");
     let link = format!("https://{key}.relay.example/#invite=");
     assert!(said.trim().starts_with(&link), "{said}");
-    assert_eq!(said.trim().lines().count(), 1, "asked nothing: {said}");
+    assert_eq!(said.trim().lines().count(), 1, "the link alone: {said}");
     assert!(home.ok(&["invites", "photos"]).contains("Bob"));
 }
 
 #[test]
-fn invite_with_nothing_after_it_asks_which_host_who_and_how_then_shows_the_one_line_command() {
-    let home = Home::new();
-    let folder = a_folder();
-    let relay = TestRelay::start();
-    let path = folder.path().to_str().unwrap();
-    home.ok(&["add", "photos", path, "--relay", &relay.url]);
-    let _running = home.start("photos");
-
-    let mut t = in_terminal(&home, &["invite"]);
-    t.expect("photos").unwrap();
-    t.send(ENTER).unwrap();
-    t.expect("Who's it for?").unwrap();
-    t.send_line("Carol Smith").unwrap();
-    t.expect("How long should the link work?").unwrap();
-    t.send_line("2h").unwrap();
-    t.expect("Approve their device").unwrap();
-    t.send("y").unwrap();
-    t.expect("Invite for Carol Smith to photos, works for 2 hours")
-        .unwrap();
-    t.expect("/#invite=").unwrap();
-    t.expect("Next time, in one line:").unwrap();
-    t.expect("tooob invite photos 'Carol Smith' --expires 2h --approve")
-        .unwrap();
-    t.expect(expectrl::Eof).unwrap();
-    assert!(home.ok(&["invites", "photos"]).contains("Carol Smith"));
-}
-
-#[test]
-fn stop_with_no_name_picks_from_the_running_hosts() {
-    let home = Home::new();
-    let folder = a_folder();
-    home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
-    home.ok(&["add", "films", "127.0.0.1:8096", "--local"]);
-    let photos = home.start("photos");
-
-    let mut t = in_terminal(&home, &["stop"]);
-    t.expect("Which Host should stop?").unwrap();
-    t.expect("photos").unwrap();
-    // Listed by name, films would come first, and be the one Enter picks.
-    t.send(ENTER).unwrap();
-    t.expect(expectrl::Eof).unwrap();
-    photos.until_it_says("photos: stopped");
-}
-
-#[test]
-fn a_host_with_no_key_address_says_so_before_asking_anything() {
-    let home = Home::new();
-    let folder = a_folder();
-    home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
-
-    for args in [vec!["invite", "photos"], vec!["pair", "photos"]] {
-        let mut t = in_terminal(&home, &args);
-        let said = t.expect(expectrl::Eof).unwrap();
-        let said = String::from_utf8_lossy(said.get(0).unwrap()).into_owned();
-        assert!(
-            said.contains("no Key Address") && !said.contains('?'),
-            "{args:?} asked first: {said}"
-        );
-    }
-}
-
-#[test]
-fn pair_with_no_label_asks_which_device_it_is_for() {
-    let home = Home::new();
-    let folder = a_folder();
-    home.add_naming("photos", folder.path().to_str().unwrap(), RELAY);
-
-    let mut t = in_terminal(&home, &["pair", "photos"]);
-    t.expect("Which device is it for?").unwrap();
-    t.send_line("my phone").unwrap();
-    t.expect("#invite=").unwrap();
-    t.expect(expectrl::Eof).unwrap();
-    assert!(home.ok(&["invites", "photos"]).contains("my phone"));
-
-    let out = home.tooob(&["pair", "photos"]);
-    assert!(!out.status.success(), "a script is never asked");
-}
-
-#[test]
-fn an_invite_given_on_the_command_line_is_made_along_with_the_ones_answered() {
-    let home = Home::new();
-    let folder = a_folder();
-    let name = host_name(folder.path());
-    let path = folder.path().to_str().unwrap();
-    let relay = TestRelay::start();
-    let mut t = in_terminal(
-        &home,
-        &["share", path, "--relay", &relay.url, "--invite", "Dave"],
-    );
-
-    t.expect("Who else?").unwrap();
-    t.send(ENTER).unwrap();
-    t.expect(format!("Invite for Dave to {name}")).unwrap();
-    t.expect("/#invite=").unwrap();
-    assert!(home.ok(&["invites", &name]).contains("Dave"));
-    t.send("\x03").unwrap();
-    t.expect(expectrl::Eof).unwrap();
-}
-
-#[test]
-fn backing_out_of_the_questions_adds_no_host() {
-    let home = Home::new();
-    let folder = a_folder();
-    let relay = TestRelay::bootstrap_only();
-    let mut t = in_terminal(
-        &home,
-        &[
-            "share",
-            folder.path().to_str().unwrap(),
-            "--relay",
-            &relay.url,
-        ],
-    );
-
-    t.expect("Who's it for?").unwrap();
-    t.send("\x03").unwrap(); // Ctrl-C
-    t.expect(expectrl::Eof).unwrap();
-    assert!(no_hosts(&home), "{}", home.ok(&["ls"]));
-}
-
-#[test]
-fn closing_the_terminal_while_sharing_a_host_with_no_relay_stops_it_and_asks_no_one_to_invite() {
+fn closing_the_terminal_while_sharing_stops_the_host() {
     let home = Home::new();
     let folder = a_folder();
     let name = host_name(folder.path());
@@ -269,10 +166,7 @@ fn closing_the_terminal_while_sharing_a_host_with_no_relay_stops_it_and_asks_no_
 
     let said = t.expect(format!("{name}: serving")).unwrap();
     let said = String::from_utf8_lossy(said.before()).into_owned();
-    assert!(
-        !said.contains("Who's it for?"),
-        "no Invite Links to make: {said}"
-    );
+    assert!(!said.contains('?'), "asked something: {said}");
     let pid = t.get_process().pid().as_raw();
     unsafe { libc::kill(pid, libc::SIGHUP) }; // what a closing terminal sends
     t.expect(format!("{name}: stopped")).unwrap();

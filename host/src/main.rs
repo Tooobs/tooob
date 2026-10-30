@@ -5,7 +5,6 @@
 use anyhow::{Context, Result, bail};
 use std::{
     collections::HashMap,
-    io::IsTerminal,
     path::Path,
     time::{Duration, Instant},
 };
@@ -19,8 +18,6 @@ use tooob::hosts::{
     Entry, Home, NO_RELAY, RUN_YOUR_OWN, check_relay, name_char, no_invite_links, no_key_address,
 };
 
-mod ask;
-
 // musl's own allocator costs ~22% more CPU per byte served than glibc's (measured in #59), so
 // Linux Releases, which are static musl builds, use mimalloc.
 #[cfg(target_env = "musl")]
@@ -32,9 +29,11 @@ const USAGE: &str = "usage:
                                                   make a Host; TARGET is a folder or file to share
                                                   read-only, or HOST:PORT for a web app
   tooob run NAME                                  serve it here, until Ctrl-C
-  tooob share [PATH] [--name NAME] [--invite LABEL] [--relay URL | --local]
-                                                  add a Host for PATH (or reuse its Host), then
-                                                  run it; in a terminal, it asks what's missing
+  tooob share PATH [--invite LABEL]... [--expires 7d] [--approve] [--name NAME]
+                   [--relay URL | --local] [--include-git]
+                                                  add a Host for PATH (or reuse its Host), invite
+                                                  each LABEL, then run it; a folder holding .git
+                                                  is refused without --include-git
   tooob ls [--json]                               every Host on this box, running or stopped
   tooob show NAME                                 its settings, Host Key and files
   tooob rm NAME                                   delete it, Host Key and all
@@ -46,10 +45,11 @@ const USAGE: &str = "usage:
   tooob revoke NAME INVITE-ID
   tooob --version                                 the Release and Protocol Version
 NAME is a Host Name, what the Host serves, or a Host Key prefix. Owner commands work whether the
-Host is running or not. There's no default Relay: deploy/ shows how to run your own.";
+Host is running or not. There's no default Relay: deploy/ shows how to run your own. Nothing is
+ever asked: what's missing is an error that shows the command to type.";
 
 const VALUE_FLAGS: &[&str] = &["relay", "expires", "name"];
-const BARE_FLAGS: &[&str] = &["local", "json", "approve", "owner"];
+const BARE_FLAGS: &[&str] = &["local", "json", "approve", "owner", "include-git"];
 
 /// Commands for one Host, named first: `tooob VERB NAME …`. They work whether it's running or not
 /// (ADR 0014).
@@ -68,12 +68,6 @@ async fn main() {
     }
 }
 
-/// A person is at the keyboard: questions and pickers are allowed. Scripts and Agents never get
-/// one, and must say everything with flags.
-fn terminal() -> bool {
-    std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
-}
-
 /// The Release and the Protocol Version: `tooob 0.1.0 (tooob/0)`.
 fn release_and_protocol_version() -> String {
     format!(
@@ -88,14 +82,9 @@ async fn run() -> Result<()> {
         println!("{}", release_and_protocol_version());
         return Ok(());
     }
-    let (words, flags, invitees) = parse(std::env::args().skip(1))?;
+    let typed = Typed::new(std::env::args().skip(1).collect());
+    let (words, flags, invitees) = parse(typed.args.iter().cloned())?;
     let home = Home::from_env()?;
-    let arg = |i: usize| {
-        words
-            .get(i)
-            .cloned()
-            .with_context(|| format!("missing argument\n{USAGE}"))
-    };
     // add, run, ls, show and rm take exactly what they say, nothing more: `run` in particular
     // takes no settings, so a Host runs the same however it's started (ADR 0014).
     let exactly = |n: usize, allowed: &[&str]| {
@@ -114,29 +103,40 @@ async fn run() -> Result<()> {
     match words.first().map(String::as_str) {
         Some("add") => {
             exactly(3, &["relay", "local"])?;
-            let (name, target) = (arg(1)?, arg(2)?);
-            let relay = new_host_relay(&flags, false).await?;
-            home.add(&name, &target, &relay)?;
+            let (name, target) = match (words.get(1), words.get(2)) {
+                (Some(name), Some(target)) => (name, target),
+                (Some(name), None) => {
+                    let what = format!("say what {name} serves, a folder, a file or HOST:PORT");
+                    return Err(typed.missing(&what, "TARGET"));
+                }
+                (None, _) => {
+                    let what = "say the new Host's name and what it serves, a folder, a file or \
+                                HOST:PORT";
+                    return Err(typed.missing(what, "NAME TARGET"));
+                }
+            };
+            let relay = new_host_relay(&typed, &flags).await?;
+            home.add(name, target, &relay)?;
         }
         Some("run") => {
             exactly(2, &[])?;
-            serve(&home.find(&arg(1)?)?, Vec::new()).await?;
+            serve(&named(&home, &typed, "run", words.get(1))?, Vec::new()).await?;
         }
-        Some("share") => share(&home, &words, &flags, &invitees).await?,
+        Some("share") => share(&home, &typed, &words, &flags, &invitees).await?,
         Some("ls") => {
             exactly(1, &["json"])?;
             ls(&home, flags.contains_key("json")).await?;
         }
         Some("show") => {
             exactly(2, &[])?;
-            show_host(&home.find(&arg(1)?)?).await;
+            show_host(&named(&home, &typed, "show", words.get(1))?).await;
         }
         Some("rm") => {
             exactly(2, &[])?;
-            home.find(&arg(1)?)?.remove()?;
+            named(&home, &typed, "rm", words.get(1))?.remove()?;
         }
         Some(command) if OWNER.contains(&command) => {
-            owner_command(&home, command, &words, &flags, &invitees).await?
+            owner_command(&home, &typed, command, &words, &flags, &invitees).await?
         }
         _ => bail!("{USAGE}"),
     }
@@ -155,21 +155,20 @@ fn relay(flags: &Flags) -> Result<Option<String>> {
     }
 }
 
-/// A new Host's Relay, as `--relay URL` (or `--local`) says: never a guess (ADR 0015). With `ask`,
-/// a person at the keyboard is asked for it; otherwise it's an error. A Relay whose Bootstrap won't
-/// do for this tooob is refused before the Host is made (ADR 0020).
-async fn new_host_relay(flags: &Flags, ask: bool) -> Result<String> {
-    let relay = match relay(flags)? {
-        Some(relay) => {
-            check_relay(&relay)?;
-            relay
-        }
-        None if ask => ask::relay()?,
-        None => bail!(
-            "say which Relay its Visitors reach it through (--relay URL, or --local for this \
-             network only): {RUN_YOUR_OWN}\n{USAGE}"
-        ),
+/// A new Host's Relay, as `--relay URL` (or `--local`) says: never a guess (ADR 0015), and never
+/// asked for (ADR 0022). A Relay whose Bootstrap won't do for this tooob is refused before the Host
+/// is made (ADR 0020).
+async fn new_host_relay(typed: &Typed, flags: &Flags) -> Result<String> {
+    let Some(relay) = relay(flags)? else {
+        return Err(typed.missing(
+            &format!(
+                "say which Relay its Visitors reach it through (or --local for this network \
+                 only; {RUN_YOUR_OWN})"
+            ),
+            "--relay https://RELAY/",
+        ));
     };
+    check_relay(&relay)?;
     if relay != NO_RELAY
         && let Err(problem) = bootstrap::check(&relay).await
     {
@@ -178,69 +177,72 @@ async fn new_host_relay(flags: &Flags, ask: bool) -> Result<String> {
     Ok(relay)
 }
 
-/// What `share` serves from: the Host already serving the path, or a new one, added only once the
-/// Owner has answered everything, so backing out adds nothing.
-enum Sharing {
-    Reused(Entry),
-    New { relay: String },
+/// Someone `share` invites once it's serving, as `--invite LABEL`, `--expires` and `--approve`
+/// say.
+struct Invitee {
+    label: String,
+    expires_in: u64,
+    approve: bool,
 }
 
 /// `tooob share`: add a Host for a folder or file, or reuse the one already serving it, then run
-/// it here. A person at the keyboard is asked what and who first, so backing out adds nothing.
-async fn share(home: &Home, words: &[String], flags: &Flags, invitees: &[String]) -> Result<()> {
+/// it here, making exactly the Invites `--invite` names. Everything is checked before a Host is
+/// added, so a refusal adds nothing.
+async fn share(
+    home: &Home,
+    typed: &Typed,
+    words: &[String],
+    flags: &Flags,
+    invitees: &[String],
+) -> Result<()> {
     let path = match words.get(1) {
         Some(path) => std::fs::canonicalize(path).with_context(|| format!("can't share {path}"))?,
-        None if terminal() => ask::what_to_share()?,
-        None => bail!("say what to share: tooob share PATH\n{USAGE}"),
+        None => return Err(typed.missing("say what to share, a folder or a file", "PATH")),
     };
+    if !flags.contains_key("include-git")
+        && let Some(found) = git_inside(&path)
+    {
+        return Err(typed.missing(
+            &format!(
+                "{} holds {}, a repository's history, and everyone you invite could read it; to \
+                 share it anyway",
+                words[1],
+                found.display()
+            ),
+            "--include-git",
+        ));
+    }
     let serves = path.to_string_lossy();
+    let expires_in = match flags.get("expires").cloned().flatten() {
+        Some(expires) => seconds(&expires)?,
+        None => 7 * 86_400,
+    };
+    let who: Vec<Invitee> = invitees
+        .iter()
+        .map(|label| Invitee {
+            label: label.clone(),
+            expires_in,
+            approve: flags.contains_key("approve"),
+        })
+        .collect();
     // A reused Host keeps its own Relay; the flags are for a new one. Invites need a Key Address,
-    // so without one, `--invite` is refused and nobody's asked who to invite.
-    let (sharing, can_invite) = match home
+    // so without one, `--invite` is refused.
+    let host = match home
         .hosts()
         .into_iter()
         .find(|h| h.settings.serves == serves)
     {
         Some(host) => {
-            let can_invite = match host.key_address() {
-                Ok(_) => true,
-                Err(e) if !invitees.is_empty() => return Err(e),
-                Err(_) => false,
-            };
-            (Sharing::Reused(host), can_invite)
+            if !who.is_empty() {
+                host.key_address()?;
+            }
+            host
         }
         None => {
-            let relay = new_host_relay(flags, terminal()).await?;
-            let why = no_key_address(&relay);
-            if let Some(why) = why.filter(|_| !invitees.is_empty()) {
+            let relay = new_host_relay(typed, flags).await?;
+            if let Some(why) = no_key_address(&relay).filter(|_| !who.is_empty()) {
                 bail!(no_invite_links("the new Host", why));
             }
-            (Sharing::New { relay }, why.is_none())
-        }
-    };
-    if terminal() {
-        ask::confirm_contents(&path)?;
-    }
-    let mut who: Vec<ask::Invitee> = invitees
-        .iter()
-        .map(|label| ask::Invitee {
-            label: label.clone(),
-            expires: flags
-                .get("expires")
-                .cloned()
-                .flatten()
-                .unwrap_or_else(|| "7d".into()),
-            approve: flags.contains_key("approve"),
-        })
-        .collect();
-    if terminal() && can_invite {
-        while let Some(more) = ask::invitee(who.is_empty())? {
-            who.push(more);
-        }
-    }
-    let host = match sharing {
-        Sharing::Reused(host) => host,
-        Sharing::New { relay } => {
             let name = match flags.get("name").cloned().flatten() {
                 Some(name) => name,
                 None => free_name(home, &path),
@@ -249,6 +251,28 @@ async fn share(home: &Home, words: &[String], flags: &Flags, invitees: &[String]
         }
     };
     serve(&host, who).await
+}
+
+/// The first `.git` in the folder at `path`, as a path within it: a repository's history, which an
+/// Owner rarely means to hand out. Looked for up to a limit, since a whole disk would take ages.
+fn git_inside(path: &Path) -> Option<std::path::PathBuf> {
+    let mut todo = std::collections::VecDeque::from([path.to_path_buf()]);
+    let mut seen = 0;
+    while let Some(dir) = todo.pop_front() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            seen += 1;
+            if seen > 20_000 {
+                return None;
+            }
+            if entry.file_name() == ".git" {
+                return entry.path().strip_prefix(path).ok().map(Path::to_path_buf);
+            }
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                todo.push_back(entry.path());
+            }
+        }
+    }
+    None
 }
 
 /// A Host Name for what's at `path`: its name, lowercased, with anything but letters, digits, `-`
@@ -382,6 +406,7 @@ async fn show_host(host: &Entry) {
 /// nothing when it works; `invite` and `pair` print just the link.
 async fn owner_command(
     home: &Home,
+    typed: &Typed,
     command: &str,
     words: &[String],
     flags: &Flags,
@@ -392,10 +417,7 @@ async fn owner_command(
         "visitors" | "invites" => &["json"],
         _ => &[],
     };
-    let arity = match command {
-        "visitors" | "invites" | "stop" => 2,
-        _ => 3,
-    };
+    let arity = if then(command).is_some() { 3 } else { 2 };
     if words.len() > arity {
         bail!("too many arguments: {}\n{USAGE}", words[arity..].join(" "));
     }
@@ -405,41 +427,28 @@ async fn owner_command(
     if !invitees.is_empty() {
         bail!("{command} takes no --invite\n{USAGE}");
     }
-    let host = named(home, command, words.get(1)).await?;
+    let host = named(home, typed, command, words.get(1))?;
     if command == "stop" {
         return stop(&host).await;
     }
     let client = host.client();
     if matches!(command, "invite" | "pair") {
-        host.key_address()?; // before anything's asked: a link needs it
+        host.key_address()?; // before what's missing: a link needs it
     }
-    let said = |what: &str| {
-        words.get(2).cloned().with_context(|| {
-            format!(
-                "say {what}: tooob {command} {} {}\n{USAGE}",
-                host.name,
-                what.to_uppercase()
-            )
-        })
+    let said = || match (words.get(2), then(command)) {
+        (Some(word), _) => Ok(word.clone()),
+        (None, Some((what, gap))) => Err(typed.missing(what, gap)),
+        (None, None) => unreachable!(),
     };
     let refused = refused(&host);
     let json = flags.contains_key("json");
     match command {
-        "invite" if words.get(2).is_none() && terminal() => {
-            if !ask_and_invite(&host, &client).await? {
-                bail!("No Invite made.");
-            }
-        }
         "invite" => {
             let options = invite_options(flags)?;
-            invite(&host, &client, &said("label")?, options).await?
+            invite(&host, &client, &said()?, options).await?
         }
         "pair" => {
-            let label = match words.get(2) {
-                None if terminal() => ask::label()?,
-                _ => said("label")?,
-            };
-            let invite = client.pair(&label).await.map_err(refused)?;
+            let invite = client.pair(&said()?).await.map_err(refused)?;
             println!("{}", host.invite_link(&invite.token)?);
         }
         "visitors" => {
@@ -468,19 +477,19 @@ async fn owner_command(
                 }
             }
         }
-        "block" => client.block(&said("key")?).await.map_err(refused)?,
-        "approve" => client.approve(&said("key")?).await.map_err(refused)?,
-        "unblock" => client.unblock(&said("key")?).await.map_err(refused)?,
-        "revoke" => client.revoke(&said("invite-id")?).await.map_err(refused)?,
+        "block" => client.block(&said()?).await.map_err(refused)?,
+        "approve" => client.approve(&said()?).await.map_err(refused)?,
+        "unblock" => client.unblock(&said()?).await.map_err(refused)?,
+        "revoke" => client.revoke(&said()?).await.map_err(refused)?,
         _ => unreachable!(),
     }
     Ok(())
 }
 
-/// The Host an Owner command names, by its name, what it serves or a Host Key prefix. Without one,
-/// a person at the keyboard picks it (from the running Hosts, to stop one); a script is told which
-/// there are. Never a guess.
-async fn named(home: &Home, command: &str, wanted: Option<&String>) -> Result<Entry> {
+/// The Host a command names, by its name, what it serves or a Host Key prefix. Never a
+/// guess, and never asked for: without one, it says which Hosts there are (the running ones, to
+/// stop one) and the command to type (ADR 0022).
+fn named(home: &Home, typed: &Typed, command: &str, wanted: Option<&String>) -> Result<Entry> {
     if let Some(wanted) = wanted {
         return home.find(wanted);
     }
@@ -488,41 +497,42 @@ async fn named(home: &Home, command: &str, wanted: Option<&String>) -> Result<En
     if command == "stop" {
         hosts.retain(|h| h.running().is_some());
     }
-    if terminal() && !hosts.is_empty() {
-        let (prompt, cancelled) = match command {
-            "invite" | "pair" => ("Which Host is this Invite for?", "No Invite made."),
-            "stop" => ("Which Host should stop?", "Nothing stopped."),
-            _ => ("Which Host?", "Nothing changed."),
-        };
-        let items: Vec<String> = hosts.iter().map(row).collect();
-        let Some(i) = ask::pick(prompt, &items)? else {
-            bail!("{cancelled}");
-        };
-        return Ok(hosts.remove(i));
-    }
     let names: Vec<String> = hosts.into_iter().map(|h| h.name).collect();
     let which = match (command, names.as_slice()) {
-        ("stop", []) => " (none is running)".to_string(),
-        (_, []) => " (none yet: `tooob add NAME TARGET` makes one)".to_string(),
-        (_, names) => format!(" (Hosts here: {})", names.join(", ")),
+        ("stop", []) => "none is running".to_string(),
+        ("stop", names) => format!("running: {}", names.join(", ")),
+        (_, []) => "none yet: `tooob add NAME TARGET` makes one".to_string(),
+        (_, names) => format!("Hosts here: {}", names.join(", ")),
     };
-    bail!("say which Host: tooob {command} NAME …{which}\n{USAGE}")
+    let what = match command {
+        "invite" => "say which Host the Invite is for",
+        "pair" => "say which Host the Pairing Invite is for",
+        "stop" => "say which Host to stop",
+        _ => "say which Host",
+    };
+    let gap = match then(command) {
+        Some((_, then)) => format!("NAME {then}"),
+        None => "NAME".to_string(),
+    };
+    Err(typed.missing(&format!("{what} ({which})"), &gap))
 }
 
-/// One Host on one line: its name, what it serves, and its short Host Key.
-fn row(host: &Entry) -> String {
-    let id = host.host_key().unwrap_or_default();
-    format!(
-        "{:<20} {:<40} Host {}…",
-        host.name,
-        host.settings.serves,
-        short(&id)
-    )
-}
-
-/// The first few characters of a Host Key: enough to tell a box's Hosts apart.
-fn short(id: &str) -> &str {
-    &id[..id.len().min(8)]
+/// What an Owner command takes after the Host's NAME, if anything: what to say when it's missing,
+/// and its placeholder.
+fn then(command: &str) -> Option<(&'static str, &'static str)> {
+    match command {
+        "invite" => Some(("say who the Invite is for", "LABEL")),
+        "pair" => Some(("say which device the Pairing Invite is for", "LABEL")),
+        "block" | "approve" | "unblock" => Some((
+            "say which Visitor, by their Visitor Key (a unique prefix is enough)",
+            "KEY",
+        )),
+        "revoke" => Some((
+            "say which Invite, by its id (`tooob invites` lists them)",
+            "INVITE-ID",
+        )),
+        _ => None,
+    }
 }
 
 fn invite_options(flags: &Flags) -> Result<InviteOptions> {
@@ -570,7 +580,7 @@ fn lasting(duration: Duration) -> String {
 
 /// `tooob run`: serve a Host here, holding the lock on its state, with its settings as its file
 /// says now. One process per Host: a second is refused, with the first one's pid.
-async fn serve(host: &Entry, invitees: Vec<ask::Invitee>) -> Result<()> {
+async fn serve(host: &Entry, invitees: Vec<Invitee>) -> Result<()> {
     if !invitees.is_empty() {
         host.key_address()?; // say so now, not once it's serving
     }
@@ -620,7 +630,7 @@ async fn serve_here(
     site: Site,
     network: Network,
     bootstrap: Option<Result<BootstrapVersion, Problem>>,
-    invitees: Vec<ask::Invitee>,
+    invitees: Vec<Invitee>,
 ) -> Result<()> {
     let check_every = check_every()?;
     // Listening from before the Host starts, so a stop while it's still coming up is clean too.
@@ -693,7 +703,7 @@ async fn serve_here(
         // The socket only: this process holds the lock, and taking it again here would release it.
         let client = Client::new(&host.state_dir);
         for who in &invitees {
-            invite_as_answered(host, &client, who).await?;
+            invite_given(host, &client, who).await?;
         }
         tokio::select! {
             _ = &mut signals => {}
@@ -711,11 +721,11 @@ async fn serve_here(
     Ok(())
 }
 
-/// Make the Invite someone answered for (or gave as flags), saying who it's for and for how long.
-async fn invite_as_answered(host: &Entry, client: &Client, who: &ask::Invitee) -> Result<()> {
+/// Make the Invite `share` was given, saying who it's for and for how long.
+async fn invite_given(host: &Entry, client: &Client, who: &Invitee) -> Result<()> {
     let options = InviteOptions {
         first_visit_approval: who.approve,
-        expires_in: Some(seconds(&who.expires)?),
+        expires_in: Some(who.expires_in),
         ..Default::default()
     };
     eprintln!(
@@ -725,24 +735,6 @@ async fn invite_as_answered(host: &Entry, client: &Client, who: &ask::Invitee) -
         lasts(&options)
     );
     invite(host, client, &who.label, options).await
-}
-
-/// Ask who to invite and how, make the Invite, and show how to type it next time (#34). False
-/// if the Owner skipped it.
-async fn ask_and_invite(host: &Entry, client: &Client) -> Result<bool> {
-    let Some(who) = ask::invitee(true)? else {
-        return Ok(false);
-    };
-    invite_as_answered(host, client, &who).await?;
-    let approve = if who.approve { " --approve" } else { "" };
-    println!("Next time, in one line:");
-    println!(
-        "  tooob invite {} {} --expires {}{approve}",
-        quote(&host.name),
-        quote(&who.label),
-        who.expires
-    );
-    Ok(true)
 }
 
 /// A word as a shell would need it: unchanged when it's plain, single-quoted otherwise.
@@ -780,6 +772,39 @@ fn refused(host: &Entry) -> impl Fn(ControlError) -> anyhow::Error + Copy + '_ {
             host.name
         ),
         ControlError::Refused(why) => anyhow::anyhow!("{why}"),
+    }
+}
+
+/// The command line as typed, to show back with a placeholder in the gap where something's missing
+/// (ADR 0022): tooob never asks for it.
+struct Typed {
+    args: Vec<String>,
+    /// Where each word (not a `--flag` or its value) is in `args`.
+    words_at: Vec<usize>,
+}
+
+impl Typed {
+    fn new(args: Vec<String>) -> Typed {
+        let mut words_at = Vec::new();
+        let mut i = 0;
+        while i < args.len() {
+            match args[i].strip_prefix("--") {
+                Some(name) if name == "invite" || VALUE_FLAGS.contains(&name) => i += 1,
+                Some(_) => {}
+                None => words_at.push(i),
+            }
+            i += 1;
+        }
+        Typed { args, words_at }
+    }
+
+    /// Say what's missing, and under it the command as typed with `gap` after its last word,
+    /// quoted so it can be pasted back: `tooob share PATH --invite sam`.
+    fn missing(&self, what: &str, gap: &str) -> anyhow::Error {
+        let at = self.words_at.last().map_or(0, |&i| i + 1);
+        let mut shown: Vec<String> = self.args.iter().map(|a| quote(a)).collect();
+        shown.insert(at.min(shown.len()), gap.to_string());
+        anyhow::anyhow!("{what}:\n  tooob {}", shown.join(" "))
     }
 }
 

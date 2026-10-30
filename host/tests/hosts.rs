@@ -67,7 +67,7 @@ fn add_needs_a_relay_and_a_bootstrap_is_refused() {
     let path = folder.path().to_str().unwrap();
     let none = stderr(&home.tooob(&["add", "photos", path]));
     assert!(
-        none.contains("--relay") && none.contains("deploy/") && none.contains("usage:"),
+        none.contains("--relay https://RELAY/") && none.contains("deploy/"),
         "{none}"
     );
     let usage = stderr(&home.tooob(&[]));
@@ -704,4 +704,233 @@ fn a_settings_file_that_cant_be_read_says_why_rather_than_hiding_the_host() {
             stderr(&out)
         );
     }
+}
+
+#[test]
+fn share_with_no_path_says_what_to_share_and_shows_the_command_with_a_placeholder() {
+    let home = Home::new();
+    let out = home.tooob(&["share", "--relay", RELAY, "--invite", "sam"]);
+    assert!(!out.status.success());
+    assert_eq!(
+        stderr(&out),
+        "tooob: say what to share, a folder or a file:\n  \
+         tooob share PATH --relay https://relay.example/ --invite sam\n"
+    );
+}
+
+#[test]
+fn a_new_host_with_no_relay_says_which_and_shows_the_command_quoted_to_paste_back() {
+    let home = Home::new();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("My Photos");
+    std::fs::create_dir(&folder).unwrap();
+    let path = folder.to_str().unwrap();
+    let say = "tooob: say which Relay its Visitors reach it through (or --local for this network \
+               only; deploy/ shows how to run your own):\n  ";
+    for (args, shown) in [
+        (
+            vec!["share", path, "--invite", "Sam Smith"],
+            format!("tooob share '{path}' --relay https://RELAY/ --invite 'Sam Smith'\n"),
+        ),
+        (
+            vec!["add", "photos", path],
+            format!("tooob add photos '{path}' --relay https://RELAY/\n"),
+        ),
+    ] {
+        let out = home.tooob(&args);
+        assert!(!out.status.success(), "{args:?}");
+        assert_eq!(stderr(&out), format!("{say}{shown}"), "{args:?}");
+    }
+    assert_eq!(home.ok(&["ls"]).lines().count(), 1, "nothing was added");
+}
+
+#[test]
+fn an_owner_command_with_no_host_name_lists_the_hosts_and_stop_lists_the_running_ones() {
+    let home = Home::new();
+    let fails = |args: &[&str]| {
+        let out = home.tooob(args);
+        assert!(!out.status.success(), "{args:?}");
+        stderr(&out)
+    };
+    assert_eq!(
+        fails(&["invite", "--expires", "1d"]),
+        "tooob: say which Host the Invite is for (none yet: `tooob add NAME TARGET` makes \
+         one):\n  tooob invite NAME LABEL --expires 1d\n"
+    );
+    let folder = a_folder();
+    home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
+    home.ok(&["add", "films", "127.0.0.1:8096", "--local"]);
+    assert_eq!(
+        fails(&["stop"]),
+        "tooob: say which Host to stop (none is running):\n  tooob stop NAME\n"
+    );
+    let _photos = home.start("photos");
+    for (args, said) in [
+        (
+            vec!["invite"],
+            "tooob: say which Host the Invite is for (Hosts here: films, photos):\n  \
+             tooob invite NAME LABEL\n",
+        ),
+        (
+            vec!["pair"],
+            "tooob: say which Host the Pairing Invite is for (Hosts here: films, photos):\n  \
+             tooob pair NAME LABEL\n",
+        ),
+        (
+            vec!["visitors", "--json"],
+            "tooob: say which Host (Hosts here: films, photos):\n  \
+             tooob visitors NAME --json\n",
+        ),
+        (
+            vec!["stop"],
+            "tooob: say which Host to stop (running: photos):\n  tooob stop NAME\n",
+        ),
+    ] {
+        assert_eq!(fails(&args), said, "{args:?}");
+    }
+    assert!(
+        home.row("photos").contains("running"),
+        "nothing was stopped"
+    );
+}
+
+#[test]
+fn an_owner_command_with_no_label_or_key_says_what_and_shows_the_command() {
+    let home = Home::new();
+    let folder = a_folder();
+    home.add_naming("photos", folder.path().to_str().unwrap(), RELAY);
+    for (args, said) in [
+        (
+            vec!["invite", "photos", "--approve"],
+            "tooob: say who the Invite is for:\n  tooob invite photos LABEL --approve\n",
+        ),
+        (
+            vec!["pair", "photos"],
+            "tooob: say which device the Pairing Invite is for:\n  tooob pair photos LABEL\n",
+        ),
+        (
+            vec!["block", "photos"],
+            "tooob: say which Visitor, by their Visitor Key (a unique prefix is enough):\n  \
+             tooob block photos KEY\n",
+        ),
+    ] {
+        let out = home.tooob(&args);
+        assert!(!out.status.success(), "{args:?}");
+        assert_eq!(stderr(&out), said, "{args:?}");
+    }
+    assert!(home.ok(&["invites", "photos"]).is_empty(), "no Invite made");
+}
+
+#[test]
+fn share_refuses_a_folder_holding_git_unless_include_git_says_so() {
+    let home = Home::new();
+    let (repo, projects) = (a_folder(), a_folder());
+    std::fs::create_dir(repo.path().join(".git")).unwrap();
+    std::fs::create_dir_all(projects.path().join("blog/.git")).unwrap();
+    for (folder, found) in [(&repo, ".git"), (&projects, "blog/.git")] {
+        let path = folder.path().to_str().unwrap();
+        let out = home.tooob(&["share", path, "--local"]);
+        assert!(!out.status.success(), "{path}");
+        assert_eq!(
+            stderr(&out),
+            format!(
+                "tooob: {path} holds {found}, a repository's history, and everyone you invite \
+                 could read it; to share it anyway:\n  tooob share {path} --include-git --local\n"
+            )
+        );
+    }
+    assert_eq!(home.ok(&["ls"]).lines().count(), 1, "nothing was added");
+
+    let path = repo.path().to_str().unwrap();
+    let shared = home.spawn(&["share", path, "--local", "--include-git"]);
+    shared.until_it_says("serving");
+    let name = home
+        .ok(&["ls"])
+        .lines()
+        .nth(1)
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_string();
+    shared.stop();
+    let again = home.tooob(&["share", path]);
+    assert!(
+        !again.status.success(),
+        "its Host is reused, and refused the same"
+    );
+    assert!(
+        stderr(&again).contains("--include-git"),
+        "{}",
+        stderr(&again)
+    );
+    let refused = home.tooob(&["add", "other", path, "--local", "--include-git"]);
+    assert!(!refused.status.success(), "only share takes --include-git");
+    assert!(home.row(&name).contains("stopped"));
+    let usage = stderr(&home.tooob(&[]));
+    assert!(
+        usage.contains("--include-git") && !usage.contains("asks"),
+        "{usage}"
+    );
+}
+
+#[test]
+fn add_run_show_and_rm_missing_something_say_what_and_show_the_command() {
+    let home = Home::new();
+    let folder = a_folder();
+    home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
+    for (args, said) in [
+        (
+            vec!["add", "--local"],
+            "tooob: say the new Host's name and what it serves, a folder, a file or HOST:PORT:\n  \
+             tooob add NAME TARGET --local\n",
+        ),
+        (
+            vec!["add", "films", "--local"],
+            "tooob: say what films serves, a folder, a file or HOST:PORT:\n  \
+             tooob add films TARGET --local\n",
+        ),
+        (
+            vec!["run"],
+            "tooob: say which Host (Hosts here: photos):\n  tooob run NAME\n",
+        ),
+        (
+            vec!["show"],
+            "tooob: say which Host (Hosts here: photos):\n  tooob show NAME\n",
+        ),
+        (
+            vec!["rm"],
+            "tooob: say which Host (Hosts here: photos):\n  tooob rm NAME\n",
+        ),
+    ] {
+        let out = home.tooob(&args);
+        assert!(!out.status.success(), "{args:?}");
+        assert_eq!(stderr(&out), said, "{args:?}");
+    }
+    assert_eq!(
+        home.ok(&["ls"]).lines().count(),
+        2,
+        "nothing added or removed"
+    );
+}
+
+#[test]
+fn share_with_no_invite_makes_none_and_serves() {
+    let home = Home::new();
+    let folder = a_folder();
+    let relay = TestRelay::start();
+    let path = folder.path().to_str().unwrap();
+    let shared = home.spawn(&["share", path, "--relay", &relay.url]);
+    shared.until_it_says("serving");
+    let name = home
+        .ok(&["ls"])
+        .lines()
+        .nth(1)
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_string();
+    assert!(home.ok(&["invites", &name]).is_empty(), "{}", shared.log());
+    assert!(!shared.log().contains("#invite="), "{}", shared.log());
 }
