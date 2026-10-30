@@ -7,6 +7,10 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
 
 ## Unreleased
 
+## 0.1.0 — 2026-10-30
+
+Protocol Version: `tooob/0`. Tested with iroh-relay 1.3.0.
+
 The first Release, for technical early adopters on Linux and macOS.
 
 ### Added
