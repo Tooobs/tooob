@@ -39,4 +39,8 @@ The first Release, for technical early adopters on Linux and macOS.
   that can't be reached stops `add` but not `run`. A running Host checks again every 10 minutes and
   keeps serving through a Bootstrap Mismatch, which its log, `tooob ls` and `tooob show` report. A
   starting Host logs its Relay's Bootstrap beside its own Release.
+- **Uploads of any size** stream from the Visitor's browser to the Site, held whole by neither the
+  browser nor the Host; the 64 MiB cap is gone. A body over 1 MiB reaches the Site chunked. On the
+  Direct Path each request has its own flow control, so a big upload to a slow Site doesn't hold up
+  the Visitor's other requests, and a Site that answers early stops the rest being sent.
 - **`tooob --version`** prints the Release and the Protocol Version; a starting Host logs them.

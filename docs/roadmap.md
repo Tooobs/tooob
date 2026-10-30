@@ -26,7 +26,7 @@ A home box serving a Site to invited Visitors in ordinary browsers, for technica
 - ✅ A page's own address opens that page, and the address bar follows the Site ([#77](https://github.com/Tooobs/tooob/issues/77))
 - ⬜ A Site's link to another Key Address opens that Site ([#80](https://github.com/Tooobs/tooob/issues/80))
 - 🟡 Several tabs each reach their own Site; with several open at once, a request can now and then reach another tab's ([#11](https://github.com/Tooobs/tooob/issues/11))
-- ⬜ Large uploads reach the Site ([#1](https://github.com/Tooobs/tooob/issues/1)), and a cancelled request stops the Host's request to it ([#2](https://github.com/Tooobs/tooob/issues/2))
+- 🟡 Large uploads reach the Site, streamed, of any size ([#1](https://github.com/Tooobs/tooob/issues/1)); a cancelled request stops the Host's request to it ([#2](https://github.com/Tooobs/tooob/issues/2))
 - ⬜ A cut-short Invite Link says so ([#32](https://github.com/Tooobs/tooob/issues/32)); a browser that can't open a tooob link is told why ([#14](https://github.com/Tooobs/tooob/issues/14)); a Bootstrap and a Host on different Protocol Versions say so ([#55](https://github.com/Tooobs/tooob/issues/55))
 
 ### Sharing and the `tooob` command
