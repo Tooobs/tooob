@@ -34,7 +34,8 @@ A home box serving a Site to invited Visitors in ordinary browsers, for technica
 - ✅ A folder or a file is a Site, no web app needed ([#44](https://github.com/Tooobs/tooob/issues/44))
 - ✅ `tooob add`, `run`, `ls`, `show` and `rm`; Owner commands name the Host first and work with it stopped ([#47](https://github.com/Tooobs/tooob/issues/47), [#48](https://github.com/Tooobs/tooob/issues/48), [#49](https://github.com/Tooobs/tooob/issues/49))
 - 🟡 `tooob` works like a unix tool ([#33](https://github.com/Tooobs/tooob/issues/33)): `stop` works; `enable`, `disable` and `logs` hand a Host to the service manager ([#27](https://github.com/Tooobs/tooob/issues/27)); the docs describe it all ([#34](https://github.com/Tooobs/tooob/issues/34))
-- 🟡 `tooob share PATH` is add, invite and run in one ([#22](https://github.com/Tooobs/tooob/issues/22)); `tooob` asks nothing, and shows the command to type instead ([#79](https://github.com/Tooobs/tooob/issues/79), [#31](https://github.com/Tooobs/tooob/issues/31))
+- 🟡 `tooob share PATH` is add, invite and run in one ([#22](https://github.com/Tooobs/tooob/issues/22))
+- ✅ `tooob` asks nothing, and shows the command to type instead; `share` warns about what a folder holds ([#79](https://github.com/Tooobs/tooob/issues/79))
 
 ### Visitors and the Owner
 

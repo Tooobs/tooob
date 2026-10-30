@@ -7,6 +7,13 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
 
 ## Unreleased
 
+### Changed
+- **`tooob` asks nothing.** No command asks a question, in a terminal or not, so `tooob share PATH
+  --relay URL --invite NAME` is one shot that works in a script or backgrounded. A missing piece
+  is a one-line error with the command to type, a placeholder in the gap. `share` makes exactly the
+  Invites `--invite` names, and warns in a line, without stopping, when the folder holds `.git`,
+  `.env` or `.ssh` or is the whole home folder (ADR 0022).
+
 ## 0.1.0 — 2026-10-30
 
 Protocol Version: `tooob/0`. Tested with iroh-relay 1.3.0.

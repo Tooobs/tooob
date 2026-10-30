@@ -63,7 +63,7 @@ What a technical early adopter can try after each push, in the order it landed. 
 
 ### [v1 · Technical early adopters](https://github.com/Tooobs/tooob/milestone/1) (in progress)
 
-Everything here is in the first Release, **[0.1.0](https://github.com/Tooobs/tooob/releases/tag/v0.1.0)**, out 2026-10-30. Tickets finished before 2026-10-23 came over from an earlier tracker that day, so their own dates are lost.
+Everything here up to #1 is in the first Release, **[0.1.0](https://github.com/Tooobs/tooob/releases/tag/v0.1.0)**, out 2026-10-30; what comes after it is in the next Release. Tickets finished before 2026-10-23 came over from an earlier tracker that day, so their own dates are lost.
 
 - **A Site on a phone, in an ordinary browser** ([#37](https://github.com/Tooobs/tooob/issues/37), [#40](https://github.com/Tooobs/tooob/issues/40), [#50](https://github.com/Tooobs/tooob/issues/50)) · before 2026-10-23 · 0.1.0
   - Run a Relay of your own ([`deploy/`](deploy/README.md)): tooob has no default one. Then `tooob add photos ~/Pictures --relay https://<your relay>/`, `tooob run photos`, and in another terminal `tooob invite photos phone`. Open the link on a phone: the Site loads, and the pill in the corner says how fast it connected and which path it came by.
@@ -99,6 +99,8 @@ Everything here is in the first Release, **[0.1.0](https://github.com/Tooobs/too
   - A starting Host logs its Relay's Bootstrap beside its own Release (`starting tooob 0.1.0 (tooob/0), Bootstrap 0.1.0 (tooob/0)`), and `tooob show` has a `Bootstrap` line. Name a Relay whose Bootstrap speaks another Protocol Version, or one that serves none (any plain web server), and `add`, `share` and `run` refuse, saying why and what to do. If the Bootstrap changes under a running Host, it keeps serving, warns in its log, and `tooob ls` shows `running (bootstrap mismatch)`. A Relay that can't be reached stops `add`; `run` starts anyway and checks again every 10 minutes.
 - **[#1](https://github.com/Tooobs/tooob/issues/1) Large uploads reach the Site, streamed, with no size cap** · 2026-10-30 · 0.1.0
   - Upload a file far over 64 MiB to a Site, an Immich video say: it arrives whole, where it used to be refused. Neither the browser nor the Host holds it: `ps -o rss` on the Host stays flat through the upload. On the Direct Path a big upload to a slow Site no longer holds up the rest of the page, and a Site that refuses an upload early stops the browser sending it. A body over 1 MiB reaches the Site chunked, without Content-Length; Sites that need one are [#87](https://github.com/Tooobs/tooob/issues/87). This needs a Relay deployed with this Release, since a Relay serves the Bootstrap.
+- **[#79](https://github.com/Tooobs/tooob/issues/79) tooob asks nothing: a missing piece is an error that shows the command to type** · 2026-10-30 · the next Release (not out yet)
+  - `tooob share ~/blog --relay https://r.example/ --invite sam` prints the link and serves without a single question, so it works in a script or backgrounded with `&`. Leave something out (`tooob share`, a new Host with no `--relay`, `tooob invite` with no name) and it fails at once with one line saying what's missing and, under it, your command with a placeholder in the gap. `share` warns in a line, and still shares, when the folder holds `.git` (a repository's whole history), `.env` or `.ssh`, or is your whole home folder, or is too big to check all of it.
 
 ## Still to come
 
