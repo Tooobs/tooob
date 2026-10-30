@@ -3,19 +3,18 @@
 //! terminal closes is the operating system's job, never tooob's (ADR 0014). Owner commands talk to
 //! a running Host over its control socket (ADR 0010).
 use anyhow::{Context, Result, bail};
-use std::{
-    collections::HashMap,
-    path::Path,
-    time::{Duration, Instant},
-};
+use std::{collections::HashMap, path::Path, time::Duration};
 use tokio::signal::unix::{SignalKind, signal};
 use tooob::Network;
 use tooob::access::InviteOptions;
+use tooob::autostart;
+use tooob::awake::Awake;
 use tooob::bootstrap::{self, BootstrapVersion, Problem, Watch};
 use tooob::control::{Client, ControlError};
 use tooob::host::{Host, HostConfig, Site};
 use tooob::hosts::{
     Entry, Home, NO_RELAY, RUN_YOUR_OWN, check_relay, name_char, no_invite_links, no_key_address,
+    quote,
 };
 
 // musl's own allocator costs ~22% more CPU per byte served than glibc's (measured in #59), so
@@ -38,6 +37,11 @@ const USAGE: &str = "usage:
   tooob show NAME                                 its settings, Host Key and files
   tooob rm NAME                                   delete it, Host Key and all
   tooob stop NAME                                 end a running Host
+  tooob enable NAME                               start it by itself, now, at login and again after
+                                                  a failure (launchd or systemd runs it)
+  tooob disable NAME                              stop it, and stop starting it by itself
+  tooob logs NAME [-f]                            the log of a Host that starts by itself; -f
+                                                  follows it
   tooob invite NAME LABEL [--approve] [--owner] [--expires 1h]  print an Invite Link
   tooob pair NAME LABEL                           Pairing Invite (this box only)
   tooob visitors NAME [--json] | invites NAME [--json]
@@ -49,7 +53,7 @@ Host is running or not. There's no default Relay: deploy/ shows how to run your 
 ever asked: what's missing is an error that shows the command to type.";
 
 const VALUE_FLAGS: &[&str] = &["relay", "expires", "name"];
-const BARE_FLAGS: &[&str] = &["local", "json", "approve", "owner"];
+const BARE_FLAGS: &[&str] = &["local", "json", "approve", "owner", "follow"];
 
 /// Commands for one Host, named first: `tooob VERB NAME …`. They work whether it's running or not
 /// (ADR 0014).
@@ -131,9 +135,32 @@ async fn run() -> Result<()> {
             exactly(2, &[])?;
             show_host(&named(&home, &typed, "show", words.get(1))?).await;
         }
+        Some("enable") => {
+            exactly(2, &[])?;
+            let said = autostart::enable(&named(&home, &typed, "enable", words.get(1))?)?;
+            for line in said {
+                eprintln!("tooob: {line}");
+            }
+        }
+        Some("disable") => {
+            exactly(2, &[])?;
+            autostart::disable(&named(&home, &typed, "disable", words.get(1))?)?;
+        }
+        Some("logs") => {
+            exactly(2, &["follow"])?;
+            let host = named(&home, &typed, "logs", words.get(1))?;
+            logs(&host, flags.contains_key("follow")).await?;
+        }
         Some("rm") => {
             exactly(2, &[])?;
-            named(&home, &typed, "rm", words.get(1))?.remove()?;
+            let host = named(&home, &typed, "rm", words.get(1))?;
+            if autostart::is_on(&host) {
+                bail!(
+                    "{0} starts by itself: turn that off first with `tooob disable {0}`",
+                    host.name
+                );
+            }
+            host.remove()?;
         }
         Some(command) if OWNER.contains(&command) => {
             owner_command(&home, &typed, command, &words, &flags, &invitees).await?
@@ -332,7 +359,7 @@ async fn ls(home: &Home, json: bool) -> Result<()> {
     struct Row {
         name: String,
         state: &'static str,
-        enabled: bool,
+        autostart: bool,
         visitors: Option<usize>,
         /// Its Relay's Bootstrap won't do for this tooob (ADR 0020): only a running Host knows.
         bootstrap_mismatch: bool,
@@ -359,7 +386,7 @@ async fn ls(home: &Home, json: bool) -> Result<()> {
         rows.push(Row {
             name,
             state: if running { "running" } else { "stopped" },
-            enabled: false, // until `tooob enable` (#27)
+            autostart: autostart::is_on(&host),
             visitors: visitors.map(|v| v.len()),
             bootstrap_mismatch: bootstrap.is_some_and(|b| b.is_mismatch()),
             serves: host.settings.serves,
@@ -381,14 +408,14 @@ async fn ls(home: &Home, json: bool) -> Result<()> {
         .unwrap_or(0)
         .max(7);
     println!(
-        "{:<width$}  {:<states$}  {:<7}  {:>8}  SERVES",
-        "NAME", "STATE", "ENABLED", "VISITORS"
+        "{:<width$}  {:<states$}  {:<9}  {:>8}  SERVES",
+        "NAME", "STATE", "AUTOSTART", "VISITORS"
     );
     for r in &rows {
         let visitors = r.visitors.map_or("-".into(), |n| n.to_string());
-        let enabled = if r.enabled { "yes" } else { "no" };
+        let autostart = if r.autostart { "yes" } else { "no" };
         println!(
-            "{:<width$}  {:<states$}  {enabled:<7}  {visitors:>8}  {}",
+            "{:<width$}  {:<states$}  {autostart:<9}  {visitors:>8}  {}",
             r.name,
             state(r),
             r.serves
@@ -421,8 +448,17 @@ async fn show_host(host: &Entry) {
         ("settings file", host.settings_file.display().to_string()),
         ("state folder", host.state_dir.display().to_string()),
         ("log", host.log_file().display().to_string()),
+        ("Autostart", autostart_shown(host)),
     ]) {
         println!("  {label:<14} {value}");
+    }
+}
+
+/// Whether a Host starts by itself, and where its entry is when it does.
+fn autostart_shown(host: &Entry) -> String {
+    match autostart::entry_file(host).filter(|file| file.exists()) {
+        Some(file) => format!("yes, {}", file.display()),
+        None => "no".into(),
     }
 }
 
@@ -521,13 +557,17 @@ fn named(home: &Home, typed: &Typed, command: &str, wanted: Option<&String>) -> 
         return home.find(wanted);
     }
     let mut hosts = home.hosts();
-    if command == "stop" {
-        hosts.retain(|h| h.running().is_some());
+    match command {
+        "stop" => hosts.retain(|h| h.running().is_some()),
+        "disable" => hosts.retain(autostart::is_on),
+        _ => {}
     }
     let names: Vec<String> = hosts.into_iter().map(|h| h.name).collect();
     let which = match (command, names.as_slice()) {
         ("stop", []) => "none is running".to_string(),
         ("stop", names) => format!("running: {}", names.join(", ")),
+        ("disable", []) => "none starts by itself".to_string(),
+        ("disable", names) => format!("starting by itself: {}", names.join(", ")),
         (_, []) => "none yet: `tooob add NAME TARGET` makes one".to_string(),
         (_, names) => format!("Hosts here: {}", names.join(", ")),
     };
@@ -535,6 +575,9 @@ fn named(home: &Home, typed: &Typed, command: &str, wanted: Option<&String>) -> 
         "invite" => "say which Host the Invite is for",
         "pair" => "say which Host the Pairing Invite is for",
         "stop" => "say which Host to stop",
+        "logs" => "say which Host's log",
+        "enable" => "say which Host to start by itself",
+        "disable" => "say which Host to stop starting by itself",
         _ => "say which Host",
     };
     let gap = match after_name(command) {
@@ -608,6 +651,13 @@ fn lasting(duration: Duration) -> String {
 /// `tooob run`: serve a Host here, holding the lock on its state, with its settings as its file
 /// says now. One process per Host: a second is refused, with the first one's pid.
 async fn serve(host: &Entry, invitees: Vec<Invitee>) -> Result<()> {
+    if autostart::is_on(host) && !autostart::started_by_its_entry(host) {
+        bail!(
+            "{0} starts by itself, so its service manager runs it: `tooob logs {0} -f` follows \
+             it, and `tooob disable {0}` turns that off",
+            host.name
+        );
+    }
     if !invitees.is_empty() {
         host.key_address()?; // say so now, not once it's serving
     }
@@ -727,6 +777,15 @@ async fn serve_here(
     };
     if !stopped_early {
         eprintln!("tooob: {name}: serving {serving}");
+        // While it serves, and no longer: a Host started by hand behaves as one started by
+        // itself (ADR 0014).
+        let awake = Awake::hold(&format!("tooob: {name} is serving"));
+        if awake.is_some() {
+            eprintln!(
+                "tooob: {name}: this Mac won't idle-sleep while it serves (closing its lid still \
+                 sleeps it)"
+            );
+        }
         // The socket only: this process holds the lock, and taking it again here would release it.
         let client = Client::new(&host.state_dir);
         for who in &invitees {
@@ -764,31 +823,60 @@ async fn invite_given(host: &Entry, client: &Client, who: &Invitee) -> Result<()
     invite(host, client, &who.label, options).await
 }
 
-/// A word as a shell would need it: unchanged when it's plain, single-quoted otherwise.
-fn quote(word: &str) -> String {
-    let plain = !word.is_empty()
-        && word
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "-_./:@%+=,".contains(c));
-    if plain {
-        word.to_string()
-    } else {
-        format!("'{}'", word.replace('\'', r"'\''"))
-    }
-}
-
-/// Ask a running Host to stop, and wait until it has.
+/// Stop a running Host, and wait until it has: through its service manager when it starts by
+/// itself, so it isn't started again straight away (ADR 0014); otherwise by asking it.
 async fn stop(host: &Entry) -> Result<()> {
+    if autostart::is_on(host) {
+        if host.running().is_none() {
+            bail!(
+                "{0} isn't running (it starts by itself: `tooob enable {0}` starts it now)",
+                host.name
+            );
+        }
+        return autostart::stop(host);
+    }
     let client = Client::new(&host.state_dir);
     client.stop().await.map_err(refused(host))?;
-    let started = Instant::now();
-    while host.running().is_some() {
-        if started.elapsed() > Duration::from_secs(10) {
-            bail!("{} didn't stop within 10 s", host.name);
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+    host.until_stopped()
+}
+
+/// `tooob logs`: the log a Host's service manager writes, all of it; and with `-f`, what it writes
+/// next, until Ctrl-C.
+async fn logs(host: &Entry, follow: bool) -> Result<()> {
+    use std::io::{Seek, Write};
+    use std::os::unix::fs::MetadataExt;
+    let file = host.log_file();
+    if !file.exists() && !autostart::is_on(host) {
+        bail!(
+            "{0} has no log: a Host writes one when it starts by itself (`tooob enable {0}`); run \
+             by hand, it logs where it runs",
+            host.name
+        );
     }
-    Ok(())
+    let mut log: Option<std::fs::File> = None;
+    loop {
+        // A new file, or one emptied: read it from the start.
+        if let Ok(here) = std::fs::metadata(&file) {
+            let stale = match log.as_mut() {
+                Some(open) => {
+                    open.metadata()?.ino() != here.ino() || here.len() < open.stream_position()?
+                }
+                None => true,
+            };
+            if stale {
+                log = std::fs::File::open(&file).ok();
+            }
+        }
+        if let Some(open) = log.as_mut() {
+            let mut out = std::io::stdout().lock();
+            std::io::copy(open, &mut out)?;
+            out.flush()?;
+        }
+        if !follow {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
 }
 
 /// Turn a control-socket error into a message that says what to do.
@@ -816,6 +904,7 @@ impl Typed {
         let mut i = 0;
         while i < args.len() {
             match args[i].strip_prefix("--") {
+                _ if args[i] == "-f" => {}
                 Some(name) if name == "invite" || VALUE_FLAGS.contains(&name) => i += 1,
                 Some(_) => {}
                 None => words_at.push(i),
@@ -840,6 +929,10 @@ fn parse(args: impl Iterator<Item = String>) -> Result<(Vec<String>, Flags, Vec<
     let (mut words, mut flags, mut invitees) = (Vec::new(), HashMap::new(), Vec::new());
     let mut args = args.peekable();
     while let Some(a) = args.next() {
+        if a == "-f" {
+            flags.insert("follow".to_string(), None);
+            continue;
+        }
         match a.strip_prefix("--") {
             Some("invite") => invitees.push(args.next().context("--invite needs a Label")?),
             Some(name) if VALUE_FLAGS.contains(&name) => {

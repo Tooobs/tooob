@@ -127,6 +127,19 @@ pub fn valid_name(name: &str) -> bool {
     !name.is_empty() && name.chars().all(name_char)
 }
 
+/// A word as a shell would need it: unchanged when it's plain, single-quoted otherwise.
+pub fn quote(word: &str) -> String {
+    let plain = !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./:@%+=,".contains(c));
+    if plain {
+        word.to_string()
+    } else {
+        format!("'{}'", word.replace('\'', r"'\''"))
+    }
+}
+
 /// Whether `c` can be part of a Host Name.
 pub fn name_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '-' || c == '_'
@@ -346,6 +359,18 @@ impl Entry {
         let file = self.lock_file().ok()?;
         let held = record_lock(&file, libc::F_GETLK).ok()?;
         (held.l_type != libc::F_UNLCK as libc::c_short).then_some(held.l_pid as u32)
+    }
+
+    /// Wait until it isn't running, for up to 10 s.
+    pub fn until_stopped(&self) -> Result<()> {
+        let started = std::time::Instant::now();
+        while self.running().is_some() {
+            if started.elapsed() > std::time::Duration::from_secs(10) {
+                bail!("{} didn't stop within 10 s", self.name);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        Ok(())
     }
 
     /// Take the lock on its state, which a running Host holds as long as it runs: one process per

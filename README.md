@@ -36,12 +36,15 @@ bootstrap/build.sh                          # the Bootstrap's WASM into bootstra
 ```sh
 tooob add photos ~/Photos --relay https://relay.example/
 tooob run photos                            # in the foreground; Ctrl-C ends it
+tooob enable photos                         # or let launchd or systemd run it: now, at login, after a crash
 tooob invite photos mom --expires 7d        # prints the Invite Link (https://<host key>.relay.example/#invite=…)
 tooob visitors photos                       # who has got in
 tooob block photos <key prefix>
 ```
 
 `TARGET` is a folder or file (served read-only, as a Shared Folder) or `HOST:PORT` for a web app. A Host's settings are a file you edit by hand (`tooob show photos` says where). Owner commands work whether the Host is running or not. `tooob` with no arguments lists every command.
+
+A Host never puts itself in the background ([ADR 0014](docs/adr/0014-hosts-run-in-the-foreground-the-os-keeps-them-running.md)): `tooob enable photos` hands it to your service manager (a launchd agent on macOS, a systemd user unit on Linux), which runs `~/.local/bin/tooob run photos`, so a restarted Host runs the Release you last installed. `tooob logs photos -f` follows its log, `tooob stop photos` stops it until your next login, and `tooob disable photos` stops it and removes the entry. While a Host serves, a Mac doesn't idle-sleep, but closing its lid still sleeps it. On a Linux box nobody stays logged in to, `loginctl enable-linger` keeps it running from boot. Without systemd or launchd, have your own service manager run `~/.local/bin/tooob run photos`, restarting it on failure.
 
 An Invite Link, piece by piece ([ADR 0020](docs/adr/0020-a-relay-serves-its-bootstrap.md)):
 

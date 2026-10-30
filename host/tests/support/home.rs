@@ -168,7 +168,9 @@ pub struct Home(pub tempfile::TempDir);
 
 impl Home {
     pub fn new() -> Home {
-        Home(tempfile::tempdir().unwrap())
+        let home = Home(tempfile::tempdir().unwrap());
+        std::fs::create_dir(home.stand_ins()).unwrap();
+        home
     }
 
     fn command(&self, args: &[&str]) -> Command {
@@ -176,10 +178,54 @@ impl Home {
         cmd.args(args)
             .env("TOOOB_HOME", self.0.path())
             .env("HOME", self.0.path()) // whatever happens, never the Owner's real Hosts
+            // Only stand-ins: never the Owner's real launchctl or systemctl.
+            .env("PATH", self.stand_ins())
             .env_remove("XDG_CONFIG_HOME")
             .env_remove("XDG_STATE_HOME")
+            .env_remove("TOOOB_AUTOSTART")
             .stdin(Stdio::null());
         cmd
+    }
+
+    /// The folder that's all of `PATH` for the `tooob` it runs: stand-ins for the tools tooob
+    /// calls, and nothing else.
+    pub fn stand_ins(&self) -> std::path::PathBuf {
+        self.0.path().join("stand-ins")
+    }
+
+    /// A stand-in for `tool` (launchctl, systemctl) on `tooob`'s PATH: it records each call, one
+    /// line of its arguments, in `<tool>.calls`, then runs `then` (sh), which may fail it.
+    pub fn stand_in(&self, tool: &str, then: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = self.stand_ins();
+        let script = dir.join(tool);
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n{then}\n",
+                dir.join(format!("{tool}.calls")).display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// How `tool`'s stand-in was called, one call a line.
+    pub fn calls(&self, tool: &str) -> Vec<String> {
+        std::fs::read_to_string(self.stand_ins().join(format!("{tool}.calls")))
+            .unwrap_or_default()
+            .lines()
+            .map(String::from)
+            .collect()
+    }
+
+    /// tooob where the install script puts it, `~/.local/bin/tooob`: this build.
+    pub fn install_tooob(&self) -> std::path::PathBuf {
+        let bin = self.0.path().join(".local/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let tooob = bin.join("tooob");
+        std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_tooob"), &tooob).unwrap();
+        tooob
     }
 
     /// Run `tooob`, as a script would. It must return within 30 s: a command that stays in the
