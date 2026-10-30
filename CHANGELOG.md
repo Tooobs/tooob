@@ -34,4 +34,9 @@ The first Release, for technical early adopters on Linux and macOS.
   opens that page, and the address bar and the tab's title follow the Site, so a reload, a bookmark
   or a shared link lands where it was. A Relay serves the shell at any path that isn't iroh's or a
   Bundle file; once installed, the service worker serves it for every page load, fetched as `/`.
+- **tooob checks its Relay's Bootstrap** (ADR 0020): `add`, `share` and `run` refuse a Relay whose
+  Bootstrap speaks another Protocol Version, or that serves none, saying why and what to do; one
+  that can't be reached stops `add` but not `run`. A running Host checks again every 10 minutes and
+  keeps serving through a Bootstrap Mismatch, which its log, `tooob ls` and `tooob show` report. A
+  starting Host logs its Relay's Bootstrap beside its own Release.
 - **`tooob --version`** prints the Release and the Protocol Version; a starting Host logs them.
