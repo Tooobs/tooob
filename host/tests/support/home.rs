@@ -22,7 +22,8 @@ pub struct TestRelay {
     pub url: String,
     /// The same Relay at an IP address: its Hosts have no Key Address.
     pub ip_url: String,
-    version_json: Arc<Mutex<Option<String>>>,
+    /// What its front answers for version.json: None hangs up, as if it couldn't be reached.
+    version_json: Arc<Mutex<Option<Option<String>>>>,
     _stop: tokio::sync::oneshot::Sender<()>,
 }
 
@@ -50,12 +51,18 @@ impl TestRelay {
 
     /// From now on, serve `version_json` as its Bootstrap's, or no Bootstrap at all (a 404).
     pub fn serve_bootstrap(&self, version_json: Option<String>) {
-        *self.version_json.lock().unwrap() = version_json;
+        *self.version_json.lock().unwrap() = Some(version_json);
+    }
+
+    /// From now on, hang up on anyone asking for its Bootstrap, as a Relay that can't be reached
+    /// would, while still being a Relay.
+    pub fn hang_up_on_bootstrap(&self) {
+        *self.version_json.lock().unwrap() = None;
     }
 
     fn spawn(with_relay: bool) -> TestRelay {
         use iroh_relay::server::{RelayConfig, Server, ServerConfig};
-        let version_json = Arc::new(Mutex::new(Some(this_version_json())));
+        let version_json = Arc::new(Mutex::new(Some(Some(this_version_json()))));
         let (port_tx, port_rx) = std::sync::mpsc::channel();
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let served = version_json.clone();
@@ -105,7 +112,7 @@ impl TestRelay {
 async fn answer(
     mut conn: tokio::net::TcpStream,
     relay: Option<std::net::SocketAddr>,
-    version_json: Arc<Mutex<Option<String>>>,
+    version_json: Arc<Mutex<Option<Option<String>>>>,
 ) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut head = Vec::new();
@@ -132,8 +139,9 @@ async fn answer(
         ("/__tooob/version.json", _) => {
             let served = version_json.lock().unwrap().clone();
             let reply = match served {
-                Some(body) => reply("200 OK", &body),
-                None => reply("404 Not Found", ""),
+                Some(Some(body)) => reply("200 OK", &body),
+                Some(None) => reply("404 Not Found", ""),
+                None => return,
             };
             let _ = conn.write_all(reply.as_bytes()).await;
             return;

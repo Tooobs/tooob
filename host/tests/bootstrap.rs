@@ -6,7 +6,7 @@ use std::process::Output;
 use support::home::{Home, TestRelay, a_folder, this_version_json, version_json};
 use tooob::Network;
 use tooob::access::Redeemed;
-use tooob::bootstrap::{Bootstrap, Problem, judge};
+use tooob::bootstrap::{BootstrapVersion, Found, Problem, Watch, judge};
 use tooob::visit::Visit;
 
 fn stderr(out: &Output) -> String {
@@ -18,7 +18,7 @@ fn a_bootstrap_speaking_this_protocol_version_works_whatever_its_release() {
     let body = br#"{"release": "0.0.9", "protocolVersion": "tooob/0", "files": {}}"#;
     assert_eq!(
         judge(200, body),
-        Ok(Bootstrap {
+        Ok(BootstrapVersion {
             release: "0.0.9".into(),
             protocol_version: "tooob/0".into(),
         })
@@ -30,7 +30,7 @@ fn a_bootstrap_speaking_another_protocol_version_is_a_mismatch() {
     let body = br#"{"release": "0.2.0", "protocolVersion": "tooob/1", "files": {}}"#;
     assert_eq!(
         judge(200, body),
-        Err(Problem::Mismatch(Bootstrap {
+        Err(Problem::Mismatch(BootstrapVersion {
             release: "0.2.0".into(),
             protocol_version: "tooob/1".into(),
         }))
@@ -82,17 +82,12 @@ fn run_refuses_a_relay_whose_bootstrap_speaks_another_protocol_version() {
 }
 
 #[test]
-fn run_refuses_a_relay_that_serves_no_bootstrap_or_cant_be_reached() {
+fn run_refuses_a_relay_that_serves_no_bootstrap() {
     let home = Home::new();
     let folder = a_folder();
     let relay = TestRelay::start();
-    home.ok(&[
-        "add",
-        "photos",
-        folder.path().to_str().unwrap(),
-        "--relay",
-        &relay.url,
-    ]);
+    let path = folder.path().to_str().unwrap();
+    home.ok(&["add", "photos", path, "--relay", &relay.url]);
     relay.serve_bootstrap(None);
     let out = home.tooob(&["run", "photos"]);
     assert!(!out.status.success());
@@ -100,13 +95,30 @@ fn run_refuses_a_relay_that_serves_no_bootstrap_or_cant_be_reached() {
     for said in ["serves no Bootstrap", "Visitors' browsers", "another Relay"] {
         assert!(err.contains(said), "{said:?} in: {err}");
     }
-
-    drop(relay);
-    let out = home.tooob(&["run", "photos"]);
-    assert!(!out.status.success());
-    let err = stderr(&out);
-    assert!(err.contains("can't be reached"), "{err}");
     assert!(home.row("photos").contains("stopped"));
+}
+
+#[test]
+fn run_starts_with_a_warning_when_its_relay_cant_be_reached_and_its_checks_settle_it() {
+    let home = Home::new();
+    let folder = a_folder();
+    let relay = TestRelay::start();
+    let path = folder.path().to_str().unwrap();
+    home.ok(&["add", "photos", path, "--relay", &relay.url]);
+    relay.hang_up_on_bootstrap();
+    let running = home.start_with("photos", &[CHECK_EVERY]);
+    let log = running.log();
+    assert!(log.contains("(tooob/0), Bootstrap unknown"), "{log}");
+    assert!(
+        log.contains("warning: its Relay") && log.contains("can't be reached"),
+        "{log}"
+    );
+    assert!(home.shown("photos", "Bootstrap").starts_with("unknown"));
+    assert!(!home.row("photos").contains("bootstrap mismatch"));
+
+    relay.serve_bootstrap(Some(version_json("0.0.9", "tooob/0")));
+    running.until_it_says("serves Bootstrap 0.0.9 (tooob/0)");
+    assert_eq!(home.shown("photos", "Bootstrap"), "0.0.9 (tooob/0)");
 }
 
 #[test]
@@ -134,15 +146,22 @@ fn add_and_share_refuse_a_relay_whose_bootstrap_wont_do_and_add_nothing() {
     let path = folder.path().to_str().unwrap();
     let relay = TestRelay::start();
     relay.serve_bootstrap(Some(version_json("0.2.0", "tooob/1")));
-    for args in [
-        vec!["add", "photos", path, "--relay", &relay.url],
-        vec!["share", path, "--relay", &relay.url],
-        vec!["share", path, "--relay", &relay.url, "--invite", "Ann"],
+    let unreachable = TestRelay::start();
+    unreachable.hang_up_on_bootstrap();
+    for (relay, why) in [
+        (&relay, "0.2.0 (tooob/1)"),
+        (&unreachable, "can't be reached"),
     ] {
-        let out = home.tooob(&args);
-        assert!(!out.status.success(), "{args:?}");
-        let err = stderr(&out);
-        assert!(err.contains("0.2.0 (tooob/1)"), "{args:?}: {err}");
+        for args in [
+            vec!["add", "photos", path, "--relay", &relay.url],
+            vec!["share", path, "--relay", &relay.url],
+            vec!["share", path, "--relay", &relay.url, "--invite", "Ann"],
+        ] {
+            let out = home.tooob(&args);
+            assert!(!out.status.success(), "{args:?}");
+            let err = stderr(&out);
+            assert!(err.contains(why), "{args:?}: {err}");
+        }
     }
     assert_eq!(home.ok(&["ls"]).lines().count(), 1, "nothing was added");
 }
@@ -229,4 +248,70 @@ async fn a_bootstrap_that_changes_under_a_running_host_is_a_warning_and_it_keeps
     assert!(!home.row("photos").contains("bootstrap mismatch"));
     let shown = home.shown("photos", "Bootstrap");
     assert_eq!(shown, format!("{} (tooob/0)", env!("CARGO_PKG_VERSION")));
+}
+
+fn version(release: &str, protocol_version: &str) -> BootstrapVersion {
+    BootstrapVersion {
+        release: release.into(),
+        protocol_version: protocol_version.into(),
+    }
+}
+
+fn unreachable() -> Result<BootstrapVersion, Problem> {
+    Err(Problem::Unreachable("connection refused".into()))
+}
+
+const RELAY: &str = "https://relay.example/";
+
+#[test]
+fn a_short_outage_of_the_relay_is_one_warning_and_nothing_when_it_ends() {
+    let mut watch = Watch::new(RELAY, &Ok(version("0.1.0", "tooob/0")));
+    let said = watch.update(unreachable()).unwrap();
+    assert!(
+        said.contains("warning") && said.contains("can't be reached"),
+        "{said}"
+    );
+    assert_eq!(watch.update(unreachable()), None);
+    assert_eq!(watch.found(), Found::Serves("0.1.0 (tooob/0)".into()));
+    assert_eq!(watch.update(Ok(version("0.1.0", "tooob/0"))), None);
+}
+
+#[test]
+fn a_mismatch_is_warned_of_once_even_across_an_outage() {
+    let mut watch = Watch::new(RELAY, &Ok(version("0.1.0", "tooob/0")));
+    let mismatch = || Err(Problem::Mismatch(version("0.2.0", "tooob/1")));
+    let said = watch.update(mismatch()).unwrap();
+    assert!(
+        said.contains("warning") && said.contains("0.2.0 (tooob/1)"),
+        "{said}"
+    );
+    assert!(watch.found().is_mismatch());
+    assert!(watch.update(unreachable()).is_some());
+    assert_eq!(watch.update(mismatch()), None);
+    assert!(
+        watch.found().is_mismatch(),
+        "an outage doesn't undo what was seen"
+    );
+
+    let said = watch.update(Ok(version("0.1.0", "tooob/0"))).unwrap();
+    assert!(
+        said.contains("serves Bootstrap 0.1.0 (tooob/0) again"),
+        "{said}"
+    );
+    let said = watch.update(Ok(version("0.1.1", "tooob/0"))).unwrap();
+    assert!(
+        said.contains("now serves Bootstrap 0.1.1 (tooob/0)"),
+        "{said}"
+    );
+    assert!(!watch.found().is_mismatch());
+}
+
+#[test]
+fn a_host_that_started_without_reaching_its_relay_says_what_the_first_check_finds() {
+    let mut watch = Watch::new(RELAY, &unreachable());
+    assert_eq!(watch.found(), Found::Unknown);
+    assert_eq!(watch.update(unreachable()), None, "warned of at start");
+    let said = watch.update(Ok(version("0.1.0", "tooob/0"))).unwrap();
+    assert!(said.contains("serves Bootstrap 0.1.0 (tooob/0)"), "{said}");
+    assert!(!said.contains("again"), "{said}");
 }

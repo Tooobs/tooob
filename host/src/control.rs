@@ -1,7 +1,7 @@
 //! The Owner's operations on a running Host (ADR 0010). The CLI reaches them over a local socket,
 //! Owner Devices over tooob; both end up here.
 use crate::access::{Access, ChangeError, Invite, InviteInfo, InviteOptions, VisitorInfo};
-use crate::bootstrap::RelaysBootstrap;
+use crate::bootstrap::Found;
 use crate::wire;
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -27,7 +27,7 @@ pub struct Control {
     /// Rung when the Owner asks the Host to stop; whoever runs the Host shuts it down.
     pub(crate) stop: Arc<tokio::sync::Notify>,
     /// What whoever runs the Host last found its Relay's Bootstrap to be (ADR 0020).
-    pub(crate) bootstrap: Arc<Mutex<RelaysBootstrap>>,
+    pub(crate) bootstrap: Arc<Mutex<Found>>,
 }
 
 impl Control {
@@ -71,12 +71,12 @@ impl Control {
     }
 
     /// What its Relay's Bootstrap was, last it was checked.
-    pub fn relays_bootstrap(&self) -> RelaysBootstrap {
+    pub fn bootstrap_found(&self) -> Found {
         self.bootstrap.lock().unwrap().clone()
     }
 
     /// Say what its Relay's Bootstrap is now, for `tooob ls` and `tooob show` to tell the Owner.
-    pub fn found_relays_bootstrap(&self, found: RelaysBootstrap) {
+    pub fn found_bootstrap(&self, found: Found) {
         *self.bootstrap.lock().unwrap() = found;
     }
 
@@ -221,7 +221,7 @@ fn reply(control: &Control, request: &Value) -> Value {
             json!({"ok": null})
         }
         Some("visitors") => json!({"ok": control.visitors()}),
-        Some("bootstrap") => json!({"ok": control.relays_bootstrap()}),
+        Some("bootstrap") => json!({"ok": control.bootstrap_found()}),
         Some("invites") => json!({"ok": control.invites()}),
         Some("revoke") => outcome(control.revoke(request["id"].as_str().unwrap_or_default())),
         Some(op @ ("block" | "approve" | "unblock")) => {
@@ -322,7 +322,7 @@ impl Client {
     }
 
     /// What the running Host last found its Relay's Bootstrap to be. Only a running Host knows.
-    pub async fn relays_bootstrap(&self) -> Result<RelaysBootstrap, ControlError> {
+    pub async fn bootstrap_found(&self) -> Result<Found, ControlError> {
         decode(self.ask_running(&json!({"op": "bootstrap"})).await?)
     }
 

@@ -146,6 +146,10 @@ _Avoid_: loader, launcher, web client
 Which version of tooob's protocol a Host or a Bootstrap speaks (`tooob/0`). A Host and a Bootstrap work together when they speak the same Protocol Version, whatever their Releases.
 _Avoid_: wire version, API version, ALPN
 
+**Bootstrap Mismatch**:
+A Relay serving a Bootstrap its Host's tooob can't work with: one that speaks another Protocol Version, or no Bootstrap at all. A Host won't start on one; a running Host that finds one keeps serving, warns, and `tooob ls` and `tooob show` say so. A Relay that can't be reached isn't one: what it serves is unknown until it answers.
+_Avoid_: version mismatch, incompatible Relay
+
 ## Releases
 
 **Release**:
