@@ -7,6 +7,13 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
 
 ## Unreleased
 
+### Added
+- **Autostart:** `tooob enable NAME` hands a Host to launchd (macOS) or systemd (Linux), which
+  starts it now, at login and after a crash; `tooob disable NAME` removes the entry, `tooob logs
+  NAME [-f]` shows its log, and `tooob stop` keeps an enabled Host stopped until the next login.
+  `tooob ls` has an AUTOSTART column (`autostart` in `--json`). A serving Host keeps a Mac from
+  idle-sleeping. Without systemd or launchd, `enable` says what to have your own service manager run.
+
 ### Changed
 - **`tooob` asks nothing.** No command asks a question, in a terminal or not, so `tooob share PATH
   --relay URL --invite NAME` is one shot that works in a script or backgrounded. A missing piece
