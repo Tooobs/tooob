@@ -20,6 +20,7 @@ use std::{
 pub struct TestSite {
     pub addr: SocketAddr,
     requests: Arc<AtomicUsize>,
+    uploads: Arc<AtomicUsize>,
 }
 
 impl TestSite {
@@ -27,7 +28,29 @@ impl TestSite {
         let requests = Arc::new(AtomicUsize::new(0));
         let counter = requests.clone();
         let hang_counter = requests.clone();
+        let uploads = Arc::new(AtomicUsize::new(0));
+        let upload_counter = uploads.clone();
         let app = Router::new()
+            // An upload like Immich's: read as it arrives, never held whole, answered with its size
+            // and SHA-256. Only a body that arrived to its end counts as an upload.
+            .route(
+                "/sha256",
+                any(move |req: Request| async move {
+                    use futures::StreamExt;
+                    use sha2::Digest;
+                    let mut body = req.into_body().into_data_stream();
+                    let (mut size, mut hash) = (0usize, sha2::Sha256::new());
+                    while let Some(chunk) = body.next().await {
+                        let Ok(chunk) = chunk else {
+                            return "broken off".to_string();
+                        };
+                        size += chunk.len();
+                        hash.update(&chunk);
+                    }
+                    upload_counter.fetch_add(1, Ordering::SeqCst);
+                    format!("{size} {}", hex(&hash.finalize()))
+                }),
+            )
             // A Site that has stopped answering: takes the request and never replies.
             .route(
                 "/hang",
@@ -101,10 +124,23 @@ impl TestSite {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        TestSite { addr, requests }
+        TestSite {
+            addr,
+            requests,
+            uploads,
+        }
+    }
+
+    /// Bodies that reached `/sha256` whole, to their end.
+    pub fn uploads(&self) -> usize {
+        self.uploads.load(Ordering::SeqCst)
     }
 
     pub fn requests(&self) -> usize {
         self.requests.load(Ordering::SeqCst)
     }
+}
+
+pub fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

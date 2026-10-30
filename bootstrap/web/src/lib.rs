@@ -109,6 +109,10 @@ impl Writer {
     pub fn finish(&mut self) -> Result<(), JsError> {
         self.s.finish().map_err(err)
     }
+    /// Abandon what was sent: the Host sees the stream broken off, never a short one that ended.
+    pub fn reset(&mut self) -> Result<(), JsError> {
+        self.s.reset(0u32.into()).map_err(err)
+    }
 }
 
 #[wasm_bindgen]

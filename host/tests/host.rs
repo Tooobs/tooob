@@ -444,37 +444,6 @@ async fn a_block_closes_the_visitors_open_websocket() {
 }
 
 #[tokio::test]
-async fn an_oversized_upload_is_refused_not_truncated() {
-    let site = TestSite::start().await;
-    let dir = tempfile::tempdir().unwrap();
-    let host = start_host(&site, &dir).await;
-    let visit = Visit::connect(host.address(), new_visitor_key(), Network::LocalOnly)
-        .await
-        .unwrap();
-    visit
-        .redeem(
-            &host
-                .control()
-                .invite("mom", InviteOptions::default())
-                .unwrap()
-                .token,
-        )
-        .await
-        .unwrap();
-
-    let too_big = vec![0u8; (64 << 20) + 1];
-    assert_eq!(
-        visit
-            .request("POST", "/upload", &[], &too_big)
-            .await
-            .unwrap()
-            .status,
-        413
-    );
-    assert_eq!(site.requests(), 0, "nothing half-uploaded reaches the Site");
-}
-
-#[tokio::test]
 async fn a_site_that_is_down_gives_the_visitor_a_502() {
     let closed = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()

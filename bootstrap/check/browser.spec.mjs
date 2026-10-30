@@ -1,9 +1,10 @@
 // The browser side of an Invite Link, end to end. Run: npx playwright test (after ../build.sh).
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { createServer, get } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { test as base } from './guards.mjs';
 import * as h from './harness.mjs';
 
@@ -38,7 +39,7 @@ async function hostWithSite(relay) {
     await host.stop();
     await start();
   };
-  return { site, name, invite, start, restart, stop: () => host.stop(), pause: () => host.pause(), resume: () => host.resume() };
+  return { site, name, invite, start, restart, pid: () => host.pid, stop: () => host.stop(), pause: () => host.pause(), resume: () => host.resume() };
 }
 
 test('an Invite Link loads the Site and drops the token from the address bar', async ({ browser, relay }) => {
@@ -720,6 +721,83 @@ test('a 20 MB upload goes through on the Direct Path', async ({ browser, relay }
   assert.match(reply, /received 20971520/);
   assert.ok((await page.evaluate(() => window.__tooobStats.bytes.direct)) > before, 'the upload left the Direct Path');
 });
+
+/** A file of `size` random bytes in a folder of its own, made now (never committed): its path and SHA-256. */
+function bigFile(size) {
+  const path = join(mkdtempSync(join(tmpdir(), 'tooob-upload-')), 'video.mp4');
+  const fd = openSync(path, 'w');
+  const hash = createHash('sha256');
+  for (let left = size; left > 0; left -= 1 << 20) {
+    const chunk = randomBytes(Math.min(left, 1 << 20));
+    hash.update(chunk);
+    writeSync(fd, chunk);
+  }
+  closeSync(fd);
+  return { path, sha256: hash.digest('hex'), remove: () => rmSync(dirname(path), { recursive: true }) };
+}
+
+for (const path of ['direct', 'relay']) {
+  test(`an upload far over 64 MiB reaches the Site intact over the ${path} path, and neither the browser nor the Host holds it`, async ({ browser, relay }) => {
+    const size = 300 << 20;
+    const file = bigFile(size);
+    try {
+      const { invite, pid } = await hostWithSite(relay);
+      const page = await h.newVisitor(browser);
+      if (path === 'relay') await h.breakDirectPath(page);
+      await page.goto(invite('mom'));
+      await h.siteText(page);
+      await h.pathIs(page, path, 20000);
+      const frame = await (await page.$('iframe')).contentFrame();
+      // As a Site's upload form does: a file the Visitor picks, sent as it is on disk.
+      await frame.evaluate(() => document.body.insertAdjacentHTML('beforeend', '<input type="file" id="pick">'));
+      await frame.setInputFiles('#pick', file.path);
+      const [host, browserBefore] = [h.memoryOf(pid()), h.browserMemory()];
+      let [hostPeak, browserPeak] = [host, browserBefore];
+      const sampling = setInterval(() => {
+        hostPeak = Math.max(hostPeak, h.memoryOf(pid()));
+        browserPeak = Math.max(browserPeak, h.browserMemory());
+      }, 200);
+      const t = Date.now();
+      const reply = await frame.evaluate(() => fetch('/sha256', { method: 'POST', body: document.getElementById('pick').files[0] }).then((r) => r.text()));
+      clearInterval(sampling);
+      console.log(`${path}: ${size >> 20} MiB in ${Date.now() - t} ms; Host ${host >> 20} → ${hostPeak >> 20} MiB, browser ${browserBefore >> 20} → ${browserPeak >> 20} MiB`);
+      assert.equal(reply, `${size} ${file.sha256}`);
+      assert.ok(hostPeak - host < 64 << 20, `the Host's memory grew ${(hostPeak - host) >> 20} MiB`);
+      assert.ok(browserPeak - browserBefore < 200 << 20, `the browser's memory grew ${(browserPeak - browserBefore) >> 20} MiB`);
+    } finally {
+      file.remove();
+    }
+  });
+}
+
+for (const path of ['direct', 'relay']) {
+  test(`an upload that breaks off midway over the ${path} path never reaches the Site as whole`, async ({ browser, relay }) => {
+    const { site, invite } = await hostWithSite(relay);
+    const page = await h.newVisitor(browser);
+    if (path === 'relay') await h.breakDirectPath(page);
+    await page.goto(invite('mom'));
+    await h.siteText(page);
+    await h.pathIs(page, path, 20000);
+    const frame = await (await page.$('iframe')).contentFrame();
+    // A body the Site's page makes as it goes, and can't finish: 32 MiB, then an error.
+    const outcome = await frame.evaluate(() => {
+      let sent = 0;
+      const body = new ReadableStream({
+        pull(c) {
+          if (sent >= 32 << 20) return c.error(new Error('the camera roll went away'));
+          sent += 1 << 20;
+          c.enqueue(new Uint8Array(1 << 20).fill(7));
+        },
+      });
+      return fetch('/sha256', { method: 'POST', body, duplex: 'half' }).then((r) => `status ${r.status}`, (e) => e.name);
+    });
+    assert.doesNotMatch(outcome, /status 200/);
+    await new Promise((r) => setTimeout(r, 2000));
+    assert.equal(site.uploads, 0, 'the Site took part of an upload for all of it');
+    const next = await frame.evaluate(() => fetch('/after').then((r) => r.text()));
+    assert.match(next, /site \/after label=mom/);
+  });
+}
 
 test("when the Host can't be reached the page says so and keeps the Invite for a retry", async ({ browser, relay }) => {
   const { invite, stop } = await hostWithSite(relay);

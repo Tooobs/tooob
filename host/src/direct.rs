@@ -256,7 +256,22 @@ fn message(kind: u8, id: u32, payload: &[u8]) -> BytesMut {
     m
 }
 
-type Stream = (WriteHalf<DuplexStream>, JoinHandle<()>);
+/// One stream's input pipe into the request handling, the request handling, and its reply pump.
+struct Stream {
+    to_host: WriteHalf<DuplexStream>,
+    serving: JoinHandle<()>,
+    pump: JoinHandle<()>,
+}
+
+impl Stream {
+    /// Abandon the stream. The request handling stops first: once its input pipe goes, it would
+    /// read a clean end there and pass a broken-off upload to the Site as whole.
+    async fn reset(self) {
+        self.serving.abort();
+        let _ = self.serving.await;
+        self.pump.abort();
+    }
+}
 
 /// Demultiplex the channel: each stream id gets an in-memory pipe into the request handling, and
 /// a task pumping its reply back as DATA messages and a final FIN.
@@ -277,7 +292,7 @@ async fn mux(dc: Arc<dyn DataChannel>, admission: Admission, visitor: String) ->
             continue;
         };
         let id = u32::from_be_bytes(id.try_into()?);
-        streams.retain(|_, (_, pump)| !pump.is_finished());
+        streams.retain(|_, stream| !stream.pump.is_finished());
         match kind {
             DATA => {
                 if id > newest {
@@ -287,25 +302,26 @@ async fn mux(dc: Arc<dyn DataChannel>, admission: Admission, visitor: String) ->
                 }
                 // A failed write is that one request done with its input (a refusal never reads
                 // the body), not the channel failing: the rest is dropped.
-                if let Some((to_host, _)) = streams.get_mut(&id) {
-                    let _ = to_host.write_all(&m.data[5..]).await;
+                if let Some(stream) = streams.get_mut(&id) {
+                    let _ = stream.to_host.write_all(&m.data[5..]).await;
                 }
             }
             FIN => {
-                if let Some((to_host, _)) = streams.get_mut(&id) {
-                    let _ = to_host.shutdown().await;
+                if let Some(stream) = streams.get_mut(&id) {
+                    let _ = stream.to_host.shutdown().await;
                 }
             }
             RESET => {
-                if let Some((_, pump)) = streams.remove(&id) {
-                    pump.abort(); // drops the reply's pipe, so the request handling stops too
+                if let Some(stream) = streams.remove(&id) {
+                    stream.reset().await;
                 }
             }
             _ => {}
         }
     }
-    for (_, pump) in streams.into_values() {
-        pump.abort();
+    // The channel closed: every stream still open on it is broken off.
+    for stream in streams.into_values() {
+        stream.reset().await;
     }
     Ok(())
 }
@@ -315,7 +331,7 @@ fn serve(id: u32, dc: Arc<dyn DataChannel>, admission: Admission, visitor: Strin
     let (host_side, pump_side) = tokio::io::duplex(256 * 1024);
     let (mut reply, to_host) = tokio::io::split(pump_side);
     let (recv, send) = tokio::io::split(host_side);
-    tokio::spawn(async move {
+    let serving = tokio::spawn(async move {
         if let Err(e) = admission.stream(send, recv, &visitor).await {
             eprintln!("tooob: direct stream from {}: {e:#}", &visitor[..8]);
         }
@@ -335,7 +351,11 @@ fn serve(id: u32, dc: Arc<dyn DataChannel>, admission: Admission, visitor: Strin
         }
         let _ = dc.send(message(FIN, id, &[])).await;
     });
-    (to_host, pump)
+    Stream {
+        to_host,
+        serving,
+        pump,
+    }
 }
 
 /// Cap the Direct Path's total send rate. Native senders bursting at more than ~100-200 Mbit/s into

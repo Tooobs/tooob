@@ -4,6 +4,7 @@
 // Chromium treats as a secure context and resolves to this machine. The Hosts and Relays started
 // here go in the run's process record (guards.mjs), so none outlives a run.
 import { execFile, execFileSync, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, request } from 'node:http';
 import { connect } from 'node:net';
@@ -164,17 +165,20 @@ export async function wake(page) {
   });
 }
 
-/** A stand-in Site: answers every path with what reached it, and counts requests. */
+/** A stand-in Site: answers every path with what reached it, and counts requests. Uploads are read as
+ * they arrive, never held whole. */
 export async function startSite() {
-  const site = { requests: 0 };
+  const site = { requests: 0, uploads: 0 }; // uploads: bodies that reached /sha256 whole
   const server = createServer((req, res) => {
     site.requests++;
     const size = /^\/bytes\/(\d+)/.exec(req.url)?.[1]; // a big response, like a photo
     if (size) return res.end(Buffer.alloc(Number(size), 7));
-    if (req.method === 'POST') { // an upload: say how much arrived
+    if (req.method === 'POST') { // an upload: say how much arrived (and at /sha256, its hash)
       let received = 0;
-      req.on('data', (c) => (received += c.length));
-      return req.on('end', () => res.end(`received ${received}`));
+      const hash = createHash('sha256');
+      req.on('data', (c) => ((received += c.length), hash.update(c)));
+      if (req.url !== '/sha256') return req.on('end', () => res.end(`received ${received}`));
+      return req.on('end', () => (site.uploads++, res.end(`${received} ${hash.digest('hex')}`)));
     }
     res.setHeader('content-type', 'text/html');
     res.end(`<!doctype html><p id="site">site ${req.url} label=${req.headers['x-tooob-label'] ?? '-'}</p>`);
@@ -210,6 +214,7 @@ async function runHost(name) {
   await until(async () => host.output().includes('serving'), `tooob run ${name}`);
   return {
     name,
+    pid: host.child.pid,
     stop: () => new Promise((r) => { host.child.once('exit', r); host.child.kill(); }),
     // Freeze the Host: nothing it holds answers, so the browser's ICE checks go unanswered.
     pause: () => host.child.kill('SIGSTOP'),
@@ -431,4 +436,15 @@ export function stopAll() {
     server.close();
     server.closeAllConnections?.(); // a Relay front's keep-alive connections
   }
+}
+
+/** How much memory process `pid` holds now (its resident set), in bytes. */
+export function memoryOf(pid) {
+  return Number(execFileSync('ps', ['-o', 'rss=', '-p', String(pid)], { encoding: 'utf8' }).trim()) * 1024;
+}
+
+/** How much memory Playwright's browsers hold now, every process of theirs together, in bytes. */
+export function browserMemory() {
+  const ps = execFileSync('ps', ['-A', '-o', 'rss=,command='], { encoding: 'utf8' });
+  return ps.split('\n').filter((l) => l.includes('ms-playwright')).reduce((sum, l) => sum + Number(l.trim().split(/\s+/)[0]) * 1024, 0);
 }

@@ -8,7 +8,7 @@ use iroh::{
     endpoint::{Connection, RecvStream, SendStream},
 };
 use serde_json::json;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum VisitError {
@@ -119,12 +119,41 @@ impl Visit {
         headers: &[(&str, &str)],
         body: &[u8],
     ) -> Result<Response, VisitError> {
+        self.upload(method, path, headers, body).await
+    }
+
+    /// A request whose body is sent as it's read from `body`, as the browser shell sends an
+    /// upload: never held whole. If reading `body` fails, the request is broken off, never sent
+    /// short. A Host that stops taking the body (the Site answered before reading it all) still
+    /// has its answer read.
+    pub async fn upload(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        mut body: impl AsyncRead + Unpin,
+    ) -> Result<Response, VisitError> {
         let (mut send, mut recv) = self.conn.open_bi().await?;
         let headers: Vec<_> = headers.iter().map(|(k, v)| json!([k, v])).collect();
         let head = json!({"t": "http", "method": method, "path": path, "headers": headers});
         wire::write_line(&mut send, &head).await?;
-        send.write_all(body).await?;
-        send.finish()?;
+        let mut chunk = vec![0u8; 64 * 1024];
+        loop {
+            let n = match body.read(&mut chunk).await {
+                Ok(n) => n,
+                Err(e) => {
+                    let _ = send.reset(0u32.into());
+                    return Err(e.into());
+                }
+            };
+            if n == 0 {
+                let _ = send.finish();
+                break;
+            }
+            if send.write_all(&chunk[..n]).await.is_err() {
+                break; // the Host stopped reading: its answer says why
+            }
+        }
         let (head, mut body) = wire::read_line(&mut recv).await?;
         refused(&head)?;
         AsyncReadExt::read_to_end(&mut recv, &mut body).await?; // tolerates an already-finished stream

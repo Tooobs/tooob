@@ -225,9 +225,10 @@ pub(crate) struct Admission {
     jars: Arc<Jars>,
 }
 
-// ponytail: request bodies are buffered whole, which caps uploads at 64 MiB (an Immich video
-// upload can be bigger); stream them to the Site instead when that bites.
-const MAX_BODY: u64 = 64 << 20;
+/// A request body up to this size goes to the Site whole, with its Content-Length, as a browser
+/// would send it. A bigger one (an Immich video) streams to the Site as it arrives, chunked, at
+/// the pace the Site takes it: the Host never holds an upload, so uploads have no size cap.
+const WHOLE_BODY: usize = 1 << 20;
 
 /// Why an Invite was refused, as a stable code for the browser. Storage trouble stays vague: the
 /// Visitor isn't admitted and doesn't need the Host's internals.
@@ -399,7 +400,7 @@ impl Admission {
     pub(crate) async fn stream(
         &self,
         send: impl AsyncWrite + Unpin + Send,
-        mut recv: impl AsyncRead + Unpin + Send,
+        mut recv: impl AsyncRead + Unpin + Send + 'static,
         visitor: &str,
     ) -> Result<()> {
         let (head, rest) = wire::read_line(&mut recv).await?;
@@ -411,7 +412,7 @@ impl Admission {
         head: Value,
         rest: Vec<u8>,
         mut send: impl AsyncWrite + Unpin + Send,
-        recv: impl AsyncRead + Unpin + Send,
+        recv: impl AsyncRead + Unpin + Send + 'static,
         visitor: &str,
     ) -> Result<()> {
         if head["t"] == "standing" {
@@ -575,19 +576,20 @@ impl Admission {
         head: &Value,
         mut body: Vec<u8>,
         send: &mut (impl AsyncWrite + Unpin + Send),
-        mut recv: impl AsyncRead + Unpin + Send,
+        mut recv: impl AsyncRead + Unpin + Send + 'static,
         visitor: &str,
         label: &str,
     ) -> Result<()> {
-        // tokio's read_to_end: the header read may already have reached the end of a short stream.
-        // Read one byte past the limit so an oversized body is refused, never forwarded truncated.
-        (&mut recv)
-            .take(MAX_BODY + 1)
-            .read_to_end(&mut body)
-            .await?;
-        if body.len() as u64 > MAX_BODY {
-            return wire::write_line(send, &json!({"status": 413, "error": "too_large"})).await;
-        }
+        // The header read may already have brought the body, or all of a short one.
+        let whole = loop {
+            if body.len() > WHOLE_BODY {
+                break false;
+            }
+            body.reserve(64 * 1024);
+            if recv.read_buf(&mut body).await? == 0 {
+                break true;
+            }
+        };
         let method =
             reqwest::Method::from_bytes(head["method"].as_str().unwrap_or("GET").as_bytes())?;
         let path = head["path"].as_str().unwrap_or("/");
@@ -600,7 +602,19 @@ impl Admission {
         for (k, v) in wire::request_headers(head).filter(|(k, _)| forwardable(k)) {
             req = req.header(k, v);
         }
-        if !body.is_empty() {
+        if !whole {
+            // A Visitor whose stream breaks off mid-upload ends the stream with an error: the Site
+            // sees the upload abandoned, never a short one that looks complete.
+            let rest = futures::stream::try_unfold(recv, |mut recv| async move {
+                let mut chunk = bytes::BytesMut::with_capacity(64 * 1024);
+                Ok::<_, std::io::Error>(match recv.read_buf(&mut chunk).await? {
+                    0 => None,
+                    _ => Some((chunk.freeze(), recv)),
+                })
+            });
+            let first = futures::stream::once(async { Ok(bytes::Bytes::from(body)) });
+            req = req.body(reqwest::Body::wrap_stream(first.chain(rest)));
+        } else if !body.is_empty() {
             req = req.body(body);
         }
         let Ok(resp) = req.send().await else {

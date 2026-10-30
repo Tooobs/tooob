@@ -157,7 +157,7 @@ async function connect() {
   return conn;
 }
 
-// A stream is {via, writer: {write, finish}, reader: {read, free}}, on the Relayed Path (the iroh
+// A stream is {via, writer: {write, finish, reset}, reader: {read, free}}, on the Relayed Path (the iroh
 // connection; browsers are relay-only) or on the Direct Path once it's up.
 const viaRelay = async () => {
   const bi = await openRelay();
@@ -346,7 +346,7 @@ function muxTransport(dc) {
   return async () => {
     if (dc.readyState !== 'open') throw new Error('direct channel closed');
     const id = nextId++;
-    const st = { queue: [], ended: false, lost: false, wake: null };
+    const st = { queue: [], ended: false, lost: false, reset: false, wake: null };
     streams.set(id, st);
     return {
       via: 'direct',
@@ -358,10 +358,16 @@ function muxTransport(dc) {
           }
         },
         finish() { send(FIN, id); },
+        reset() {
+          if (streams.delete(id) && dc.readyState === 'open') send(RESET, id);
+          st.reset = true;
+          st.wake?.();
+        },
       },
       reader: {
         async read() {
-          while (!st.queue.length && !st.ended && !st.lost) await new Promise((r) => (st.wake = r));
+          while (!st.queue.length && !st.ended && !st.lost && !st.reset) await new Promise((r) => (st.wake = r));
+          if (st.reset) throw new Error('the request broke off');
           if (st.queue.length) return st.queue.shift();
           streams.delete(id);
           if (st.lost) throw new Error('the Direct Path closed mid-stream'); // not a whole reply
@@ -587,6 +593,47 @@ const directReady = goDirect().catch((e) => {
   setPath('relay');
 });
 
+// The service worker's sign that a request's body is to be asked for a chunk at a time.
+const STREAMED = -1;
+class BrokenOff extends Error {}
+
+/**
+ * The request body from the service worker on `port`, a chunk at a time: `pull()` asks for the
+ * next chunk (null at the end) and throws BrokenOff if it can't be read whole. `got` takes the answers.
+ */
+function upload(port) {
+  let waiting;
+  return {
+    pull: () => new Promise((ok, fail) => ((waiting = { ok, fail }), port.postMessage({ pull: true }))),
+    got: (m) => ('up' in m ? waiting?.ok(m.up) : waiting?.fail(new BrokenOff(m.upError))),
+  };
+}
+
+/**
+ * Send a request's body, then finish. A streamed one is read a chunk ahead of the Host, at the pace
+ * it takes them, so an upload of any size is never held whole (#1). One that breaks off midway
+ * resets the stream: the Site must never take it for a whole upload.
+ */
+async function sendBody(writer, req, { pull }) {
+  try {
+    if (req.body === STREAMED) {
+      let next = pull();
+      for (let c; (c = await next); ) {
+        next = pull();
+        next.catch(() => {}); // seen at the next turn; unless the Host stops taking the body first
+        await writer.write(new Uint8Array(c));
+      }
+    } else if (req.body) {
+      await writer.write(new Uint8Array(req.body)); // from a service worker before #1: the whole body
+    }
+    writer.finish();
+  } catch (e) {
+    if (e instanceof BrokenOff) writer.reset();
+    // Otherwise the Host stopped taking the body: the Site answered before reading it all, and
+    // that answer is what the page gets.
+  }
+}
+
 // HTTP: one stream per request.
 navigator.serviceWorker.onmessage = async ({ data: req, ports: [port] }) => {
   if (req === 'ping') return port.postMessage('pong'); // the service worker asking who's ready
@@ -594,13 +641,14 @@ navigator.serviceWorker.onmessage = async ({ data: req, ports: [port] }) => {
   // ponytail: only noticed when the next chunk arrives, so a quiet stream (long-poll, SSE) stays open
   // after a cancel; needs a stoppable read here and the Host watching for the stop.
   let reader, cancelled = false;
-  port.onmessage = ({ data }) => (cancelled = !!data.cancel);
+  const body = upload(port);
+  port.onmessage = ({ data }) => (data.cancel ? (cancelled = true) : body.got(data));
   try {
     const s = await openStream();
     reader = s.reader;
     await s.writer.write(enc.encode(JSON.stringify({ t: 'http', method: req.method, path: req.path, headers: req.headers }) + '\n'));
-    if (req.body) await s.writer.write(new Uint8Array(req.body));
-    s.writer.finish();
+    // The body goes up while the reply is awaited: a Site may answer before it has taken it all.
+    sendBody(s.writer, req, body);
     const [head, rest] = await readHead(reader);
     port.postMessage(head);
     stats.bytes[s.via] += rest.length;

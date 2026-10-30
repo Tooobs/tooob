@@ -40,6 +40,9 @@ async function shellFor(e) {
 }
 
 const NULL_BODY = [101, 204, 205, 304];
+// Where the request's body would be: the shell asks for it a chunk at a time. A shell from before
+// #1 expects the whole body here, and fails the request on this rather than sending it empty.
+const STREAMED = -1;
 const SHIM = '<script src="/__tooob/ws-shim.js"></script>';
 
 // Freshness lifetime in seconds from Cache-Control, or 0 if we shouldn't cache.
@@ -83,11 +86,26 @@ async function tunnel(req, shellId) {
   if (hit && Date.now() < Number(hit.headers.get('x-tooob-expires'))) return hit;
 
   const url = new URL(req.url);
-  const body = ['GET', 'HEAD'].includes(req.method) ? null : await req.arrayBuffer();
+  // A request body goes to the shell a chunk at a time, as fast as the Host takes it, so an upload
+  // of any size is never held whole (#1). Without Request.body (Firefox), a Blob: the browser's, which
+  // can keep a big one on disk.
+  const upload = ['GET', 'HEAD'].includes(req.method) ? null : (req.body ?? (await req.blob()).stream()).getReader();
   const { port1, port2 } = new MessageChannel();
+  const body = upload ? STREAMED : null;
   shell.postMessage({ method: req.method, path: url.pathname + url.search, headers: [...req.headers], body }, [port2]);
 
-  // First message is the response head, then {chunk}... {done} or {error}.
+  // The shell asks for the body with {pull}, each answered with {up: bytes}, {up: null} at its end,
+  // or {upError} if it can't be read whole (the body's stream errors). Its first other message
+  // is the response head, then {chunk}... {done} or {error}.
+  const pull = async () => {
+    // The page giving up must never pass for the body's end. Chrome doesn't say so here yet: the
+    // upload carries on, whole (#86).
+    const { done, value } = await upload.read();
+    if (req.signal?.aborted) throw new Error('the page gave up on the request');
+    if (done) return port1.postMessage({ up: null });
+    const own = value.byteOffset === 0 && value.byteLength === value.buffer.byteLength ? value : value.slice();
+    port1.postMessage({ up: own.buffer }, [own.buffer]);
+  };
   let ctrl, resolveHead;
   const headP = new Promise((r) => (resolveHead = r));
   const stream = new ReadableStream({
@@ -95,6 +113,7 @@ async function tunnel(req, shellId) {
     cancel: () => port1.postMessage({ cancel: true }),
   });
   port1.onmessage = ({ data: m }) => {
+    if (m.pull) return void pull().catch((e) => port1.postMessage({ upError: String(e) }));
     if (resolveHead) { resolveHead(m); resolveHead = null; return; }
     if (m.chunk) ctrl.enqueue(new Uint8Array(m.chunk));
     else if (m.done) ctrl.close();
