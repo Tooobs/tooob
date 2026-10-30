@@ -6,11 +6,18 @@
 //! Each stream is served by the same request handling as an iroh stream.
 //! Message: [kind u8][stream id u32 BE][payload]. Kinds: DATA, FIN (the sender is done: the
 //! half-close QUIC gives for free), RESET (abandon the stream, e.g. the browser cancelled a video
-//! range).
+//! range), and CREDIT (Host to browser: payload u32 BE, how many more of the stream's bytes it
+//! may send).
+//!
+//! Credit is per-stream flow control, which QUIC gives iroh streams for free: a browser sends at
+//! most [`WINDOW`] bytes of a stream the Host hasn't yet passed on to its request handling, so an
+//! upload to a Site that takes it slowly waits on its own and never holds up the other streams.
+//! A browser asks for it in its offer (`"credit": true`); the answer gives the window
+//! (`"credit": WINDOW`). A browser that doesn't ask has the channel held up as before.
 use crate::host::Admission;
 use crate::wire;
 use anyhow::{Context, Result};
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use serde_json::json;
 use std::{
     collections::HashMap,
@@ -21,8 +28,8 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, WriteHalf},
-    sync::{Notify, mpsc},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    sync::{Notify, Semaphore, TryAcquireError, mpsc},
     task::JoinHandle,
 };
 use webrtc::data_channel::{DataChannel, DataChannelEvent};
@@ -39,6 +46,10 @@ const CHUNK: usize = 32 * 1024;
 const DATA: u8 = 0;
 const FIN: u8 = 1;
 const RESET: u8 = 2;
+const CREDIT: u8 = 3;
+/// How much of a stream's input the Host holds for it at most: a browser that takes credit starts
+/// each stream with this much and gets more as the request handling takes it.
+const WINDOW: usize = 1 << 20;
 /// How long ICE gets to connect before the Host stops listening for the browser's candidates.
 const SETUP: Duration = Duration::from_secs(10);
 
@@ -64,6 +75,7 @@ struct Direct {
 pub(crate) async fn open(
     slot: &Slot,
     offer: &str,
+    credit: bool,
     buf: Vec<u8>,
     send: &mut (impl AsyncWrite + Unpin + Send),
     recv: impl AsyncRead + Unpin + Send,
@@ -75,6 +87,7 @@ pub(crate) async fn open(
     let handler = Arc::new(Handler {
         admission,
         visitor,
+        credit,
         candidates,
         up: AtomicBool::new(false),
         closed: Notify::new(),
@@ -112,7 +125,11 @@ pub(crate) async fn open(
     if let Some(old) = replaced {
         let _ = old.pc.close().await;
     }
-    wire::write_line(send, &json!({"status": 200, "sdp": sdp})).await?;
+    let answer = match credit {
+        true => json!({"status": 200, "sdp": sdp, "credit": WINDOW}),
+        false => json!({"status": 200, "sdp": sdp}),
+    };
+    wire::write_line(send, &answer).await?;
 
     let setup_ends = tokio::time::Instant::now() + SETUP;
     let slot = slot.clone();
@@ -216,6 +233,8 @@ async fn signal(
 struct Handler {
     admission: Admission,
     visitor: String,
+    /// The browser takes credit: see the module docs.
+    credit: bool,
     candidates: mpsc::UnboundedSender<RTCIceCandidateInit>,
     /// Connected at least once.
     up: AtomicBool,
@@ -239,9 +258,10 @@ impl PeerConnectionEventHandler for Handler {
     }
 
     async fn on_data_channel(&self, dc: Arc<dyn DataChannel>) {
-        let (admission, visitor) = (self.admission.clone(), self.visitor.clone());
+        let (admission, visitor, credit) =
+            (self.admission.clone(), self.visitor.clone(), self.credit);
         tokio::spawn(async move {
-            if let Err(e) = mux(dc, admission, visitor).await {
+            if let Err(e) = mux(dc, admission, visitor, credit).await {
                 eprintln!("tooob: direct path: {e:#}");
             }
         });
@@ -256,9 +276,15 @@ fn message(kind: u8, id: u32, payload: &[u8]) -> BytesMut {
     m
 }
 
-/// One stream's input pipe into the request handling, the request handling, and its reply pump.
+/// One stream: its input on its way to the request handling, the request handling, and its reply
+/// pump.
 struct Stream {
-    to_host: WriteHalf<DuplexStream>,
+    /// Input for the feeder to pass on; dropped at FIN.
+    input: Option<mpsc::UnboundedSender<Bytes>>,
+    /// Input bytes the stream may still have outstanding: taken as they arrive, given back as the
+    /// request handling takes them. Closed once the request handling wants no more.
+    room: Arc<Semaphore>,
+    feeder: JoinHandle<()>,
     serving: JoinHandle<()>,
     pump: JoinHandle<()>,
 }
@@ -269,21 +295,25 @@ impl Stream {
     async fn reset(self) {
         self.serving.abort();
         let _ = self.serving.await;
+        self.feeder.abort();
         self.pump.abort();
     }
 }
 
-/// Demultiplex the channel: each stream id gets an in-memory pipe into the request handling, and
-/// a task pumping its reply back as DATA messages and a final FIN.
-// ponytail: one loop feeds every stream, so an upload to a slow Site holds up the others' input
-// (replies are unaffected); give each stream its own queue if that bites.
-async fn mux(dc: Arc<dyn DataChannel>, admission: Admission, visitor: String) -> Result<()> {
+/// Demultiplex the channel: each stream id gets its request handling, a feeder passing its input
+/// on, and a task pumping its reply back as DATA messages and a final FIN.
+async fn mux(
+    dc: Arc<dyn DataChannel>,
+    admission: Admission,
+    visitor: String,
+    credit: bool,
+) -> Result<()> {
     let mut streams: HashMap<u32, Stream> = HashMap::new();
     // The browser numbers its streams 1, 2, 3...: an id up to this one is a stream that's over,
     // whose late body bytes must not start a request of their own.
     let mut newest = 0;
     while let Some(ev) = dc.poll().await {
-        let m = match ev {
+        let mut m = match ev {
             DataChannelEvent::OnMessage(m) => m,
             DataChannelEvent::OnClose => break,
             _ => continue,
@@ -297,18 +327,44 @@ async fn mux(dc: Arc<dyn DataChannel>, admission: Admission, visitor: String) ->
             DATA => {
                 if id > newest {
                     newest = id;
-                    let stream = serve(id, dc.clone(), admission.clone(), visitor.clone());
+                    let stream = serve(id, dc.clone(), admission.clone(), visitor.clone(), credit);
                     streams.insert(id, stream);
                 }
-                // A failed write is that one request done with its input (a refusal never reads
-                // the body), not the channel failing: the rest is dropped.
-                if let Some(stream) = streams.get_mut(&id) {
-                    let _ = stream.to_host.write_all(&m.data[5..]).await;
+                let Some(stream) = streams.get(&id) else {
+                    continue;
+                };
+                let (room, input) = (stream.room.clone(), stream.input.clone());
+                let payload = m.data.split_off(5).freeze();
+                let n = taken(&payload);
+                let room = if credit {
+                    // Never waits: a browser that takes credit stays within it.
+                    match room.try_acquire_many_owned(n) {
+                        Err(TryAcquireError::NoPermits) => {
+                            eprintln!(
+                                "tooob: direct stream from {}: sent past its credit",
+                                &visitor[..8]
+                            );
+                            if let Some(stream) = streams.remove(&id) {
+                                stream.reset().await;
+                            }
+                            continue;
+                        }
+                        room => room.ok(),
+                    }
+                } else {
+                    // A browser that doesn't: the whole channel waits for this stream, as before.
+                    room.acquire_many_owned(n).await.ok()
+                };
+                // No room left means the request is done with its input (a refusal never reads the
+                // body), not the channel failing: the rest is dropped.
+                if let (Some(room), Some(input)) = (room, input) {
+                    room.forget();
+                    let _ = input.send(payload);
                 }
             }
             FIN => {
                 if let Some(stream) = streams.get_mut(&id) {
-                    let _ = stream.to_host.shutdown().await;
+                    stream.input = None;
                 }
             }
             RESET => {
@@ -326,14 +382,50 @@ async fn mux(dc: Arc<dyn DataChannel>, admission: Admission, visitor: String) ->
     Ok(())
 }
 
-/// Start one stream: the request handling on one end of a pipe, the reply pump on the other.
-fn serve(id: u32, dc: Arc<dyn DataChannel>, admission: Admission, visitor: String) -> Stream {
+/// The room a message's payload takes: all of it, though never more than the whole window (a
+/// message that big would otherwise wait for room forever).
+fn taken(payload: &[u8]) -> u32 {
+    payload.len().min(WINDOW) as u32
+}
+
+/// Start one stream: the request handling on one end of a pipe; on the other, the feeder passing
+/// its input in (and, with `credit`, telling the browser it may send that much more) and the reply
+/// pump.
+fn serve(
+    id: u32,
+    dc: Arc<dyn DataChannel>,
+    admission: Admission,
+    visitor: String,
+    credit: bool,
+) -> Stream {
     let (host_side, pump_side) = tokio::io::duplex(256 * 1024);
-    let (mut reply, to_host) = tokio::io::split(pump_side);
+    let (mut reply, mut to_host) = tokio::io::split(pump_side);
     let (recv, send) = tokio::io::split(host_side);
     let serving = tokio::spawn(async move {
         if let Err(e) = admission.stream(send, recv, &visitor).await {
             eprintln!("tooob: direct stream from {}: {e:#}", &visitor[..8]);
+        }
+    });
+    let (input, mut queue) = mpsc::unbounded_channel::<Bytes>();
+    let room = Arc::new(Semaphore::new(WINDOW));
+    let feeder = tokio::spawn({
+        let (dc, room) = (dc.clone(), room.clone());
+        async move {
+            while let Some(bytes) = queue.recv().await {
+                if to_host.write_all(&bytes).await.is_err() {
+                    break; // the request handling is done with its input
+                }
+                room.add_permits(taken(&bytes) as usize);
+                if credit {
+                    let more = (bytes.len() as u32).to_be_bytes();
+                    if dc.send(message(CREDIT, id, &more)).await.is_err() {
+                        break;
+                    }
+                }
+            }
+            // No more room: the browser gets no more credit, and what it sends anyway is dropped.
+            room.close();
+            let _ = to_host.shutdown().await;
         }
     });
     let pump = tokio::spawn(async move {
@@ -352,7 +444,9 @@ fn serve(id: u32, dc: Arc<dyn DataChannel>, admission: Admission, visitor: Strin
         let _ = dc.send(message(FIN, id, &[])).await;
     });
     Stream {
-        to_host,
+        input: Some(input),
+        room,
+        feeder,
         serving,
         pump,
     }

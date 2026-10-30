@@ -40,8 +40,9 @@ async function shellFor(e) {
 }
 
 const NULL_BODY = [101, 204, 205, 304];
-// Where the request's body would be: the shell asks for it a chunk at a time. A shell from before
-// #1 expects the whole body here, and fails the request on this rather than sending it empty.
+// Where the request's body would be: the shell asks for it a chunk at a time (STREAMED in shell.js).
+// A shell from before #1 expects the whole body here, and fails the request on this rather than
+// sending it empty.
 const STREAMED = -1;
 const SHIM = '<script src="/__tooob/ws-shim.js"></script>';
 
@@ -87,8 +88,8 @@ async function tunnel(req, shellId) {
 
   const url = new URL(req.url);
   // A request body goes to the shell a chunk at a time, as fast as the Host takes it, so an upload
-  // of any size is never held whole (#1). Without Request.body (Firefox), a Blob: the browser's, which
-  // can keep a big one on disk.
+  // of any size is never held whole (#1). Without Request.body (Firefox), the body is read into a
+  // Blob first and sent from that: whether the browser holds a big one in memory is its own (unchecked).
   const upload = ['GET', 'HEAD'].includes(req.method) ? null : (req.body ?? (await req.blob()).stream()).getReader();
   const { port1, port2 } = new MessageChannel();
   const body = upload ? STREAMED : null;

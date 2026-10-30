@@ -168,17 +168,35 @@ export async function wake(page) {
 /** A stand-in Site: answers every path with what reached it, and counts requests. Uploads are read as
  * they arrive, never held whole. */
 export async function startSite() {
-  const site = { requests: 0, uploads: 0 }; // uploads: bodies that reached /sha256 whole
+  // uploads: bodies that reached /sha256 whole; refused: bytes that reached /refuse after its answer
+  const site = { requests: 0, uploads: 0, refused: 0 };
   const server = createServer((req, res) => {
     site.requests++;
     const size = /^\/bytes\/(\d+)/.exec(req.url)?.[1]; // a big response, like a photo
     if (size) return res.end(Buffer.alloc(Number(size), 7));
-    if (req.method === 'POST') { // an upload: say how much arrived (and at /sha256, its hash)
+    if (req.method === 'POST' && req.url === '/sha256') { // an upload, answered with its size and hash
       let received = 0;
       const hash = createHash('sha256');
       req.on('data', (c) => ((received += c.length), hash.update(c)));
-      if (req.url !== '/sha256') return req.on('end', () => res.end(`received ${received}`));
-      return req.on('end', () => (site.uploads++, res.end(`${received} ${hash.digest('hex')}`)));
+      req.on('end', () => {
+        site.uploads++;
+        res.end(`${received} ${hash.digest('hex')}`);
+      });
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/refuse') { // too big for this Site: answered at once
+      req.on('data', (c) => (site.refused += c.length)); // Node reads and drops the rest
+      res.statusCode = 413;
+      return res.end('too big');
+    }
+    if (req.method === 'POST' && req.url === '/slow') { // a Site writing to a slow disk: ~640 KB/s
+      req.on('data', () => (req.pause(), setTimeout(() => req.resume(), 100)));
+      return req.on('end', () => res.end('slowly'));
+    }
+    if (req.method === 'POST') { // an upload: say how much arrived
+      let received = 0;
+      req.on('data', (c) => (received += c.length));
+      return req.on('end', () => res.end(`received ${received}`));
     }
     res.setHeader('content-type', 'text/html');
     res.end(`<!doctype html><p id="site">site ${req.url} label=${req.headers['x-tooob-label'] ?? '-'}</p>`);
@@ -443,8 +461,23 @@ export function memoryOf(pid) {
   return Number(execFileSync('ps', ['-o', 'rss=', '-p', String(pid)], { encoding: 'utf8' }).trim()) * 1024;
 }
 
-/** How much memory Playwright's browsers hold now, every process of theirs together, in bytes. */
+/** How much memory this run's browser holds now, every process of its together, in bytes. */
 export function browserMemory() {
-  const ps = execFileSync('ps', ['-A', '-o', 'rss=,command='], { encoding: 'utf8' });
-  return ps.split('\n').filter((l) => l.includes('ms-playwright')).reduce((sum, l) => sum + Number(l.trim().split(/\s+/)[0]) * 1024, 0);
+  const ps = execFileSync('ps', ['-A', '-o', 'pid=,ppid=,rss=,command='], { encoding: 'utf8' });
+  const procs = ps.trim().split('\n').map((l) => {
+    const [pid, ppid, rss, ...command] = l.trim().split(/\s+/);
+    return { pid: Number(pid), ppid: Number(ppid), rss: Number(rss) * 1024, browser: command.join(' ').includes('ms-playwright') };
+  });
+  // Only this run's: descendants of this process (another run's browser isn't).
+  const ours = new Set([process.pid]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const p of procs) {
+      if (ours.has(p.ppid) && !ours.has(p.pid)) {
+        ours.add(p.pid);
+        grew = true;
+      }
+    }
+  }
+  return procs.filter((p) => p.browser && ours.has(p.pid)).reduce((sum, p) => sum + p.rss, 0);
 }

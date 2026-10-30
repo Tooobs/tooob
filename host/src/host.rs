@@ -380,9 +380,12 @@ impl Admission {
         let ended = async move {
             conn.closed().await;
         };
+        // A browser that can take credit says so: then each stream's upload is paced by the Host.
+        let credit = head["credit"] == true;
         let opened = crate::direct::open(
             direct,
             offer,
+            credit,
             rest,
             &mut send,
             recv,
@@ -585,7 +588,7 @@ impl Admission {
             if body.len() > WHOLE_BODY {
                 break false;
             }
-            body.reserve(64 * 1024);
+            body.reserve(wire::BODY_CHUNK);
             if recv.read_buf(&mut body).await? == 0 {
                 break true;
             }
@@ -602,16 +605,24 @@ impl Admission {
         for (k, v) in wire::request_headers(head).filter(|(k, _)| forwardable(k)) {
             req = req.header(k, v);
         }
+        // Dropped once the Site's answer has gone to the Visitor, or this request fails: the
+        // body's stream stops there.
+        let (_answered, answer) = tokio::sync::oneshot::channel::<()>();
         if !whole {
-            // A Visitor whose stream breaks off mid-upload ends the stream with an error: the Site
-            // sees the upload abandoned, never a short one that looks complete.
-            let rest = futures::stream::try_unfold(recv, |mut recv| async move {
-                let mut chunk = bytes::BytesMut::with_capacity(64 * 1024);
-                Ok::<_, std::io::Error>(match recv.read_buf(&mut chunk).await? {
-                    0 => None,
-                    _ => Some((chunk.freeze(), recv)),
-                })
-            });
+            // The body ends in an error, never early, if the Visitor's stream breaks off or the
+            // Site has answered before taking it all: the Site sees the upload abandoned, never a
+            // short one that looks complete, and the Visitor stops sending the rest.
+            let rest =
+                futures::stream::try_unfold((recv, answer), |(mut recv, mut answer)| async move {
+                    let mut chunk = bytes::BytesMut::with_capacity(wire::BODY_CHUNK);
+                    tokio::select! {
+                        n = recv.read_buf(&mut chunk) => Ok(match n? {
+                            0 => None,
+                            _ => Some((chunk.freeze(), (recv, answer))),
+                        }),
+                        _ = &mut answer => Err(std::io::Error::other("the Site answered first")),
+                    }
+                });
             let first = futures::stream::once(async { Ok(bytes::Bytes::from(body)) });
             req = req.body(reqwest::Body::wrap_stream(first.chain(rest)));
         } else if !body.is_empty() {

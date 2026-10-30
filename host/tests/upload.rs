@@ -159,21 +159,23 @@ async fn an_upload_that_breaks_off_midway_never_reaches_the_site_as_whole() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_site_that_answers_before_taking_an_upload_has_its_answer_reach_the_visitor() {
+async fn a_site_that_refuses_an_upload_early_has_its_answer_reach_the_visitor_and_the_rest_stays_home()
+ {
     let site = TestSite::start().await;
     let dir = tempfile::tempdir().unwrap();
     let (_host, visit) = admitted_visitor(&site, &dir).await;
 
-    // The stand-in Site answers every other path without reading the body, as a Site refusing an
-    // upload too big for it does.
     let reply = visit
-        .upload("POST", "/elsewhere", &[], Pattern::new(64 * MIB))
+        .upload("POST", "/refuse", &[], Pattern::new(1024 * MIB))
         .await
         .unwrap();
 
-    assert_eq!(reply.status, 200);
-    assert_eq!(
-        String::from_utf8(reply.body).unwrap(),
-        "POST /elsewhere visitor=mom"
+    assert_eq!(reply.status, 413);
+    assert_eq!(reply.body, b"too big");
+    let sent = site.refused_bytes() as u64;
+    assert!(
+        sent < 64 * MIB,
+        "{} MiB of a refused 1 GiB upload went on to the Site",
+        sent / MIB
     );
 }

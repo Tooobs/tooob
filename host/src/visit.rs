@@ -137,7 +137,7 @@ impl Visit {
         let headers: Vec<_> = headers.iter().map(|(k, v)| json!([k, v])).collect();
         let head = json!({"t": "http", "method": method, "path": path, "headers": headers});
         wire::write_line(&mut send, &head).await?;
-        let mut chunk = vec![0u8; 64 * 1024];
+        let mut chunk = vec![0u8; wire::BODY_CHUNK];
         loop {
             let n = match body.read(&mut chunk).await {
                 Ok(n) => n,

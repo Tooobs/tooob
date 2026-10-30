@@ -21,6 +21,7 @@ pub struct TestSite {
     pub addr: SocketAddr,
     requests: Arc<AtomicUsize>,
     uploads: Arc<AtomicUsize>,
+    refused: Arc<AtomicUsize>,
 }
 
 impl TestSite {
@@ -30,7 +31,24 @@ impl TestSite {
         let hang_counter = requests.clone();
         let uploads = Arc::new(AtomicUsize::new(0));
         let upload_counter = uploads.clone();
+        let refused = Arc::new(AtomicUsize::new(0));
+        let refused_counter = refused.clone();
         let app = Router::new()
+            // A Site refusing an upload too big for it: it answers at once, then reads and drops
+            // whatever more comes, as Node's servers and nginx do.
+            .route(
+                "/refuse",
+                any(move |req: Request| async move {
+                    tokio::spawn(async move {
+                        use futures::StreamExt;
+                        let mut body = req.into_body().into_data_stream();
+                        while let Some(Ok(chunk)) = body.next().await {
+                            refused_counter.fetch_add(chunk.len(), Ordering::SeqCst);
+                        }
+                    });
+                    (axum::http::StatusCode::PAYLOAD_TOO_LARGE, "too big")
+                }),
+            )
             // An upload like Immich's: read as it arrives, never held whole, answered with its size
             // and SHA-256. Only a body that arrived to its end counts as an upload.
             .route(
@@ -128,7 +146,13 @@ impl TestSite {
             addr,
             requests,
             uploads,
+            refused,
         }
+    }
+
+    /// How much of the uploads it refused reached `/refuse` anyway, in bytes.
+    pub fn refused_bytes(&self) -> usize {
+        self.refused.load(Ordering::SeqCst)
     }
 
     /// Bodies that reached `/sha256` whole, to their end.

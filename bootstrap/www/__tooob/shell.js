@@ -253,7 +253,8 @@ async function openRelay() {
 
 let direct = null; // opens a stream on the Direct Path while it's up
 const openStream = () => (direct ? direct().catch(viaRelay) : viaRelay());
-stats.bytes = { relay: 0, direct: 0 };
+stats.bytes = { relay: 0, direct: 0 }; // received
+stats.sent = { relay: 0, direct: 0 }; // request bodies
 
 // What the Host says when it refuses an Invite, in words for the person holding the link.
 const REFUSED = {
@@ -315,10 +316,13 @@ document.addEventListener('visibilitychange', checkOnWake);
 // one round trip plus the ICE checks). Only for a device that's in: the Host refuses anyone else.
 
 // Every direct stream shares the one channel. Message: [kind u8][stream id u32 BE][payload].
-const DATA = 0, FIN = 1, RESET = 2;
+// CREDIT (from the Host; payload u32 BE): how many more bytes of the stream it may be sent. A Host
+// that gives credit (its answer says how much each stream starts with) paces each upload on its
+// own, so one to a Site that takes it slowly never holds up the others (#1; host/src/direct.rs).
+const DATA = 0, FIN = 1, RESET = 2, CREDIT = 3;
 const CHUNK = 32 * 1024;
 const SEND_QUEUE = 4 << 20; // well under Chrome's ~16 MB, past which send() throws
-function muxTransport(dc) {
+function muxTransport(dc, credit = Infinity) {
   dc.binaryType = 'arraybuffer';
   dc.bufferedAmountLowThreshold = SEND_QUEUE / 2;
   const drained = () => new Promise((r) => {
@@ -332,10 +336,13 @@ function muxTransport(dc) {
     const st = streams.get(new DataView(data).getUint32(1));
     if (!st) return; // already finished or reset
     if (b[0] === DATA) st.queue.push(b.subarray(5));
-    else st.ended = true;
+    else if (b[0] === CREDIT) st.credit += new DataView(data).getUint32(5);
+    else if (b[0] === FIN || b[0] === RESET) st.ended = true;
+    else return; // a kind this shell doesn't know
     st.wake?.();
+    st.wakeWriter?.();
   };
-  dc.onclose = () => streams.forEach((st) => { st.lost = true; st.wake?.(); });
+  dc.onclose = () => streams.forEach((st) => { st.lost = true; st.wake?.(); st.wakeWriter?.(); });
   const send = (kind, id, bytes = new Uint8Array(0)) => {
     const m = new Uint8Array(5 + bytes.length);
     m[0] = kind;
@@ -346,15 +353,21 @@ function muxTransport(dc) {
   return async () => {
     if (dc.readyState !== 'open') throw new Error('direct channel closed');
     const id = nextId++;
-    const st = { queue: [], ended: false, lost: false, reset: false, wake: null };
+    const st = { queue: [], ended: false, lost: false, reset: false, credit, wake: null, wakeWriter: null };
     streams.set(id, st);
+    // The Host has answered and finished (or the stream is gone): sending more would only be dropped.
+    const over = () => st.ended || st.lost || st.reset;
     return {
       via: 'direct',
       writer: {
         async write(bytes) {
           for (let i = 0; i < bytes.length; i += CHUNK) {
-            if (dc.bufferedAmount > SEND_QUEUE) await drained(); // a big upload
-            send(DATA, id, bytes.subarray(i, i + CHUNK));
+            const chunk = bytes.subarray(i, i + CHUNK);
+            while (st.credit < chunk.length && !over()) await new Promise((r) => (st.wakeWriter = r));
+            if (dc.bufferedAmount > SEND_QUEUE && !over()) await drained(); // a big upload
+            if (over()) throw new Error('the Host has stopped taking this request');
+            send(DATA, id, chunk);
+            st.credit -= chunk.length;
           }
         },
         finish() { send(FIN, id); },
@@ -362,6 +375,7 @@ function muxTransport(dc) {
           if (streams.delete(id) && dc.readyState === 'open') send(RESET, id);
           st.reset = true;
           st.wake?.();
+          st.wakeWriter?.();
         },
       },
       reader: {
@@ -408,12 +422,13 @@ async function negotiate(pc, restart = false) {
     offered ? sendLine({ candidate: candidate.toJSON() }) : early.push(candidate.toJSON());
   };
   await pc.setLocalDescription(await pc.createOffer({ iceRestart: restart }));
-  sendLine({ t: 'rtc', sdp: pc.localDescription.sdp, ...(restart && { restart: true }) });
+  sendLine({ t: 'rtc', sdp: pc.localDescription.sdp, credit: true, ...(restart && { restart: true }) });
   offered = true;
   early.forEach((c) => sendLine({ candidate: c }));
   let [answer, buf] = await readHead(s.reader);
   if (!answer.sdp) throw new Error(answer.error || 'no answer');
   await pc.setRemoteDescription({ type: 'answer', sdp: answer.sdp });
+  if (!restart && answer.credit) creditOf.set(pc, answer.credit);
   // The Host's candidates arrive as more lines on the same stream.
   (async () => {
     for (;;) {
@@ -437,6 +452,7 @@ async function negotiate(pc, restart = false) {
 // The Direct Path being set up or in use. A newer one, or losing the iroh connection it was
 // negotiated on, retires it.
 let directPc = null;
+const creditOf = new WeakMap(); // a Direct Path's peer connection → the credit its streams start with
 
 async function goDirect() {
   const pc = (directPc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] }));
@@ -453,7 +469,7 @@ async function goDirect() {
     return;
   }
   directRetries = 0; // a later new Direct Path gets retries of its own
-  const viaDirect = muxTransport(dc);
+  const viaDirect = muxTransport(dc, creditOf.get(pc));
   const resume = () => {
     direct = viaDirect;
     setPath('direct');
@@ -593,7 +609,8 @@ const directReady = goDirect().catch((e) => {
   setPath('relay');
 });
 
-// The service worker's sign that a request's body is to be asked for a chunk at a time.
+// The service worker's sign that a request's body is to be asked for a chunk at a time (STREAMED
+// in tooob-sw.js).
 const STREAMED = -1;
 class BrokenOff extends Error {}
 
@@ -614,7 +631,7 @@ function upload(port) {
  * it takes them, so an upload of any size is never held whole (#1). One that breaks off midway
  * resets the stream: the Site must never take it for a whole upload.
  */
-async function sendBody(writer, req, { pull }) {
+async function sendBody({ writer, via }, req, { pull }) {
   try {
     if (req.body === STREAMED) {
       let next = pull();
@@ -622,9 +639,11 @@ async function sendBody(writer, req, { pull }) {
         next = pull();
         next.catch(() => {}); // seen at the next turn; unless the Host stops taking the body first
         await writer.write(new Uint8Array(c));
+        stats.sent[via] += c.byteLength;
       }
     } else if (req.body) {
       await writer.write(new Uint8Array(req.body)); // from a service worker before #1: the whole body
+      stats.sent[via] += req.body.byteLength;
     }
     writer.finish();
   } catch (e) {
@@ -648,7 +667,7 @@ navigator.serviceWorker.onmessage = async ({ data: req, ports: [port] }) => {
     reader = s.reader;
     await s.writer.write(enc.encode(JSON.stringify({ t: 'http', method: req.method, path: req.path, headers: req.headers }) + '\n'));
     // The body goes up while the reply is awaited: a Site may answer before it has taken it all.
-    sendBody(s.writer, req, body);
+    sendBody(s, req, body);
     const [head, rest] = await readHead(reader);
     port.postMessage(head);
     stats.bytes[s.via] += rest.length;

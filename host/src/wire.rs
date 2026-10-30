@@ -21,6 +21,8 @@ pub fn hello_message(host_key: &iroh::EndpointId, connection: &iroh::EndpointId)
     .concat()
 }
 const MAX_HEADER_LINE: usize = 64 * 1024;
+/// How much of a streamed request body is read at a time, by the Host and by a Visitor.
+pub(crate) const BODY_CHUNK: usize = 64 * 1024;
 
 /// The headers in a request's JSON line: `[["name", "value"], ...]`.
 pub(crate) fn request_headers(head: &Value) -> impl Iterator<Item = (&str, &str)> {

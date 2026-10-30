@@ -736,18 +736,23 @@ function bigFile(size) {
   return { path, sha256: hash.digest('hex'), remove: () => rmSync(dirname(path), { recursive: true }) };
 }
 
+/** A Visitor in on a new Host's Site, its traffic on `path` ('direct' or 'relay'): the Site's frame. */
+async function visitOver(browser, relay, path) {
+  const host = await hostWithSite(relay);
+  const page = await h.newVisitor(browser);
+  if (path === 'relay') await h.breakDirectPath(page);
+  await page.goto(host.invite('mom'));
+  await h.siteText(page);
+  await h.pathIs(page, path, 20000);
+  return { ...host, page, frame: await (await page.$('iframe')).contentFrame() };
+}
+
 for (const path of ['direct', 'relay']) {
   test(`an upload far over 64 MiB reaches the Site intact over the ${path} path, and neither the browser nor the Host holds it`, async ({ browser, relay }) => {
     const size = 300 << 20;
     const file = bigFile(size);
     try {
-      const { invite, pid } = await hostWithSite(relay);
-      const page = await h.newVisitor(browser);
-      if (path === 'relay') await h.breakDirectPath(page);
-      await page.goto(invite('mom'));
-      await h.siteText(page);
-      await h.pathIs(page, path, 20000);
-      const frame = await (await page.$('iframe')).contentFrame();
+      const { pid, frame } = await visitOver(browser, relay, path);
       // As a Site's upload form does: a file the Visitor picks, sent as it is on disk.
       await frame.evaluate(() => document.body.insertAdjacentHTML('beforeend', '<input type="file" id="pick">'));
       await frame.setInputFiles('#pick', file.path);
@@ -772,13 +777,7 @@ for (const path of ['direct', 'relay']) {
 
 for (const path of ['direct', 'relay']) {
   test(`an upload that breaks off midway over the ${path} path never reaches the Site as whole`, async ({ browser, relay }) => {
-    const { site, invite } = await hostWithSite(relay);
-    const page = await h.newVisitor(browser);
-    if (path === 'relay') await h.breakDirectPath(page);
-    await page.goto(invite('mom'));
-    await h.siteText(page);
-    await h.pathIs(page, path, 20000);
-    const frame = await (await page.$('iframe')).contentFrame();
+    const { site, frame } = await visitOver(browser, relay, path);
     // A body the Site's page makes as it goes, and can't finish: 32 MiB, then an error.
     const outcome = await frame.evaluate(() => {
       let sent = 0;
@@ -798,6 +797,35 @@ for (const path of ['direct', 'relay']) {
     assert.match(next, /site \/after label=mom/);
   });
 }
+
+test('a Site that refuses an upload early gets its answer to the page, and the browser stops sending the rest', async ({ browser, relay }) => {
+  const file = bigFile(200 << 20);
+  try {
+    const { site, page, frame } = await visitOver(browser, relay, 'direct');
+    await frame.evaluate(() => document.body.insertAdjacentHTML('beforeend', '<input type="file" id="pick">'));
+    await frame.setInputFiles('#pick', file.path);
+    const status = await frame.evaluate(() => fetch('/refuse', { method: 'POST', body: document.getElementById('pick').files[0] }).then((r) => r.status));
+    assert.equal(status, 413);
+    await new Promise((r) => setTimeout(r, 2000)); // time enough to send the rest, on this machine
+    const sent = await page.evaluate(() => window.__tooobStats.sent.direct);
+    assert.ok(sent < 32 << 20, `the browser sent ${sent >> 20} MiB of a refused 200 MiB upload`);
+    assert.ok(site.refused < 32 << 20, `the Host passed ${site.refused >> 20} MiB of it to the Site`);
+  } finally {
+    file.remove();
+  }
+});
+
+test("an upload to a Site that takes it slowly doesn't hold up the Visitor's other requests on the Direct Path", async ({ browser, relay }) => {
+  const { frame } = await visitOver(browser, relay, 'direct');
+  await frame.evaluate(() => void fetch('/slow', { method: 'POST', body: new Uint8Array(32 << 20) }).catch(() => {}));
+  await new Promise((r) => setTimeout(r, 2000)); // the upload has filled every buffer on its way
+  const ms = await frame.evaluate(async () => {
+    const t = performance.now();
+    await Promise.race([fetch('/after').then((r) => r.text()), new Promise((r) => setTimeout(r, 10000))]);
+    return performance.now() - t;
+  });
+  assert.ok(ms < 1000, `another request took ${Math.round(ms)} ms during the slow upload`);
+});
 
 test("when the Host can't be reached the page says so and keeps the Invite for a retry", async ({ browser, relay }) => {
   const { invite, stop } = await hostWithSite(relay);
