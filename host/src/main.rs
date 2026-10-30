@@ -30,10 +30,10 @@ const USAGE: &str = "usage:
                                                   read-only, or HOST:PORT for a web app
   tooob run NAME                                  serve it here, until Ctrl-C
   tooob share PATH [--invite LABEL]... [--expires 7d] [--approve] [--name NAME]
-                   [--relay URL | --local] [--include-git]
+                   [--relay URL | --local]
                                                   add a Host for PATH (or reuse its Host), invite
-                                                  each LABEL, then run it; a folder holding .git
-                                                  is refused without --include-git
+                                                  each LABEL, then run it; it warns when PATH
+                                                  holds .git, .env or .ssh
   tooob ls [--json]                               every Host on this box, running or stopped
   tooob show NAME                                 its settings, Host Key and files
   tooob rm NAME                                   delete it, Host Key and all
@@ -49,7 +49,7 @@ Host is running or not. There's no default Relay: deploy/ shows how to run your 
 ever asked: what's missing is an error that shows the command to type.";
 
 const VALUE_FLAGS: &[&str] = &["relay", "expires", "name"];
-const BARE_FLAGS: &[&str] = &["local", "json", "approve", "owner", "include-git"];
+const BARE_FLAGS: &[&str] = &["local", "json", "approve", "owner"];
 
 /// Commands for one Host, named first: `tooob VERB NAME …`. They work whether it's running or not
 /// (ADR 0014).
@@ -195,23 +195,10 @@ async fn share(
     flags: &Flags,
     invitees: &[String],
 ) -> Result<()> {
-    let path = match words.get(1) {
-        Some(path) => std::fs::canonicalize(path).with_context(|| format!("can't share {path}"))?,
-        None => return Err(typed.missing("say what to share, a folder or a file", "PATH")),
+    let Some(given) = words.get(1) else {
+        return Err(typed.missing("say what to share, a folder or a file", "PATH"));
     };
-    if !flags.contains_key("include-git")
-        && let Some(found) = git_inside(&path)
-    {
-        return Err(typed.missing(
-            &format!(
-                "{} holds {}, a repository's history, and everyone you invite could read it; to \
-                 share it anyway",
-                words[1],
-                found.display()
-            ),
-            "--include-git",
-        ));
-    }
+    let path = std::fs::canonicalize(given).with_context(|| format!("can't share {given}"))?;
     let serves = path.to_string_lossy();
     let expires_in = match flags.get("expires").cloned().flatten() {
         Some(expires) => seconds(&expires)?,
@@ -250,29 +237,66 @@ async fn share(
             home.add(&name, &serves, &relay)?
         }
     };
+    for warning in warnings(given, &path) {
+        eprintln!("tooob: warning: {warning}");
+    }
     serve(&host, who).await
 }
 
-/// The first `.git` in the folder at `path`, as a path within it: a repository's history, which an
-/// Owner rarely means to hand out. Looked for up to a limit, since a whole disk would take ages.
-fn git_inside(path: &Path) -> Option<std::path::PathBuf> {
+/// How many folders and files `share` looks through for what an Owner may not mean to hand out: a
+/// whole disk would take ages.
+const CHECK_LIMIT: usize = 20_000;
+
+/// What everyone invited to the folder or file at `path` (as `given`) could read that its Owner may
+/// not mean them to: the whole home folder, a repository's history, secrets. One line each, with
+/// the first of each found, and a line saying so when there was too much to look through all of
+/// it. Never a question (ADR 0022).
+fn warnings(given: &str, path: &Path) -> Vec<String> {
+    let could_read = "which everyone you invite could read";
+    let mut warnings = Vec::new();
+    let home = std::env::var_os("HOME").and_then(|home| std::fs::canonicalize(home).ok());
+    if home.as_deref() == Some(path) {
+        warnings.push(format!("{given} is your whole home folder, {could_read}"));
+    }
+    let mut found: [(&str, &str, Option<std::path::PathBuf>); 3] = [
+        (".git", ", a repository's whole history,", None),
+        (".env", ",", None),
+        (".ssh", ",", None),
+    ];
     let mut todo = std::collections::VecDeque::from([path.to_path_buf()]);
     let mut seen = 0;
-    while let Some(dir) = todo.pop_front() {
+    let mut finished = true;
+    'looking: while let Some(dir) = todo.pop_front() {
         for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
             seen += 1;
-            if seen > 20_000 {
-                return None;
+            if seen > CHECK_LIMIT {
+                finished = false;
+                break 'looking;
             }
-            if entry.file_name() == ".git" {
-                return entry.path().strip_prefix(path).ok().map(Path::to_path_buf);
+            let name = entry.file_name();
+            if let Some((_, _, first)) = found.iter_mut().find(|(n, _, _)| name == *n) {
+                first.get_or_insert_with(|| entry.path().strip_prefix(path).unwrap().into());
+                continue; // nothing more to find in it
             }
             if entry.file_type().is_ok_and(|t| t.is_dir()) {
                 todo.push_back(entry.path());
             }
         }
     }
-    None
+    for (_, what, first) in found {
+        if let Some(first) = first {
+            warnings.push(format!(
+                "{given} holds {}{what} {could_read}",
+                first.display()
+            ));
+        }
+    }
+    if !finished {
+        warnings.push(format!(
+            "{given} is too big to check all of it for .git, .env or .ssh"
+        ));
+    }
+    warnings
 }
 
 /// A Host Name for what's at `path`: its name, lowercased, with anything but letters, digits, `-`
@@ -417,7 +441,7 @@ async fn owner_command(
         "visitors" | "invites" => &["json"],
         _ => &[],
     };
-    let arity = if then(command).is_some() { 3 } else { 2 };
+    let arity = if after_name(command).is_some() { 3 } else { 2 };
     if words.len() > arity {
         bail!("too many arguments: {}\n{USAGE}", words[arity..].join(" "));
     }
@@ -435,10 +459,13 @@ async fn owner_command(
     if matches!(command, "invite" | "pair") {
         host.key_address()?; // before what's missing: a link needs it
     }
-    let said = || match (words.get(2), then(command)) {
-        (Some(word), _) => Ok(word.clone()),
-        (None, Some((what, gap))) => Err(typed.missing(what, gap)),
-        (None, None) => unreachable!(),
+    // Only the commands that take something after the Host's name ask for it.
+    let (what, gap) = after_name(command).unwrap_or_default();
+    let said = || {
+        words
+            .get(2)
+            .cloned()
+            .ok_or_else(|| typed.missing(what, gap))
     };
     let refused = refused(&host);
     let json = flags.contains_key("json");
@@ -510,8 +537,8 @@ fn named(home: &Home, typed: &Typed, command: &str, wanted: Option<&String>) -> 
         "stop" => "say which Host to stop",
         _ => "say which Host",
     };
-    let gap = match then(command) {
-        Some((_, then)) => format!("NAME {then}"),
+    let gap = match after_name(command) {
+        Some((_, after)) => format!("NAME {after}"),
         None => "NAME".to_string(),
     };
     Err(typed.missing(&format!("{what} ({which})"), &gap))
@@ -519,7 +546,7 @@ fn named(home: &Home, typed: &Typed, command: &str, wanted: Option<&String>) -> 
 
 /// What an Owner command takes after the Host's NAME, if anything: what to say when it's missing,
 /// and its placeholder.
-fn then(command: &str) -> Option<(&'static str, &'static str)> {
+fn after_name(command: &str) -> Option<(&'static str, &'static str)> {
     match command {
         "invite" => Some(("say who the Invite is for", "LABEL")),
         "pair" => Some(("say which device the Pairing Invite is for", "LABEL")),

@@ -822,56 +822,80 @@ fn an_owner_command_with_no_label_or_key_says_what_and_shows_the_command() {
 }
 
 #[test]
-fn share_refuses_a_folder_holding_git_unless_include_git_says_so() {
+fn share_warns_in_a_line_for_each_thing_a_folder_holds_that_everyone_invited_could_read() {
     let home = Home::new();
-    let (repo, projects) = (a_folder(), a_folder());
-    std::fs::create_dir(repo.path().join(".git")).unwrap();
-    std::fs::create_dir_all(projects.path().join("blog/.git")).unwrap();
-    for (folder, found) in [(&repo, ".git"), (&projects, "blog/.git")] {
-        let path = folder.path().to_str().unwrap();
-        let out = home.tooob(&["share", path, "--local"]);
-        assert!(!out.status.success(), "{path}");
-        assert_eq!(
-            stderr(&out),
-            format!(
-                "tooob: {path} holds {found}, a repository's history, and everyone you invite \
-                 could read it; to share it anyway:\n  tooob share {path} --include-git --local\n"
-            )
+    let folder = a_folder();
+    let path = folder.path().to_str().unwrap();
+    std::fs::create_dir_all(folder.path().join("blog/.git")).unwrap();
+    std::fs::write(folder.path().join("blog/.env"), "KEY=1\n").unwrap();
+    std::fs::create_dir(folder.path().join(".ssh")).unwrap();
+    let warnings = [
+        format!(
+            "tooob: warning: {path} holds blog/.git, a repository's whole history, which \
+             everyone you invite could read\n"
+        ),
+        format!("tooob: warning: {path} holds blog/.env, which everyone you invite could read\n"),
+        format!("tooob: warning: {path} holds .ssh, which everyone you invite could read\n"),
+    ];
+
+    let shared = home.spawn(&["share", path, "--local"]);
+    shared.until_it_says("serving");
+    let log = shared.log();
+    let serving = log.find("serving").unwrap();
+    for warning in &warnings {
+        let at = log
+            .find(warning.as_str())
+            .unwrap_or_else(|| panic!("{warning}in:\n{log}"));
+        assert!(at < serving, "before serving: {log}");
+    }
+    assert!(!log.contains("too big"), "{log}");
+    shared.stop();
+
+    let again = home.spawn(&["share", path]);
+    again.until_it_says("serving");
+    for warning in &warnings {
+        assert!(
+            again.log().contains(warning.as_str()),
+            "reused: {}",
+            again.log()
         );
     }
-    assert_eq!(home.ok(&["ls"]).lines().count(), 1, "nothing was added");
-
-    let path = repo.path().to_str().unwrap();
-    let shared = home.spawn(&["share", path, "--local", "--include-git"]);
-    shared.until_it_says("serving");
-    let name = home
-        .ok(&["ls"])
-        .lines()
-        .nth(1)
-        .unwrap()
-        .split_whitespace()
-        .next()
-        .unwrap()
-        .to_string();
-    shared.stop();
-    let again = home.tooob(&["share", path]);
-    assert!(
-        !again.status.success(),
-        "its Host is reused, and refused the same"
-    );
-    assert!(
-        stderr(&again).contains("--include-git"),
-        "{}",
-        stderr(&again)
-    );
-    let refused = home.tooob(&["add", "other", path, "--local", "--include-git"]);
-    assert!(!refused.status.success(), "only share takes --include-git");
-    assert!(home.row(&name).contains("stopped"));
     let usage = stderr(&home.tooob(&[]));
     assert!(
-        usage.contains("--include-git") && !usage.contains("asks"),
+        !usage.contains("include-git") && !usage.contains("asks"),
         "{usage}"
     );
+}
+
+#[test]
+fn share_warns_about_the_whole_home_folder() {
+    let home = Home::new();
+    let path = home.0.path().to_str().unwrap();
+    let shared = home.spawn(&["share", path, "--local"]);
+    shared.until_it_says("serving");
+    let warning = format!(
+        "tooob: warning: {path} is your whole home folder, which everyone you invite could read\n"
+    );
+    assert!(shared.log().contains(&warning), "{}", shared.log());
+}
+
+#[test]
+fn share_says_when_a_folder_is_too_big_to_check_all_of_it_rather_than_calling_it_clear() {
+    let home = Home::new();
+    let folder = a_folder();
+    let path = folder.path().to_str().unwrap();
+    let many = folder.path().join("a");
+    std::fs::create_dir(&many).unwrap();
+    for n in 0..21_000 {
+        std::fs::write(many.join(n.to_string()), "").unwrap();
+    }
+    std::fs::create_dir_all(folder.path().join("z/repo/.git")).unwrap();
+
+    let shared = home.spawn(&["share", path, "--local"]);
+    shared.until_it_says("serving");
+    let warning =
+        format!("tooob: warning: {path} is too big to check all of it for .git, .env or .ssh\n");
+    assert!(shared.log().contains(&warning), "{}", shared.log());
 }
 
 #[test]

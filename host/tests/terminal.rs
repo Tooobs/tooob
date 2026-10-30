@@ -110,18 +110,15 @@ fn share_started_with_an_ampersand_prints_the_link_and_keeps_serving_in_the_back
 #[test]
 fn every_command_missing_something_fails_at_once_with_the_command_to_type() {
     let home = Home::new();
-    let (photos, other, repo) = (a_folder(), a_folder(), a_folder());
-    std::fs::create_dir(repo.path().join(".git")).unwrap();
+    let (photos, other) = (a_folder(), a_folder());
     home.add_naming("photos", photos.path().to_str().unwrap(), RELAY);
     home.ok(&["add", "films", "127.0.0.1:8096", "--local"]);
     let other = other.path().to_str().unwrap();
-    let repo = repo.path().to_str().unwrap();
 
     for (args, says) in [
         (vec!["share"], "tooob share PATH"),
         (vec!["share", other], "--relay https://RELAY/"),
         (vec!["add", "other", other], "--relay https://RELAY/"),
-        (vec!["share", repo, "--local"], "--include-git --local"),
         (vec!["invite"], "(Hosts here: films, photos)"),
         (vec!["pair"], "(Hosts here: films, photos)"),
         (vec!["stop"], "(none is running)"),
