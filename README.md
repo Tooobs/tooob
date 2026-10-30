@@ -63,41 +63,41 @@ What a technical early adopter can try after each push, in the order it landed. 
 
 ### [v1 · Technical early adopters](https://github.com/Tooobs/tooob/milestone/1) (in progress)
 
-Everything here is in the first Release, **0.1.0 (not out yet)**: until then, the test Releases on [Releases](https://github.com/Tooobs/tooob/releases) have it. Tickets finished before 2026-10-23 came over from an earlier tracker that day, so their own dates are lost.
+Everything here is in the first Release, **[0.1.0](https://github.com/Tooobs/tooob/releases/tag/v0.1.0)**, out 2026-10-30. Tickets finished before 2026-10-23 came over from an earlier tracker that day, so their own dates are lost.
 
-- **A Site on a phone, in an ordinary browser** ([#37](https://github.com/Tooobs/tooob/issues/37), [#40](https://github.com/Tooobs/tooob/issues/40), [#50](https://github.com/Tooobs/tooob/issues/50)) · before 2026-10-23 · 0.1.0 (not out yet)
+- **A Site on a phone, in an ordinary browser** ([#37](https://github.com/Tooobs/tooob/issues/37), [#40](https://github.com/Tooobs/tooob/issues/40), [#50](https://github.com/Tooobs/tooob/issues/50)) · before 2026-10-23 · 0.1.0
   - Run a Relay of your own ([`deploy/`](deploy/README.md)): tooob has no default one. Then `tooob add photos ~/Pictures --relay https://<your relay>/`, `tooob run photos`, and in another terminal `tooob invite photos phone`. Open the link on a phone: the Site loads, and the pill in the corner says how fast it connected and which path it came by.
-- **Straight to the Host when it can** ([#38](https://github.com/Tooobs/tooob/issues/38), [#39](https://github.com/Tooobs/tooob/issues/39)) · before 2026-10-23 · 0.1.0 (not out yet)
+- **Straight to the Host when it can** ([#38](https://github.com/Tooobs/tooob/issues/38), [#39](https://github.com/Tooobs/tooob/issues/39)) · before 2026-10-23 · 0.1.0
   - With the Site open, the pill says `direct` when the browser reaches the Host over WebRTC, and whether that's on the home network or punched through NAT from elsewhere. Otherwise it says `relay`. Try it on Wi-Fi at home, then on cellular. The Direct Path carries on as a phone switches apps or locks its screen for a while; after a long background it may come back on the Relay instead ([#15](https://github.com/Tooobs/tooob/issues/15)).
-- **A folder or a file as a Site** ([#44](https://github.com/Tooobs/tooob/issues/44)) · before 2026-10-23 · 0.1.0 (not out yet)
+- **A folder or a file as a Site** ([#44](https://github.com/Tooobs/tooob/issues/44)) · before 2026-10-23 · 0.1.0
   - `tooob share ~/Pictures --relay https://<your relay>/`, or `tooob add` with a folder or file. Visitors browse the folder and its subfolders, open photos in the browser, and download what it can't show under the file's own name. It's read-only.
-- **Staying logged in** ([#41](https://github.com/Tooobs/tooob/issues/41)) · before 2026-10-23 · 0.1.0 (not out yet)
+- **Staying logged in** ([#41](https://github.com/Tooobs/tooob/issues/41)) · before 2026-10-23 · 0.1.0
   - Share a web app with a login (`tooob add NAME HOST:PORT`), log in as a Visitor, then restart the Host: the Visitor is still logged in. Each Visitor's cookies for the Site are kept on the Host, never in their browser.
-- **The Visitor Key stays the browser's** ([#43](https://github.com/Tooobs/tooob/issues/43)) · before 2026-10-23 · 0.1.0 (not out yet)
+- **The Visitor Key stays the browser's** ([#43](https://github.com/Tooobs/tooob/issues/43)) · before 2026-10-23 · 0.1.0
   - Nothing shows: the key that proves a Visitor's device is kept so that the Site's own scripts can't read it out.
-- **Knowing when the Host is away** ([#45](https://github.com/Tooobs/tooob/issues/45), [#46](https://github.com/Tooobs/tooob/issues/46)) · before 2026-10-23 · 0.1.0 (not out yet)
+- **Knowing when the Host is away** ([#45](https://github.com/Tooobs/tooob/issues/45), [#46](https://github.com/Tooobs/tooob/issues/46)) · before 2026-10-23 · 0.1.0
   - Stop the Host (Ctrl-C) while a Visitor has the Site open. Their pill says `Reconnecting…` at once and counts its tries. Start the Host again and the Site comes back by itself; leave it stopped and the pill offers a reload instead.
-- **Hosts from the command line** ([#47](https://github.com/Tooobs/tooob/issues/47), [#48](https://github.com/Tooobs/tooob/issues/48), [#49](https://github.com/Tooobs/tooob/issues/49)) · before 2026-10-23 · 0.1.0 (not out yet)
+- **Hosts from the command line** ([#47](https://github.com/Tooobs/tooob/issues/47), [#48](https://github.com/Tooobs/tooob/issues/48), [#49](https://github.com/Tooobs/tooob/issues/49)) · before 2026-10-23 · 0.1.0
   - `tooob add` makes a Host once, `tooob run` serves it in the foreground until Ctrl-C, and `tooob ls`, `show` and `rm` list, describe and delete Hosts. Owner commands name the Host first (`tooob invite photos mom`), work whether it's running or not, and a command that changes something prints nothing when it works. [#47](https://github.com/Tooobs/tooob/issues/47)'s background Hosts and `tooob list` were replaced by these ([ADR 0014](docs/adr/0014-hosts-run-in-the-foreground-the-os-keeps-them-running.md)).
-- **[#56](https://github.com/Tooobs/tooob/issues/56) `tooob --version`, and a Bootstrap Bundle says its Release and Protocol Version** · 2026-10-24 · 0.1.0 (not out yet)
-  - `tooob --version` prints the Release and the Protocol Version (`tooob 0.1.0-rc.6 (tooob/0)`), and a starting Host logs them. On any Key Address, `/__tooob/version.json` names the Bundle's Release, its Protocol Version and every file's hash.
-- **[#58](https://github.com/Tooobs/tooob/issues/58) Local checks run on every push** · 2026-10-24 · 0.1.0 (not out yet)
+- **[#56](https://github.com/Tooobs/tooob/issues/56) `tooob --version`, and a Bootstrap Bundle says its Release and Protocol Version** · 2026-10-24 · 0.1.0
+  - `tooob --version` prints the Release and the Protocol Version (`tooob 0.1.0 (tooob/0)`), and a starting Host logs them. On any Key Address, `/__tooob/version.json` names the Bundle's Release, its Protocol Version and every file's hash.
+- **[#58](https://github.com/Tooobs/tooob/issues/58) Local checks run on every push** · 2026-10-24 · 0.1.0
   - For contributors: after `git config core.hooksPath .githooks` (once per clone), `git push` runs `./check.sh` first, and a failing check stops the push and says which.
-- **[#62](https://github.com/Tooobs/tooob/issues/62) The Host refuses a header line over its 64 KiB limit, however it arrives** · 2026-10-24 · 0.1.0 (not out yet)
+- **[#62](https://github.com/Tooobs/tooob/issues/62) The Host refuses a header line over its 64 KiB limit, however it arrives** · 2026-10-24 · 0.1.0
   - Nothing shows: one that arrived in a single read used to get through.
-- **[#65](https://github.com/Tooobs/tooob/issues/65) `tooob rm` works while other Owner commands run** · 2026-10-25 · 0.1.0 (not out yet)
+- **[#65](https://github.com/Tooobs/tooob/issues/65) `tooob rm` works while other Owner commands run** · 2026-10-25 · 0.1.0
   - Nothing shows unless you script Owner commands: `rm` could fail on a stray lock file, or mistake another command for a running Host.
-- **[#66](https://github.com/Tooobs/tooob/issues/66) Key Addresses: each Host is its own origin** · 2026-10-26 · 0.1.0 (not out yet)
+- **[#66](https://github.com/Tooobs/tooob/issues/66) Key Addresses: each Host is its own origin** · 2026-10-26 · 0.1.0
   - `tooob invite` prints `https://<host key>.<relay domain>/#invite=…`: the Host's own address on its Relay's domain, so one Site's scripts can't reach another's browser storage or Visitor Key. A Host names only its Relay, which serves the Bootstrap on its domain and every Key Address under it (the Relay setups in [`deploy/`](deploy/README.md), [#67](https://github.com/Tooobs/tooob/issues/67)).
-- **[#78](https://github.com/Tooobs/tooob/issues/78) A Relay is safe for its Owner without the Public Suffix List** · 2026-10-28 · 0.1.0 (not out yet)
+- **[#78](https://github.com/Tooobs/tooob/issues/78) A Relay is safe for its Owner without the Public Suffix List** · 2026-10-28 · 0.1.0
   - A Relay of your own doesn't need the list, and [`deploy/README.md`](deploy/README.md) says when one shared with others does. `curl -sI https://<host key>.<your relay>/` shows `Origin-Agent-Cluster` and `Cross-Origin-Opener-Policy`. A cookie a Site sets for the whole Relay domain stays with that Site.
-- **[#82](https://github.com/Tooobs/tooob/issues/82) The browser suite runs on Playwright, and can't take over the machine** · 2026-10-29 · 0.1.0 (not out yet)
+- **[#82](https://github.com/Tooobs/tooob/issues/82) The browser suite runs on Playwright, and can't take over the machine** · 2026-10-29 · 0.1.0
   - For contributors: `npx playwright install chromium` once in `bootstrap/check`, then `npx playwright test` there runs the browser suite in headless Chromium (`HEADED=1` opens windows you can watch). A second run started meanwhile refuses, a test that hangs fails at 90 s, and a run killed halfway leaves no Host or Relay running: the next run stops them first.
-- **[#77](https://github.com/Tooobs/tooob/issues/77) A page's own address opens that page, and the address bar follows the Site** · 2026-10-29 · 0.1.0 (not out yet)
+- **[#77](https://github.com/Tooobs/tooob/issues/77) A page's own address opens that page, and the address bar follows the Site** · 2026-10-29 · 0.1.0
   - Open a Site and click into a subfolder: the address bar shows that page's path, and the tab shows its title, as the page changes it too (an unread count). Reload, or copy the address to another device that's a Visitor: it opens on the same page. An Invite Link works at a page's address too (`https://<host key>.<your relay>/subfolder/#invite=…`). This needs a Relay deployed with this Release, since a Relay serves the Bootstrap: on one deployed before it, a page's own address is a `404` on every device.
-- **[#68](https://github.com/Tooobs/tooob/issues/68) tooob checks its Relay's Bootstrap: refuses at start on a mismatch, warns while running** · 2026-10-29 · 0.1.0 (not out yet)
+- **[#68](https://github.com/Tooobs/tooob/issues/68) tooob checks its Relay's Bootstrap: refuses at start on a mismatch, warns while running** · 2026-10-29 · 0.1.0
   - A starting Host logs its Relay's Bootstrap beside its own Release (`starting tooob 0.1.0 (tooob/0), Bootstrap 0.1.0 (tooob/0)`), and `tooob show` has a `Bootstrap` line. Name a Relay whose Bootstrap speaks another Protocol Version, or one that serves none (any plain web server), and `add`, `share` and `run` refuse, saying why and what to do. If the Bootstrap changes under a running Host, it keeps serving, warns in its log, and `tooob ls` shows `running (bootstrap mismatch)`. A Relay that can't be reached stops `add`; `run` starts anyway and checks again every 10 minutes.
-- **[#1](https://github.com/Tooobs/tooob/issues/1) Large uploads reach the Site, streamed, with no size cap** · 2026-10-30 · 0.1.0 (not out yet)
+- **[#1](https://github.com/Tooobs/tooob/issues/1) Large uploads reach the Site, streamed, with no size cap** · 2026-10-30 · 0.1.0
   - Upload a file far over 64 MiB to a Site, an Immich video say: it arrives whole, where it used to be refused. Neither the browser nor the Host holds it: `ps -o rss` on the Host stays flat through the upload. On the Direct Path a big upload to a slow Site no longer holds up the rest of the page, and a Site that refuses an upload early stops the browser sending it. A body over 1 MiB reaches the Site chunked, without Content-Length; Sites that need one are [#87](https://github.com/Tooobs/tooob/issues/87). This needs a Relay deployed with this Release, since a Relay serves the Bootstrap.
 
 ## Still to come

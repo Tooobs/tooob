@@ -60,7 +60,7 @@ A home box serving a Site to invited Visitors in ordinary browsers, for technica
 ### Releases and packaging
 
 - ✅ `tooob --version`, and a Bundle names its Release and Protocol Version ([#56](https://github.com/Tooobs/tooob/issues/56))
-- 🟡 Releases: one command cuts one and CI publishes it; test Releases are out, 0.1.0 isn't ([#59](https://github.com/Tooobs/tooob/issues/59))
+- ✅ Releases: one command cuts one and CI publishes it; 0.1.0 is out (2026-10-30) ([#59](https://github.com/Tooobs/tooob/issues/59))
 - ⬜ Anyone can rebuild a Release's Bundle and get the same bytes ([#60](https://github.com/Tooobs/tooob/issues/60))
 - ⬜ The Host ships as a Docker image ([#12](https://github.com/Tooobs/tooob/issues/12)) and a Home Assistant add-on ([#13](https://github.com/Tooobs/tooob/issues/13))
 - ✅ Local checks run on every push ([#58](https://github.com/Tooobs/tooob/issues/58))
