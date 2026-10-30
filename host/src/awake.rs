@@ -3,7 +3,7 @@
 //! however it ends). A closed lid still sleeps a Mac. Elsewhere, nothing to do.
 
 /// Keeps this box from idle-sleeping until it's dropped.
-pub struct Awake(#[allow(dead_code)] Inner);
+pub struct Awake(#[allow(dead_code)] Inner); // held only for its Drop
 
 impl Awake {
     /// Keep the box awake, saying `why` to anyone who asks the system (`pmset -g assertions`).
@@ -61,6 +61,8 @@ mod mac {
     impl CfString {
         fn new(text: &str) -> Option<CfString> {
             let text = CString::new(text).ok()?;
+            // SAFETY: `text` is NUL-terminated and outlives the call, which copies it; the default
+            // allocator is null. A null result is checked.
             let s = unsafe { CFStringCreateWithCString(std::ptr::null(), text.as_ptr(), UTF8) };
             (!s.is_null()).then_some(CfString(s))
         }
@@ -68,6 +70,7 @@ mod mac {
 
     impl Drop for CfString {
         fn drop(&mut self) {
+            // SAFETY: a non-null CFString this owns, created above and released only here.
             unsafe { CFRelease(self.0) }
         }
     }
@@ -80,6 +83,8 @@ mod mac {
             let kind = CfString::new("PreventUserIdleSystemSleep")?;
             let name = CfString::new(why)?;
             let mut id = 0;
+            // SAFETY: both CFStrings live past the call, which retains what it keeps; `id` is a
+            // valid place for the assertion's id.
             let made = unsafe { IOPMAssertionCreateWithName(kind.0, ON, name.0, &mut id) };
             (made == 0).then_some(Inner(id))
         }
@@ -87,6 +92,7 @@ mod mac {
 
     impl Drop for Inner {
         fn drop(&mut self) {
+            // SAFETY: an assertion this process made, released only here.
             unsafe { IOPMAssertionRelease(self.0) };
         }
     }

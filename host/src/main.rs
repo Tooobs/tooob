@@ -903,8 +903,7 @@ impl Typed {
         let mut words_at = Vec::new();
         let mut i = 0;
         while i < args.len() {
-            match args[i].strip_prefix("--") {
-                _ if args[i] == "-f" => {}
+            match flag_name(&args[i]) {
                 Some(name) if name == "invite" || VALUE_FLAGS.contains(&name) => i += 1,
                 Some(_) => {}
                 None => words_at.push(i),
@@ -924,16 +923,20 @@ impl Typed {
     }
 }
 
+/// The flag `arg` is, without its dashes; `-f` is `--follow`. None for a word.
+fn flag_name(arg: &str) -> Option<&str> {
+    match arg {
+        "-f" => Some("follow"),
+        _ => arg.strip_prefix("--"),
+    }
+}
+
 /// Words, `--flags` (value flags take the next word), and every `--invite LABEL`: it can repeat.
 fn parse(args: impl Iterator<Item = String>) -> Result<(Vec<String>, Flags, Vec<String>)> {
     let (mut words, mut flags, mut invitees) = (Vec::new(), HashMap::new(), Vec::new());
     let mut args = args.peekable();
     while let Some(a) = args.next() {
-        if a == "-f" {
-            flags.insert("follow".to_string(), None);
-            continue;
-        }
-        match a.strip_prefix("--") {
+        match flag_name(&a) {
             Some("invite") => invitees.push(args.next().context("--invite needs a Label")?),
             Some(name) if VALUE_FLAGS.contains(&name) => {
                 let value = args

@@ -1122,6 +1122,7 @@ fn enable_with_systemd_writes_a_user_unit_running_the_installed_tooob_and_starts
     assert_eq!(
         home.calls("systemctl"),
         [
+            "is-system-running",
             "--user daemon-reload",
             "--user enable tooob@photos.service",
             "--user restart tooob@photos.service",
@@ -1499,4 +1500,58 @@ fn a_host_keeps_the_mac_from_idle_sleeping_while_it_serves_and_lets_it_once_it_s
     home.ok(&["stop", "photos"]);
     running.until_it_says("photos: stopped");
     assert_eq!(assertions_of(pid), Vec::<String>::new());
+}
+
+#[test]
+fn enable_with_systemctl_but_no_systemd_running_says_what_to_have_run_and_writes_nothing() {
+    // A container or WSL: systemctl is there, but systemd isn't what booted the box.
+    let home = Home::new();
+    let folder = a_folder();
+    home.ok(&["add", "blog", folder.path().to_str().unwrap(), "--local"]);
+    home.install_tooob();
+    home.stand_in(
+        "systemctl",
+        "case \"$*\" in is-system-running) echo offline; exit 1;; esac",
+    );
+
+    let out = home.tooob(&["enable", "blog"]);
+    assert!(!out.status.success());
+    assert_eq!(
+        stderr(&out),
+        "tooob: enable needs systemd or launchd, and this system has neither.\n  \
+         Have your service manager run `~/.local/bin/tooob run blog` as you, restarting it on \
+         failure.\n"
+    );
+    assert_eq!(home.calls("systemctl"), ["is-system-running"]);
+    assert!(entries(&home).is_empty(), "{:?}", entries(&home));
+}
+
+#[test]
+fn enable_makes_a_launch_agent_for_any_host_name() {
+    let home = Home::new();
+    home.install_tooob();
+    home.stand_in("launchctl", "");
+    for name in ["a--b", "b-", "-c", "_"] {
+        home.ok(&["add", name, "127.0.0.1:8096", "--local"]);
+        home.ok(&["enable", name]);
+        let agent = home
+            .0
+            .path()
+            .join(format!("Library/LaunchAgents/net.tooobs.{name}.plist"));
+        let plist = std::fs::read_to_string(&agent).unwrap();
+        let comments: String = plist
+            .split("<!--")
+            .skip(1)
+            .map(|c| c.split("-->").next().unwrap())
+            .collect();
+        assert!(!comments.contains("--"), "{name}: {plist}");
+        if cfg!(target_os = "macos") {
+            let lint = std::process::Command::new("/usr/bin/plutil")
+                .arg("-lint")
+                .arg(&agent)
+                .output()
+                .unwrap();
+            assert!(lint.status.success(), "{name}: {lint:?}");
+        }
+    }
 }

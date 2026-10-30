@@ -2,7 +2,7 @@
 //! after a failure (ADR 0014). One entry per Host: a launchd agent on macOS, a systemd user unit on
 //! Linux. tooob never keeps a Host running itself.
 use crate::hosts::{Entry, quote};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use std::path::{Path, PathBuf};
 
 /// The service manager on this box, found by its tool on `PATH`.
@@ -78,27 +78,38 @@ fn label(name: &str) -> String {
     format!("net.tooobs.{name}")
 }
 
-/// systemd's name for a Host's unit.
+/// systemd's name for a Host's unit: a unit file of its own for each Host, named like an instance
+/// of a template (`tooob@.service`) though there's no template.
 fn unit(name: &str) -> String {
     format!("tooob@{name}.service")
 }
 
 /// launchd's domain for this user's agents.
-fn gui() -> String {
+fn launchd_domain() -> String {
+    // SAFETY: getuid can't fail, and touches no memory of ours.
     format!("gui/{}", unsafe { libc::getuid() })
+}
+
+/// launchd's name for a Host's agent, loaded in this user's domain.
+fn launchd_service(name: &str) -> String {
+    format!("{}/{}", launchd_domain(), label(name))
 }
 
 /// Turn Autostart on for `host`, and start it now: through its service manager, from scratch if
 /// it was on already. Nothing is left behind when the service manager refuses. What to tell the
 /// Owner, a line each.
 pub fn enable(host: &Entry) -> Result<Vec<String>> {
-    let Some(manager) = ServiceManager::here() else {
-        bail!(
+    let neither = || {
+        anyhow!(
             "enable needs systemd or launchd, and this system has neither.\n  Have your service \
              manager run `~/.local/bin/tooob run {}` as you, restarting it on failure.",
             host.name
-        );
+        )
     };
+    let manager = ServiceManager::here().ok_or_else(neither)?;
+    if manager == ServiceManager::Systemd && !systemd_booted() {
+        return Err(neither());
+    }
     let tooob = installed_tooob()?;
     if !tooob.exists() {
         let this = std::env::current_exe()?;
@@ -123,10 +134,7 @@ pub fn enable(host: &Entry) -> Result<Vec<String>> {
     }
     if was_on && manager == ServiceManager::Launchd {
         // launchd loads an agent once: unload it (stopping the Host) to load what's written now.
-        let _ = call(
-            "launchctl",
-            &["bootout", &format!("{}/{}", gui(), label(&host.name))],
-        );
+        let _ = call("launchctl", &["bootout", &launchd_service(&host.name)]);
         host.until_stopped()?;
     }
     std::fs::create_dir_all(file.parent().unwrap())?;
@@ -137,7 +145,7 @@ pub fn enable(host: &Entry) -> Result<Vec<String>> {
     std::fs::write(&file, text)?;
     let started = match manager {
         ServiceManager::Launchd => {
-            let load = || call("launchctl", &["bootstrap", &gui(), path(&file)?]);
+            let load = || call("launchctl", &["bootstrap", &launchd_domain(), path(&file)?]);
             // Just unloaded, launchd may still be letting go of it for a moment.
             let mut loaded = load();
             for _ in 0..5 {
@@ -190,10 +198,9 @@ pub fn disable(host: &Entry) -> Result<()> {
         return Ok(());
     };
     let stopped = match ServiceManager::here() {
-        Some(ServiceManager::Launchd) => call(
-            "launchctl",
-            &["bootout", &format!("{}/{}", gui(), label(&host.name))],
-        ),
+        Some(ServiceManager::Launchd) => {
+            call("launchctl", &["bootout", &launchd_service(&host.name)])
+        }
         Some(ServiceManager::Systemd) => systemctl(&["disable", "--now", &unit(&host.name)]),
         None => Ok(()),
     };
@@ -215,11 +222,7 @@ pub fn stop(host: &Entry) -> Result<()> {
     match ServiceManager::here() {
         Some(ServiceManager::Launchd) => call(
             "launchctl",
-            &[
-                "kill",
-                "SIGTERM",
-                &format!("{}/{}", gui(), label(&host.name)),
-            ],
+            &["kill", "SIGTERM", &launchd_service(&host.name)],
         )?,
         Some(ServiceManager::Systemd) => systemctl(&["stop", &unit(&host.name)])?,
         None => bail!("no service manager runs {}", host.name),
@@ -252,6 +255,17 @@ fn call(tool: &str, args: &[&str]) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Whether systemd is what booted this box: `systemctl` is there in a container or on WSL, say,
+/// where it isn't, and then says "offline".
+fn systemd_booted() -> bool {
+    std::process::Command::new("systemctl")
+        .arg("is-system-running")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .is_ok_and(|out| String::from_utf8_lossy(&out.stdout).trim() != "offline")
 }
 
 /// `systemctl --user ARGS`.
@@ -301,7 +315,7 @@ fn plist(host: &Entry, tooob: &Path) -> Result<String> {
     Ok(format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- tooob's Autostart for the Host {name}: `tooob disable {name}` removes it. -->
+<!-- tooob's Autostart for the Host its Label names: `tooob disable` removes it. -->
 <plist version="1.0">
 <dict>
 	<key>Label</key>
@@ -331,7 +345,6 @@ fn plist(host: &Entry, tooob: &Path) -> Result<String> {
 </dict>
 </plist>
 "#,
-        name = host.name,
         label = string(&label(&host.name)),
         tooob = string(path(tooob)?),
         name_string = string(&host.name),
