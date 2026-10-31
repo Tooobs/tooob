@@ -156,6 +156,10 @@ _Avoid_: version mismatch, incompatible Relay
 A numbered version of tooob (`0.1.0`): the `tooob` command for each platform, the Bootstrap Bundle and the Host's container image, all made from one tag.
 _Avoid_: build, drop, version (unqualified)
 
+**Upgrade**:
+Replacing a box's `tooob` command with another Release, done only when its Owner asks. A running Host keeps the Release it started with until it restarts.
+_Avoid_: update, self-update, auto-update
+
 **Bootstrap Bundle**:
 The files a Bootstrap is made of, as one Release publishes them, identified by the hash of its manifest, which lists every other file's hash. A Relay serves a Bootstrap Bundle, and anyone can check which.
 _Avoid_: www, dist, the build
