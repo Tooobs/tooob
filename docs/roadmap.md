@@ -63,6 +63,7 @@ A home box serving a Site to invited Visitors in ordinary browsers, for technica
 
 - ✅ `tooob --version`, and a Bundle names its Release and Protocol Version ([#56](https://github.com/Tooobs/tooob/issues/56))
 - ✅ Releases: one command cuts one and CI publishes it; 0.1.0 is out (2026-10-30) ([#59](https://github.com/Tooobs/tooob/issues/59))
+- ✅ `tooob upgrade`: tooob upgrades itself when you ask, and says when a newer Release is out ([#54](https://github.com/Tooobs/tooob/issues/54))
 - ⬜ Anyone can rebuild a Release's Bundle and get the same bytes ([#60](https://github.com/Tooobs/tooob/issues/60))
 - ⬜ The Host ships as a Docker image ([#12](https://github.com/Tooobs/tooob/issues/12)) and a Home Assistant add-on ([#13](https://github.com/Tooobs/tooob/issues/13))
 - ✅ Local checks run on every push ([#58](https://github.com/Tooobs/tooob/issues/58))
@@ -97,7 +98,6 @@ tooob for people who don't open a terminal.
 
 - ⬜ The macOS `tooob` is signed and notarized ([#52](https://github.com/Tooobs/tooob/issues/52)), and Releases include Intel Macs ([#51](https://github.com/Tooobs/tooob/issues/51))
 - ⬜ The Host runs on Windows ([#28](https://github.com/Tooobs/tooob/issues/28))
-- ⬜ `tooob` upgrades itself ([#54](https://github.com/Tooobs/tooob/issues/54))
 - ⬜ A Bootstrap speaks the current and the previous Protocol Version ([#53](https://github.com/Tooobs/tooob/issues/53))
 - ⬜ A TUI in place of menus and pickers ([#35](https://github.com/Tooobs/tooob/issues/35))
 - ⬜ The Owner chooses whether a Shared Folder shows hidden files ([#29](https://github.com/Tooobs/tooob/issues/29))

@@ -13,6 +13,11 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
   NAME [-f]` shows its log, and `tooob stop` keeps an enabled Host stopped until the next login.
   `tooob ls` has an AUTOSTART column (`autostart` in `--json`). A serving Host keeps a Mac from
   idle-sleeping. Without systemd or launchd, `enable` says what to have your own service manager run.
+- **`tooob upgrade`** installs the newest Release, or a named one, through that Release's own
+  installer, after asking (`--yes` for scripts, `--check` to only look), and restarts enabled Hosts
+  on it. It refuses an upgrade that would leave a Host on a Bootstrap Mismatch unless `--anyway`.
+  Running Hosts check once a day and say when a newer Release is out; `TOOOB_NO_UPDATE_CHECK=1`
+  turns that off (ADR 0024).
 
 ### Changed
 - **`tooob` asks nothing.** No command asks a question, in a terminal or not, so `tooob share PATH
