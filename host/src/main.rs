@@ -29,19 +29,19 @@ const USAGE: &str = "usage:
   tooob add NAME TARGET (--relay URL | --local)
                                                   make a Host; TARGET is a folder or file to share
                                                   read-only, or HOST:PORT for a web app
-  tooob run NAME                                  serve it here, until Ctrl-C
+  tooob run NAME [-d]                             serve it here, until Ctrl-C; -d (--detach) keeps
+                                                  it running instead, now and after logins,
+                                                  reboots and crashes: launchd or systemd runs it
   tooob share PATH [--invite LABEL]... [--expires 7d] [--approve] [--name NAME]
-                   [--relay URL | --local]
+                   [--relay URL | --local] [-d]
                                                   add a Host for PATH (or reuse its Host), invite
-                                                  each LABEL, then run it; it warns when PATH
-                                                  holds .git, .env or .ssh
+                                                  each LABEL, then run it (-d as for run); it
+                                                  warns when PATH holds .git, .env or .ssh
   tooob ls [--json]                               every Host on this box, running or stopped
   tooob show NAME                                 its settings, Host Key and files
-  tooob rm NAME                                   delete it, Host Key and all
-  tooob stop NAME                                 end a running Host
-  tooob enable NAME                               start it by itself, now, at login and again after
-                                                  a failure (launchd or systemd runs it)
-  tooob disable NAME                              stop it, and stop starting it by itself
+  tooob stop NAME                                 stop it; one kept running stays stopped, across
+                                                  logins and reboots, until run -d
+  tooob rm NAME                                   stop it and delete it, Host Key and all
   tooob logs NAME [-n N|all] [-f] [--json]       its log, the last 50 lines, N, or all of it;
                                                   -f follows it, --json gives an object a line
   tooob invite NAME LABEL [--approve] [--owner] [--expires 1h]  print an Invite Link
@@ -55,8 +55,8 @@ const USAGE: &str = "usage:
                                                   install the newest Release, or VERSION (older
                                                   ones too), asking first: --check only looks,
                                                   --yes doesn't ask, --anyway even when a Host's
-                                                  Relay isn't ready for it; enabled Hosts restart
-                                                  on it
+                                                  Relay isn't ready for it; Hosts kept running
+                                                  restart on it
   tooob --version                                 the Release and Protocol Version
 NAME is a Host Name, what the Host serves, or a Host Key prefix. Owner commands work whether the
 Host is running or not. There's no default Relay: deploy/ shows how to run your own. Nothing is
@@ -65,7 +65,7 @@ Running Hosts look for a newer Release once a day, and say when one is out.";
 
 const VALUE_FLAGS: &[&str] = &["relay", "expires", "name", "lines"];
 const BARE_FLAGS: &[&str] = &[
-    "local", "json", "approve", "owner", "follow", "yes", "check", "anyway",
+    "local", "json", "approve", "owner", "follow", "yes", "check", "anyway", "detach",
 ];
 
 /// Where an Owner learns to deploy a Relay.
@@ -141,9 +141,12 @@ async fn run() -> Result<()> {
             home.add(name, target, &relay)?;
         }
         Some("run") => {
-            exactly(2, &[])?;
+            exactly(2, &["detach"])?;
             let host = named(&home, &typed, "run", words.get(1))?;
-            serve(&host, home.state_dir(), Vec::new()).await?;
+            match flags.contains_key("detach") {
+                true => keep_running(&host)?,
+                false => serve(&host, home.state_dir(), Vec::new()).await?,
+            }
         }
         Some("share") => share(&home, &typed, &words, &flags, &invitees).await?,
         Some("ls") => {
@@ -154,17 +157,15 @@ async fn run() -> Result<()> {
             exactly(2, &[])?;
             show_host(&named(&home, &typed, "show", words.get(1))?).await;
         }
-        Some("enable") => {
-            exactly(2, &[])?;
-            let said = autostart::enable(&named(&home, &typed, "enable", words.get(1))?)?;
-            for line in said {
-                eprintln!("tooob: {line}");
-            }
-        }
-        Some("disable") => {
-            exactly(2, &[])?;
-            autostart::disable(&named(&home, &typed, "disable", words.get(1))?)?;
-        }
+        // Gone (#96): each says, in a line, what replaced it.
+        Some("enable") => bail!(
+            "enable is now run -d: tooob run {} -d",
+            words.get(1).map_or("NAME".into(), |w| quote(w))
+        ),
+        Some("disable") => bail!(
+            "disable is now stop (or rm): tooob stop {}",
+            words.get(1).map_or("NAME".into(), |w| quote(w))
+        ),
         Some("logs") => {
             exactly(2, &["follow", "lines", "json"])?;
             let host = named(&home, &typed, "logs", words.get(1))?;
@@ -173,11 +174,13 @@ async fn run() -> Result<()> {
         Some("rm") => {
             exactly(2, &[])?;
             let host = named(&home, &typed, "rm", words.get(1))?;
-            if autostart::is_on(&host) {
-                bail!(
-                    "{0} starts by itself: turn that off first with `tooob disable {0}`",
-                    host.name
-                );
+            // Stopped first, however it runs, and never started again by its service manager.
+            // A command holding its lock for a moment isn't a running Host: `remove` waits it out.
+            autostart::remove(&host)?;
+            match Client::new(&host.state_dir).stop().await {
+                Ok(()) => host.until_stopped()?,
+                Err(ControlError::NotRunning) => {}
+                Err(e) => return Err(refused(&host)(e)),
             }
             host.remove()?;
         }
@@ -264,6 +267,7 @@ async fn share(
         .collect();
     // A reused Host keeps its own Relay; the flags are for a new one. Invites need a Key Address,
     // so without one, `--invite` is refused.
+    let detach = flags.contains_key("detach");
     let host = match home
         .hosts()
         .into_iter()
@@ -272,6 +276,10 @@ async fn share(
         Some(host) => {
             if !who.is_empty() {
                 host.key_address()?;
+            }
+            if detach {
+                autostart::can_keep_running(&host.name)?;
+                autostart::not_run_by_hand(&host)?;
             }
             host
         }
@@ -284,13 +292,34 @@ async fn share(
                 Some(name) => name,
                 None => free_name(home, &path),
             };
+            if detach {
+                autostart::can_keep_running(&name)?;
+            }
             home.add(&name, &serves, &relay)?
         }
     };
     for warning in warnings(given, &path) {
         eprintln!("tooob: warning: {warning}");
     }
-    serve(&host, home.state_dir(), who).await
+    if !detach && !autostart::is_on(&host) {
+        return serve(&host, home.state_dir(), who).await;
+    }
+    // Its service manager runs it, or is about to: the Invites are made here, through the Host
+    // if it's running and in its state if not, and never by a second copy of it (#96).
+    let client = host.client();
+    for who in &who {
+        invite_given(&host, &client, who).await?;
+    }
+    match (detach, host.running()) {
+        (true, _) => keep_running(&host)?,
+        (false, Some(_)) => eprintln!("tooob: {}", autostart::already_running(&host.name)),
+        (false, None) => eprintln!(
+            "tooob: {0} is kept running in the background, though it isn't running now: `tooob \
+             run {0} -d` starts it, and `tooob logs {0}` says why it stopped",
+            host.name
+        ),
+    }
+    Ok(())
 }
 
 /// How many folders and files `share` looks through for what an Owner may not mean to hand out: a
@@ -480,10 +509,15 @@ async fn show_host(host: &Entry) {
     }
 }
 
-/// Whether a Host starts by itself, and where its entry is when it does.
+/// Whether a Host starts by itself, and where its entry is when it does; and when `tooob stop`
+/// keeps it stopped, how to keep it running again.
 fn autostart_shown(host: &Entry) -> String {
     match autostart::entry_file(host).filter(|file| file.exists()) {
         Some(file) => format!("yes, {}", file.display()),
+        None if autostart::is_kept_stopped(host) => format!(
+            "no, stopped: `tooob run {} -d` keeps it running again",
+            host.name
+        ),
         None => "no".into(),
     }
 }
@@ -649,17 +683,13 @@ fn named(home: &Home, typed: &Typed, command: &str, wanted: Option<&String>) -> 
         return home.find(wanted);
     }
     let mut hosts = home.hosts();
-    match command {
-        "stop" => hosts.retain(|h| h.running().is_some()),
-        "disable" => hosts.retain(autostart::is_on),
-        _ => {}
+    if command == "stop" {
+        hosts.retain(|h| h.running().is_some());
     }
     let names: Vec<String> = hosts.into_iter().map(|h| h.name).collect();
     let which = match (command, names.as_slice()) {
         ("stop", []) => "none is running".to_string(),
         ("stop", names) => format!("running: {}", names.join(", ")),
-        ("disable", []) => "none starts by itself".to_string(),
-        ("disable", names) => format!("starting by itself: {}", names.join(", ")),
         (_, []) => "none yet: `tooob add NAME TARGET` makes one".to_string(),
         (_, names) => format!("Hosts here: {}", names.join(", ")),
     };
@@ -668,8 +698,6 @@ fn named(home: &Home, typed: &Typed, command: &str, wanted: Option<&String>) -> 
         "pair" => "say which Host the Pairing Invite is for",
         "stop" => "say which Host to stop",
         "logs" => "say which Host's log",
-        "enable" => "say which Host to start by itself",
-        "disable" => "say which Host to stop starting by itself",
         _ => "say which Host",
     };
     let gap = match after_name(command) {
@@ -735,8 +763,8 @@ fn lasts(options: &InviteOptions) -> String {
 async fn serve(host: &Entry, state: &Path, invitees: Vec<Invitee>) -> Result<()> {
     if autostart::is_on(host) && !autostart::started_by_its_entry(host) {
         bail!(
-            "{0} starts by itself, so its service manager runs it: `tooob logs {0} -f` follows \
-             it, and `tooob disable {0}` turns that off",
+            "{0} is kept running in the background, so its service manager runs it: `tooob logs \
+             {0} -f` follows it, and `tooob stop {0}` stops it",
             host.name
         );
     }
@@ -948,17 +976,26 @@ async fn invite_given(host: &Entry, client: &Client, who: &Invitee) -> Result<()
     invite(host, client, &who.label, options).await
 }
 
-/// Stop a running Host, and wait until it has: through its service manager when it starts by
-/// itself, so it isn't started again straight away (ADR 0014); otherwise by asking it.
+/// `-d`: hand a Host to its service manager, which keeps it running (ADR 0014), saying so.
+fn keep_running(host: &Entry) -> Result<()> {
+    for line in autostart::keep_running(host)? {
+        eprintln!("tooob: {line}");
+    }
+    Ok(())
+}
+
+/// Stop a running Host, and wait until it has: through its service manager when it's kept
+/// running, which then keeps it stopped across logins and reboots (ADR 0014); otherwise by asking
+/// it.
 async fn stop(host: &Entry) -> Result<()> {
     if autostart::is_on(host) {
-        if host.running().is_none() {
-            bail!(
-                "{0} isn't running (it starts by itself: `tooob enable {0}` starts it now)",
-                host.name
-            );
-        }
-        return autostart::stop(host);
+        autostart::stop(host)?;
+        eprintln!(
+            "tooob: {0} is stopped, and stays stopped across logins and reboots: `tooob run {0} \
+             -d` keeps it running again",
+            host.name
+        );
+        return Ok(());
     }
     let client = Client::new(&host.state_dir);
     client.stop().await.map_err(refused(host))?;
@@ -1125,7 +1162,7 @@ fn restart_after_upgrade(home: &Home, version: &ReleaseNumber) {
             Ok(()) => restarted.push(host.name),
             Err(e) => eprintln!(
                 "tooob: warning: {0} wasn't restarted ({e:#}): `tooob logs {0}` says what it \
-                 did, and `tooob enable {0}` starts it afresh",
+                 did, and `tooob stop {0}` then `tooob run {0} -d` starts it afresh",
                 host.name
             ),
         }
@@ -1200,10 +1237,12 @@ impl Typed {
     }
 }
 
-/// The flag `arg` is, without its dashes; `-f` is `--follow`, `-n` is `--lines`. None for a word.
+/// The flag `arg` is, without its dashes; `-f` is `--follow`, `-n` is `--lines`, `-d` is
+/// `--detach`. None for a word.
 fn flag_name(arg: &str) -> Option<&str> {
     match arg {
         "-f" => Some("follow"),
+        "-d" => Some("detach"),
         "-n" => Some("lines"),
         _ => arg.strip_prefix("--"),
     }

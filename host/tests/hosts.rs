@@ -76,11 +76,15 @@ fn add_needs_a_relay_and_a_bootstrap_is_refused() {
         "{usage}"
     );
     for command in [
-        "tooob enable NAME",
-        "tooob disable NAME",
+        "tooob run NAME [-d]",
+        "[--relay URL | --local] [-d]",
+        "tooob stop NAME",
         "tooob logs NAME [-n N|all] [-f] [--json]",
     ] {
         assert!(usage.contains(command), "{command}: {usage}");
+    }
+    for gone in ["enable", "disable"] {
+        assert!(!usage.contains(&format!("tooob {gone}")), "{gone}: {usage}");
     }
     assert!(
         !usage.contains("TOOOB_"),
@@ -464,7 +468,7 @@ fn ls_shows_running_and_stopped_hosts_and_its_json_parses() {
 }
 
 #[test]
-fn rm_refuses_a_running_host_and_deletes_a_stopped_one_completely() {
+fn rm_stops_a_running_host_and_deletes_it_completely() {
     let home = Home::new();
     let folder = a_folder();
     home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
@@ -473,18 +477,13 @@ fn rm_refuses_a_running_host_and_deletes_a_stopped_one_completely() {
     let key = home.shown("photos", "Host Key");
     let running = home.start("photos");
 
-    let refused = home.tooob(&["rm", "photos"]);
-    assert!(!refused.status.success());
-    assert!(stderr(&refused).contains("running"), "{}", stderr(&refused));
-    assert!(std::path::Path::new(&state).join("host.key").exists());
-
-    running.stop();
     let removed = home.tooob(&["rm", "photos"]);
     assert!(removed.status.success(), "{}", stderr(&removed));
     assert_eq!(String::from_utf8_lossy(&removed.stdout), "", "says nothing");
     assert!(!std::path::Path::new(&settings).exists());
     assert!(!std::path::Path::new(&state).exists());
     assert!(!home.ok(&["ls"]).contains("photos"));
+    running.until_it_says("photos: stopped");
 
     home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
     assert_ne!(home.shown("photos", "Host Key"), key, "a new Host");
@@ -655,7 +654,6 @@ fn the_old_commands_and_options_are_gone() {
         vec!["serve", "--site", "127.0.0.1:8096"],
         vec!["start", "--host", "photos"],
         vec!["list"],
-        vec!["run", "photos", "--detach"],
         vec!["run", "photos", "--foreground"],
         vec!["visitors", "--data", "/tmp"],
         vec!["visitors", "photos", "--host", "photos"],
@@ -665,6 +663,39 @@ fn the_old_commands_and_options_are_gone() {
         assert!(!out.status.success(), "{args:?} still works");
     }
     assert!(home.row("photos").contains("stopped"));
+}
+
+#[test]
+fn enable_and_disable_are_gone_and_each_says_what_replaced_it() {
+    let home = Home::new();
+    let folder = a_folder();
+    home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
+    home.install_tooob();
+    home.stand_in("launchctl", "");
+    for (args, said) in [
+        (
+            vec!["enable", "photos"],
+            "tooob: enable is now run -d: tooob run photos -d\n",
+        ),
+        (
+            vec!["enable"],
+            "tooob: enable is now run -d: tooob run NAME -d\n",
+        ),
+        (
+            vec!["disable", "photos"],
+            "tooob: disable is now stop (or rm): tooob stop photos\n",
+        ),
+        (
+            vec!["disable"],
+            "tooob: disable is now stop (or rm): tooob stop NAME\n",
+        ),
+    ] {
+        let out = home.tooob(&args);
+        assert!(!out.status.success(), "{args:?}");
+        assert_eq!(stderr(&out), said, "{args:?}");
+    }
+    assert!(entries(&home).is_empty(), "{:?}", entries(&home));
+    assert!(home.calls("launchctl").is_empty());
 }
 
 #[test]
@@ -973,7 +1004,7 @@ fn share_with_no_invite_makes_none_and_serves() {
     assert!(!shared.log().contains("#invite="), "{}", shared.log());
 }
 
-/// What `enable` leaves under the test's HOME: entries for launchd or systemd.
+/// What `run -d` leaves under the test's HOME: entries for launchd or systemd.
 fn entries(home: &Home) -> Vec<std::path::PathBuf> {
     ["Library/LaunchAgents", ".config/systemd/user"]
         .iter()
@@ -987,17 +1018,17 @@ fn entries(home: &Home) -> Vec<std::path::PathBuf> {
 }
 
 #[test]
-fn enable_with_neither_systemd_nor_launchd_says_what_to_have_run_and_writes_nothing() {
+fn run_d_with_neither_systemd_nor_launchd_says_what_to_have_run_and_writes_nothing() {
     let home = Home::new();
     let folder = a_folder();
     home.ok(&["add", "blog", folder.path().to_str().unwrap(), "--local"]);
     home.install_tooob();
 
-    let out = home.tooob(&["enable", "blog"]);
+    let out = home.tooob(&["run", "blog", "-d"]);
     assert!(!out.status.success());
     assert_eq!(
         stderr(&out),
-        "tooob: enable needs systemd or launchd, and this system has neither.\n  \
+        "tooob: keeping blog running needs systemd or launchd, and this system has neither.\n  \
          Have your service manager run `~/.local/bin/tooob run blog` as you, restarting it on \
          failure.\n"
     );
@@ -1011,7 +1042,7 @@ fn crash_log(home: &Home) -> String {
     format!("{}/crash.log", home.shown("photos", "state folder"))
 }
 
-/// The crash log is made by `enable`, so the service manager appends to a file only the Owner's
+/// The crash log is made by `run -d`, so the service manager appends to a file only the Owner's
 /// account reads.
 fn assert_crash_log_is_private(crashes: &str) {
     use std::os::unix::fs::PermissionsExt;
@@ -1025,7 +1056,7 @@ fn uid() -> u32 {
 }
 
 #[test]
-fn enable_with_launchd_writes_a_launch_agent_running_the_installed_tooob_and_loads_it() {
+fn run_d_with_launchd_writes_a_launch_agent_running_the_installed_tooob_and_loads_it() {
     let home = Home::new();
     let folder = a_folder();
     home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
@@ -1034,7 +1065,7 @@ fn enable_with_launchd_writes_a_launch_agent_running_the_installed_tooob_and_loa
     let crashes = crash_log(&home);
     assert_eq!(home.shown("photos", "Autostart"), "no");
 
-    let out = home.tooob(&["enable", "photos"]);
+    let out = home.tooob(&["run", "photos", "-d"]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "");
     let said = stderr(&out);
@@ -1042,7 +1073,13 @@ fn enable_with_launchd_writes_a_launch_agent_running_the_installed_tooob_and_loa
         said.contains("won't idle-sleep") && said.contains("lid"),
         "says a closed lid still sleeps: {said}"
     );
-    assert!(said.contains("tooob logs photos -f"), "{said}");
+    assert!(
+        said.starts_with(
+            "tooob: photos is kept running now, and after logins, reboots and crashes: `tooob \
+             logs photos -f` follows it, and `tooob stop photos` stops it.\n"
+        ),
+        "{said}"
+    );
 
     let agent = home
         .0
@@ -1104,7 +1141,7 @@ fn enable_with_launchd_writes_a_launch_agent_running_the_installed_tooob_and_loa
 }
 
 #[test]
-fn enable_with_systemd_writes_a_user_unit_running_the_installed_tooob_and_starts_it() {
+fn run_d_with_systemd_writes_a_user_unit_running_the_installed_tooob_and_starts_it() {
     let home = Home::new();
     let folder = a_folder();
     home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
@@ -1112,7 +1149,7 @@ fn enable_with_systemd_writes_a_user_unit_running_the_installed_tooob_and_starts
     home.stand_in("systemctl", "");
     let crashes = crash_log(&home);
 
-    let out = home.tooob(&["enable", "photos"]);
+    let out = home.tooob(&["run", "photos", "-d"]);
     assert!(out.status.success(), "{}", stderr(&out));
     let said = stderr(&out);
     assert!(said.contains("loginctl enable-linger"), "{said}");
@@ -1152,7 +1189,7 @@ fn enable_with_systemd_writes_a_user_unit_running_the_installed_tooob_and_starts
 }
 
 #[test]
-fn enable_leaves_nothing_behind_when_the_service_manager_refuses() {
+fn run_d_leaves_nothing_behind_when_the_service_manager_refuses() {
     for (tool, refuses) in [("launchctl", "bootstrap"), ("systemctl", "restart")] {
         let home = Home::new();
         let folder = a_folder();
@@ -1162,7 +1199,7 @@ fn enable_leaves_nothing_behind_when_the_service_manager_refuses() {
             tool,
             &format!("case \"$*\" in *{refuses}*) echo 'no session' >&2; exit 5;; esac"),
         );
-        let out = home.tooob(&["enable", "photos"]);
+        let out = home.tooob(&["run", "photos", "-d"]);
         assert!(!out.status.success(), "{tool}");
         assert!(
             stderr(&out).contains("no session"),
@@ -1175,13 +1212,13 @@ fn enable_leaves_nothing_behind_when_the_service_manager_refuses() {
 }
 
 #[test]
-fn enable_needs_tooob_where_the_install_script_puts_it_and_refuses_a_host_run_by_hand() {
+fn run_d_needs_tooob_where_the_install_script_puts_it_and_refuses_a_host_run_by_hand() {
     let home = Home::new();
     let folder = a_folder();
     home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
     home.stand_in("launchctl", "");
 
-    let out = home.tooob(&["enable", "photos"]);
+    let out = home.tooob(&["run", "photos", "-d"]);
     assert!(!out.status.success());
     let tooob = home.0.path().join(".local/bin/tooob");
     assert_eq!(
@@ -1198,7 +1235,7 @@ fn enable_needs_tooob_where_the_install_script_puts_it_and_refuses_a_host_run_by
 
     home.install_tooob();
     let running = home.start("photos");
-    let out = home.tooob(&["enable", "photos"]);
+    let out = home.tooob(&["run", "photos", "-d"]);
     assert!(!out.status.success());
     let said = stderr(&out);
     assert!(
@@ -1249,73 +1286,7 @@ fn run_as_its_entry(home: &Home) -> support::home::Running {
 }
 
 #[test]
-fn stop_on_an_enabled_host_goes_through_its_service_manager_and_it_stays_enabled() {
-    for (tool, stops) in [
-        (
-            "launchctl",
-            format!("kill SIGTERM gui/{}/net.tooobs.photos", uid()),
-        ),
-        ("systemctl", "--user stop tooob@photos.service".to_string()),
-    ] {
-        let home = Home::new();
-        let folder = a_folder();
-        home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
-        home.install_tooob();
-        let pid = home.stand_ins().join("pid");
-        home.stand_in(
-            tool,
-            &format!(
-                "case \"$*\" in '{stops}') read pid < '{}'; kill -TERM $pid;; esac",
-                pid.display()
-            ),
-        );
-        home.ok(&["enable", "photos"]);
-        let running = run_as_its_entry(&home);
-        std::fs::write(&pid, running.child.id().to_string()).unwrap();
-        assert!(home.row("photos").contains("running"), "{tool}");
-
-        home.ok(&["stop", "photos"]);
-        assert_eq!(home.calls(tool).last(), Some(&stops), "{tool}");
-        let row = home.row("photos");
-        assert!(
-            row.contains("stopped") && row.contains(" yes "),
-            "{tool}: {row}"
-        );
-        assert_eq!(entries(&home).len(), 1, "{tool}: still enabled");
-    }
-}
-
-#[test]
-fn run_rm_and_share_refuse_an_enabled_host_and_say_how_to_follow_it() {
-    let home = Home::new();
-    let folder = a_folder();
-    let path = folder.path().to_str().unwrap();
-    home.ok(&["add", "photos", path, "--local"]);
-    home.install_tooob();
-    home.stand_in("launchctl", "");
-    home.ok(&["enable", "photos"]);
-
-    for args in [vec!["run", "photos"], vec!["share", path]] {
-        let out = home.tooob(&args);
-        assert!(!out.status.success(), "{args:?}");
-        assert_eq!(
-            stderr(&out),
-            "tooob: photos starts by itself, so its service manager runs it: `tooob logs photos \
-             -f` follows it, and `tooob disable photos` turns that off\n",
-            "{args:?}"
-        );
-    }
-    let out = home.tooob(&["rm", "photos"]);
-    assert!(!out.status.success());
-    assert_eq!(
-        stderr(&out),
-        "tooob: photos starts by itself: turn that off first with `tooob disable photos`\n"
-    );
-    assert!(home.row("photos").contains("stopped"));
-}
-
-#[test]
-fn disable_stops_an_enabled_host_and_leaves_no_entry_behind() {
+fn stop_on_a_host_kept_running_stops_it_and_keeps_it_stopped_until_run_d() {
     for (tool, stops, calls) in [
         (
             "launchctl",
@@ -1343,34 +1314,228 @@ fn disable_stops_an_enabled_host_and_leaves_no_entry_behind() {
                 pid.display()
             ),
         );
-        home.ok(&["enable", "photos"]);
-        let enabled = home.calls(tool).len();
+        home.ok(&["run", "photos", "-d"]);
+        let kept = home.calls(tool).len();
         let running = run_as_its_entry(&home);
         std::fs::write(&pid, running.child.id().to_string()).unwrap();
+        assert!(home.row("photos").contains("running"), "{tool}");
 
-        let out = home.tooob(&["disable", "photos"]);
+        let out = home.tooob(&["stop", "photos"]);
         assert!(out.status.success(), "{tool}: {}", stderr(&out));
         assert_eq!(String::from_utf8_lossy(&out.stdout), "", "{tool}");
-        assert_eq!(home.calls(tool)[enabled..], calls, "{tool}");
+        assert_eq!(
+            stderr(&out),
+            "tooob: photos is stopped, and stays stopped across logins and reboots: `tooob run \
+             photos -d` keeps it running again\n",
+            "{tool}"
+        );
+        assert_eq!(home.calls(tool)[kept..], calls, "{tool}");
+        // Nothing its service manager loads at login or boot.
         assert!(entries(&home).is_empty(), "{tool}: {:?}", entries(&home));
         let row = home.row("photos");
         assert!(
             row.contains("stopped") && row.contains(" no "),
             "{tool}: {row}"
         );
-
-        home.ok(&["disable", "photos"]);
         assert_eq!(
-            home.calls(tool)[enabled..],
-            calls,
-            "{tool}: nothing more to do"
+            home.shown("photos", "Autostart"),
+            "no, stopped: `tooob run photos -d` keeps it running again",
+            "{tool}"
         );
-        let _by_hand = home.start("photos");
+        home.until_logged("photos", "photos: stopped");
+
+        home.ok(&["run", "photos", "-d"]);
+        assert!(
+            home.shown("photos", "Autostart").starts_with("yes, "),
+            "{tool}"
+        );
+        assert_eq!(entries(&home).len(), 1, "{tool}: kept running again");
+        assert!(home.row("photos").contains(" yes "), "{tool}");
     }
 }
 
 #[test]
-fn enable_on_an_enabled_host_starts_it_afresh_through_its_service_manager() {
+fn stop_on_a_host_kept_running_that_isnt_running_now_keeps_it_stopped_too() {
+    // Between its crashes, say, or kept running from outside a login session: launchd hasn't
+    // loaded it, and says so.
+    let home = Home::new();
+    let folder = a_folder();
+    home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
+    home.install_tooob();
+    home.stand_in(
+        "launchctl",
+        "case \"$*\" in bootout*) echo 'Boot-out failed: 3: No such process' >&2; exit 3;; esac",
+    );
+    home.ok(&["run", "photos", "-d"]);
+
+    let out = home.tooob(&["stop", "photos"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stderr(&out).contains("stays stopped"), "{}", stderr(&out));
+    assert!(entries(&home).is_empty(), "{:?}", entries(&home));
+    assert!(home.row("photos").contains(" no "));
+}
+
+#[test]
+fn run_and_share_on_a_host_kept_running_never_start_a_second_copy_and_share_adds_its_invites() {
+    let home = Home::new();
+    let folder = a_folder();
+    let path = folder.path().to_str().unwrap();
+    let relay = TestRelay::start();
+    home.ok(&["add", "photos", path, "--relay", &relay.url]);
+    home.install_tooob();
+    home.stand_in("launchctl", "");
+    home.ok(&["run", "photos", "-d"]);
+    let calls = home.calls("launchctl");
+    let _running = run_as_its_entry(&home);
+
+    let out = home.tooob(&["run", "photos"]);
+    assert!(!out.status.success());
+    assert_eq!(
+        stderr(&out),
+        "tooob: photos is kept running in the background, so its service manager runs it: \
+         `tooob logs photos -f` follows it, and `tooob stop photos` stops it\n"
+    );
+
+    for (args, invited) in [
+        (vec!["share", path, "--invite", "Ann"], "Ann"),
+        (vec!["share", path, "--invite", "Bea", "-d"], "Bea"),
+    ] {
+        let out = home.tooob(&args);
+        assert!(out.status.success(), "{args:?}: {}", stderr(&out));
+        let said = stderr(&out);
+        assert!(
+            said.contains(&format!("Invite for {invited} to photos"))
+                && said.ends_with(
+                    "tooob: photos is already running in the background: `tooob logs photos -f` \
+                     follows it, and `tooob stop photos` stops it\n"
+                ),
+            "{args:?}: {said}"
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("/#invite="),
+            "{args:?}"
+        );
+        assert!(
+            home.ok(&["invites", "photos"]).contains(invited),
+            "{args:?}"
+        );
+    }
+    assert_eq!(
+        home.calls("launchctl"),
+        calls,
+        "nothing started or restarted"
+    );
+    assert!(home.row("photos").contains("running"));
+}
+
+#[test]
+fn share_d_adds_a_host_invites_and_keeps_it_running_and_again_once_its_stopped() {
+    let home = Home::new();
+    let folder = a_folder();
+    let path = folder.path().to_str().unwrap();
+    let relay = TestRelay::start();
+    home.install_tooob();
+    home.stand_in("launchctl", "");
+
+    let out = home.tooob(&[
+        "share", path, "--relay", &relay.url, "--invite", "Ann", "-d",
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let said = stderr(&out);
+    assert!(
+        said.contains("Invite for Ann to ") && said.contains("is kept running now"),
+        "{said}"
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("/#invite="));
+    let name = home
+        .ok(&["ls"])
+        .lines()
+        .nth(1)
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_string();
+    assert!(home.ok(&["invites", &name]).contains("Ann"));
+    assert_eq!(entries(&home).len(), 1, "{:?}", entries(&home));
+    let load = format!("bootstrap gui/{} {}", uid(), entries(&home)[0].display());
+    assert_eq!(home.calls("launchctl"), std::slice::from_ref(&load));
+
+    home.ok(&["stop", &name]);
+    let out = home.tooob(&["share", path, "--invite", "Cy", "-d"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(home.ok(&["invites", &name]).contains("Cy"));
+    assert_eq!(entries(&home).len(), 1, "kept running again");
+    assert_eq!(home.calls("launchctl").last(), Some(&load));
+}
+
+#[test]
+fn share_d_that_cant_keep_a_host_running_adds_nothing() {
+    let home = Home::new();
+    let folder = a_folder();
+    let relay = TestRelay::start();
+    home.stand_in("launchctl", "");
+    let path = folder.path().to_str().unwrap();
+    let out = home.tooob(&[
+        "share", path, "--relay", &relay.url, "--invite", "Ann", "-d",
+    ]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("where the install script puts tooob"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(home.ok(&["ls"]).lines().count(), 1, "nothing was added");
+    assert!(home.calls("launchctl").is_empty());
+}
+
+#[test]
+fn rm_on_a_host_kept_running_stops_it_removes_its_entry_and_deletes_it() {
+    for (tool, stops, calls) in [
+        (
+            "launchctl",
+            format!("bootout gui/{}/net.tooobs.photos", uid()),
+            vec![format!("bootout gui/{}/net.tooobs.photos", uid())],
+        ),
+        (
+            "systemctl",
+            "--user disable --now tooob@photos.service".to_string(),
+            vec![
+                "--user disable --now tooob@photos.service".to_string(),
+                "--user daemon-reload".to_string(),
+            ],
+        ),
+    ] {
+        let home = Home::new();
+        let folder = a_folder();
+        home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
+        home.install_tooob();
+        let pid = home.stand_ins().join("pid");
+        home.stand_in(
+            tool,
+            &format!(
+                "case \"$*\" in '{stops}') read pid < '{}'; kill -TERM $pid;; esac",
+                pid.display()
+            ),
+        );
+        home.ok(&["run", "photos", "-d"]);
+        let kept = home.calls(tool).len();
+        let state = home.shown("photos", "state folder");
+        let running = run_as_its_entry(&home);
+        std::fs::write(&pid, running.child.id().to_string()).unwrap();
+
+        let out = home.tooob(&["rm", "photos"]);
+        assert!(out.status.success(), "{tool}: {}", stderr(&out));
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "", "{tool}");
+        assert_eq!(home.calls(tool)[kept..], calls, "{tool}");
+        assert!(entries(&home).is_empty(), "{tool}: {:?}", entries(&home));
+        assert!(!home.ok(&["ls"]).contains("photos"), "{tool}");
+        assert!(!std::path::Path::new(&state).exists(), "{tool}");
+    }
+}
+
+#[test]
+fn a_host_kept_running_by_0_2_0s_enable_stops_runs_d_and_rms_with_the_new_commands() {
     let home = Home::new();
     let folder = a_folder();
     home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
@@ -1384,16 +1549,108 @@ fn enable_on_an_enabled_host_starts_it_afresh_through_its_service_manager() {
             pid.display()
         ),
     );
-    home.ok(&["enable", "photos"]);
+    // The agent as 0.2.0's `tooob enable` wrote it: its output to host.log, and a comment
+    // naming `tooob disable`.
+    home.ok(&["run", "photos", "-d"]);
+    let agent = entries(&home)[0].clone();
+    let crashes = crash_log(&home);
+    let log = format!("{}/host.log", home.shown("photos", "state folder"));
+    let new = std::fs::read_to_string(&agent).unwrap();
+    let old = new.replace(&crashes, &log).replace(
+        "`tooob stop` stops it, and `tooob rm` removes it",
+        "`tooob disable` removes it",
+    );
+    assert_ne!(old, new);
+    std::fs::write(&agent, &old).unwrap();
+    let running = run_as_its_entry(&home);
+    std::fs::write(&pid, running.child.id().to_string()).unwrap();
+    let calls = home.calls("launchctl").len();
+
+    home.ok(&["stop", "photos"]);
+    assert_eq!(home.calls("launchctl")[calls..], [unload.as_str()]);
+    assert!(entries(&home).is_empty(), "{:?}", entries(&home));
+    assert!(home.row("photos").contains(" no "));
+
+    home.ok(&["run", "photos", "-d"]);
+    assert_eq!(
+        std::fs::read_to_string(&agent).unwrap(),
+        new,
+        "written afresh, as this tooob writes it"
+    );
+    let running = run_as_its_entry(&home);
+    std::fs::write(&pid, running.child.id().to_string()).unwrap();
+    home.ok(&["rm", "photos"]);
+    assert_eq!(home.calls("launchctl").last(), Some(&unload));
+    assert!(entries(&home).is_empty(), "{:?}", entries(&home));
+    assert!(!home.ok(&["ls"]).contains("photos"));
+}
+
+#[test]
+fn rm_on_a_host_stop_keeps_stopped_deletes_it_and_what_was_put_by() {
+    let home = Home::new();
+    let folder = a_folder();
+    home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
+    home.install_tooob();
+    home.stand_in("launchctl", "");
+    home.ok(&["run", "photos", "-d"]);
+    home.ok(&["stop", "photos"]);
+    let state = home.shown("photos", "state folder");
+    let calls = home.calls("launchctl").len();
+
+    home.ok(&["rm", "photos"]);
+    assert_eq!(home.calls("launchctl").len(), calls, "nothing to unload");
+    assert!(!std::path::Path::new(&state).exists());
+    assert!(entries(&home).is_empty(), "{:?}", entries(&home));
+}
+
+#[test]
+fn run_d_on_a_host_kept_running_says_so_while_it_runs_and_starts_it_afresh_when_it_doesnt() {
+    let home = Home::new();
+    let folder = a_folder();
+    home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
+    home.install_tooob();
+    let pid = home.stand_ins().join("pid");
+    let unload = format!("bootout gui/{}/net.tooobs.photos", uid());
+    home.stand_in(
+        "launchctl",
+        &format!(
+            "case \"$*\" in '{unload}') read pid < '{}'; kill -TERM $pid;; esac",
+            pid.display()
+        ),
+    );
+    home.ok(&["run", "photos", "-d"]);
+    let agent = entries(&home)[0].clone();
+    let load = format!("bootstrap gui/{} {}", uid(), agent.display());
     let running = run_as_its_entry(&home);
     std::fs::write(&pid, running.child.id().to_string()).unwrap();
 
-    home.ok(&["enable", "photos"]);
-    let agent = entries(&home)[0].clone();
-    let load = format!("bootstrap gui/{} {}", uid(), agent.display());
-    assert_eq!(home.calls("launchctl"), [load.clone(), unload, load]);
-    home.until_logged("photos", "photos: stopped");
+    let out = home.tooob(&["run", "photos", "-d"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stderr(&out),
+        "tooob: photos is already running in the background: `tooob logs photos -f` follows \
+         it, and `tooob stop photos` stops it\n"
+    );
+    assert_eq!(
+        home.calls("launchctl"),
+        std::slice::from_ref(&load),
+        "nothing restarted"
+    );
+    assert!(home.row("photos").contains("running"));
+
+    // Its service manager gave up on it, say: started afresh, from its entry rewritten.
     drop(running);
+    while home.row("photos").contains("running") {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let out = home.tooob(&["run", "photos", "-d"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("is kept running now"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(home.calls("launchctl"), [load.clone(), unload, load]);
 }
 
 #[test]
@@ -1406,37 +1663,6 @@ fn logs_with_no_host_name_lists_the_hosts() {
     assert_eq!(
         stderr(&out),
         "tooob: say which Host's log (Hosts here: films, photos):\n  tooob logs NAME\n"
-    );
-}
-
-#[test]
-fn enable_and_disable_with_no_host_name_list_the_hosts_they_could_mean() {
-    let home = Home::new();
-    let folder = a_folder();
-    home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
-    home.ok(&["add", "films", "127.0.0.1:8096", "--local"]);
-    home.install_tooob();
-    home.stand_in("launchctl", "");
-    let fails = |args: &[&str]| {
-        let out = home.tooob(args);
-        assert!(!out.status.success(), "{args:?}");
-        stderr(&out)
-    };
-    assert_eq!(
-        fails(&["disable"]),
-        "tooob: say which Host to stop starting by itself (none starts by itself):\n  \
-         tooob disable NAME\n"
-    );
-    home.ok(&["enable", "photos"]);
-    assert_eq!(
-        fails(&["enable"]),
-        "tooob: say which Host to start by itself (Hosts here: films, photos):\n  \
-         tooob enable NAME\n"
-    );
-    assert_eq!(
-        fails(&["disable"]),
-        "tooob: say which Host to stop starting by itself (starting by itself: photos):\n  \
-         tooob disable NAME\n"
     );
 }
 
@@ -1481,7 +1707,7 @@ fn a_host_keeps_the_mac_from_idle_sleeping_while_it_serves_and_lets_it_once_it_s
 }
 
 #[test]
-fn enable_with_systemctl_but_no_systemd_running_says_what_to_have_run_and_writes_nothing() {
+fn run_d_with_systemctl_but_no_systemd_running_says_what_to_have_run_and_writes_nothing() {
     // A container or WSL: systemctl is there, but systemd isn't what booted the box.
     let home = Home::new();
     let folder = a_folder();
@@ -1492,11 +1718,11 @@ fn enable_with_systemctl_but_no_systemd_running_says_what_to_have_run_and_writes
         "case \"$*\" in is-system-running) echo offline; exit 1;; esac",
     );
 
-    let out = home.tooob(&["enable", "blog"]);
+    let out = home.tooob(&["run", "blog", "-d"]);
     assert!(!out.status.success());
     assert_eq!(
         stderr(&out),
-        "tooob: enable needs systemd or launchd, and this system has neither.\n  \
+        "tooob: keeping blog running needs systemd or launchd, and this system has neither.\n  \
          Have your service manager run `~/.local/bin/tooob run blog` as you, restarting it on \
          failure.\n"
     );
@@ -1505,13 +1731,13 @@ fn enable_with_systemctl_but_no_systemd_running_says_what_to_have_run_and_writes
 }
 
 #[test]
-fn enable_makes_a_launch_agent_for_any_host_name() {
+fn run_d_makes_a_launch_agent_for_any_host_name() {
     let home = Home::new();
     home.install_tooob();
     home.stand_in("launchctl", "");
     for name in ["a--b", "b-", "-c", "_"] {
         home.ok(&["add", name, "127.0.0.1:8096", "--local"]);
-        home.ok(&["enable", name]);
+        home.ok(&["run", name, "-d"]);
         let agent = home
             .0
             .path()

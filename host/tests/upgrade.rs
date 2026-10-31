@@ -440,7 +440,7 @@ fn pid_in(file: &std::path::Path) -> u32 {
 }
 
 #[test]
-fn after_an_upgrade_enabled_hosts_run_the_new_release_and_hosts_run_by_hand_are_named() {
+fn after_an_upgrade_hosts_kept_running_run_the_new_release_and_hosts_run_by_hand_are_named() {
     for (tool, stop, start) in [
         (
             "launchctl",
@@ -478,15 +478,15 @@ fn after_an_upgrade_enabled_hosts_run_the_new_release_and_hosts_run_by_hand_are_
             true => format!("case \"$*\" in '{stop}') {stops}; {starts};; esac"),
             false => format!("case \"$*\" in '{stop}') {stops};; '{start}') {starts};; esac"),
         };
-        // Only once it's enabled: enabling it with systemd restarts it too.
+        // Only once it's kept running: `run -d` with systemd restarts it too.
         let armed = home.stand_ins().join("armed");
         home.stand_in(
             tool,
             &format!("[ -e '{}' ] || exit 0\n{then}", armed.display()),
         );
-        home.ok(&["enable", "photos"]);
+        home.ok(&["run", "photos", "-d"]);
         std::fs::write(&armed, "").unwrap();
-        let enabled = home.calls(tool).len();
+        let kept = home.calls(tool).len();
         let photos = home.spawn_with(&["run", "photos"], &[("TOOOB_AUTOSTART", "photos")]);
         home.until_logged("photos", "photos: serving ");
         std::fs::write(&pid, photos.child.id().to_string()).unwrap();
@@ -498,7 +498,7 @@ fn after_an_upgrade_enabled_hosts_run_the_new_release_and_hosts_run_by_hand_are_
         let _cleanup = Killed(restarted);
         let mut calls = vec![stop.clone(), start.clone()];
         calls.dedup();
-        assert_eq!(home.calls(tool)[enabled..], calls, "{tool}");
+        assert_eq!(home.calls(tool)[kept..], calls, "{tool}");
         home.until_logged("photos", "photos: stopped");
         drop(photos);
         let said = stderr(&out);
@@ -627,7 +627,7 @@ fn no_update_check_stops_the_lookup_and_on_the_newest_release_nothing_is_said() 
 }
 
 #[test]
-fn a_host_enabled_with_no_update_check_set_keeps_it_off_when_its_service_manager_runs_it() {
+fn a_host_kept_running_with_no_update_check_set_keeps_it_off_when_its_service_manager_runs_it() {
     for (tool, entry) in [
         ("launchctl", "Library/LaunchAgents/net.tooobs.photos.plist"),
         ("systemctl", ".config/systemd/user/tooob@photos.service"),
@@ -637,7 +637,7 @@ fn a_host_enabled_with_no_update_check_set_keeps_it_off_when_its_service_manager
         home.ok(&["add", "photos", photos.path().to_str().unwrap(), "--local"]);
         home.install_tooob();
         home.stand_in(tool, "");
-        let out = home.tooob_with(&["enable", "photos"], &[("TOOOB_NO_UPDATE_CHECK", "1")]);
+        let out = home.tooob_with(&["run", "photos", "-d"], &[("TOOOB_NO_UPDATE_CHECK", "1")]);
         assert!(out.status.success(), "{tool}: {}", stderr(&out));
         let text = std::fs::read_to_string(home.0.path().join(entry)).unwrap();
         assert!(

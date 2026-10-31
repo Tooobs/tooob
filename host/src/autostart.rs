@@ -95,15 +95,17 @@ fn launchd_service(name: &str) -> String {
     format!("{}/{}", launchd_domain(), label(name))
 }
 
-/// Turn Autostart on for `host`, and start it now: through its service manager, from scratch if
-/// it was on already. Nothing is left behind when the service manager refuses. What to tell the
-/// Owner, a line each.
-pub fn enable(host: &Entry) -> Result<Vec<String>> {
+/// Whether `host` can be kept running here: this box's service manager, if it has one, and tooob
+/// where the install script puts it, which the entry runs. Checked by `keep_running` before it
+/// changes anything, and by anything that must know before it stops a Host serving in a terminal
+/// (#97): each refusal says what to type instead.
+pub fn can_keep_running(name: &str) -> Result<ServiceManager> {
     let neither = || {
         anyhow!(
-            "enable needs systemd or launchd, and this system has neither.\n  Have your service \
-             manager run `~/.local/bin/tooob run {}` as you, restarting it on failure.",
-            host.name
+            "keeping {0} running needs systemd or launchd, and this system has neither.\n  Have \
+             your service manager run `~/.local/bin/tooob run {0}` as you, restarting it on \
+             failure.",
+            name
         )
     };
     let manager = ServiceManager::here().ok_or_else(neither)?;
@@ -116,22 +118,29 @@ pub fn enable(host: &Entry) -> Result<Vec<String>> {
         bail!(
             "{} would start from {}, where the install script puts tooob, and it isn't there: \
              install tooob, or put this one there:\n  mkdir -p {} && cp {} {}",
-            host.name,
+            name,
             tooob.display(),
             quote(path(tooob.parent().unwrap())?),
             quote(path(&this)?),
             quote(path(&tooob)?),
         );
     }
+    Ok(manager)
+}
+
+/// `tooob run NAME -d`: keep `host` running, now and after logins, reboots and crashes, by
+/// writing its entry and starting it through its service manager, from scratch if it had one
+/// already. tooob never backgrounds it itself (ADR 0014). Nothing is left behind when the service
+/// manager refuses. What to tell the Owner, a line each.
+pub fn keep_running(host: &Entry) -> Result<Vec<String>> {
+    let manager = can_keep_running(&host.name)?;
+    let tooob = installed_tooob()?;
     let file = entry_file(host).context("no entry")?;
     let was_on = file.exists();
-    if let Some(pid) = host.running().filter(|_| !was_on) {
-        bail!(
-            "{0} is running here (pid {pid}), started by hand: stop it first (Ctrl-C where it \
-             runs, or `tooob stop {0}`), then enable it",
-            host.name
-        );
+    if was_on && host.running().is_some() {
+        return Ok(vec![already_running(&host.name)]);
     }
+    not_run_by_hand(host)?;
     if was_on && manager == ServiceManager::Launchd {
         // launchd loads an agent once: unload it (stopping the Host) to load what's written now.
         let _ = call("launchctl", &["bootout", &launchd_service(&host.name)]);
@@ -175,11 +184,12 @@ pub fn enable(host: &Entry) -> Result<Vec<String>> {
         }
         return Err(e);
     }
+    // Kept running again: whatever `tooob stop` put by is done with.
+    if let Some(kept) = stopped_entry_file(host) {
+        let _ = std::fs::remove_file(kept);
+    }
     let name = &host.name;
-    let mut said = vec![format!(
-        "{name} starts by itself now, at login and again after a failure; `tooob logs {name} -f` \
-         follows its log."
-    )];
+    let mut said = vec![kept_running(name)];
     said.push(match manager {
         ServiceManager::Launchd => {
             "While it serves, this Mac won't idle-sleep, but closing its lid still sleeps it."
@@ -192,9 +202,41 @@ pub fn enable(host: &Entry) -> Result<Vec<String>> {
     Ok(said)
 }
 
-/// Turn Autostart off for `host`: stop it through its service manager and remove its entry, which
-/// goes whatever the service manager says. Nothing to do when it's off.
-pub fn disable(host: &Entry) -> Result<()> {
+/// Refused while `host` runs by hand, with no entry: `-d` would start a second copy.
+pub fn not_run_by_hand(host: &Entry) -> Result<()> {
+    if let Some(pid) = host.running().filter(|_| !is_on(host)) {
+        bail!(
+            "{0} is running here (pid {pid}), started by hand: stop it first (Ctrl-C where it \
+             runs, or `tooob stop {0}`), then `tooob run {0} -d`",
+            host.name
+        );
+    }
+    Ok(())
+}
+
+/// What `keep_running` says first: that `name` is kept running, and how to follow and stop it.
+pub fn kept_running(name: &str) -> String {
+    format!(
+        "{name} is kept running now, and after logins, reboots and crashes: `tooob logs {name} \
+         -f` follows it, and `tooob stop {name}` stops it."
+    )
+}
+
+/// What `-d` says of a Host its service manager is running already: nothing is changed.
+pub fn already_running(name: &str) -> String {
+    format!(
+        "{name} is already running in the background: `tooob logs {name} -f` follows it, and \
+         `tooob stop {name}` stops it"
+    )
+}
+
+/// For `tooob rm`: stop `host` through its service manager and remove its entry, which goes
+/// whatever the service manager says, and whatever `tooob stop` put by. Nothing to do when it was
+/// never kept running.
+pub fn remove(host: &Entry) -> Result<()> {
+    if let Some(kept) = stopped_entry_file(host) {
+        let _ = std::fs::remove_file(kept);
+    }
     let Some(file) = entry_file(host).filter(|file| file.exists()) else {
         return Ok(());
     };
@@ -209,26 +251,64 @@ pub fn disable(host: &Entry) -> Result<()> {
     if ServiceManager::here() == Some(ServiceManager::Systemd) {
         let _ = systemctl(&["daemon-reload"]);
     }
-    // launchd refuses to unload an agent it never loaded (one enabled outside a login session):
-    // that's only a problem if the Host still runs.
+    // launchd refuses to unload an agent it never loaded (one kept running from outside a login
+    // session): that's only a problem if the Host still runs.
     match host.until_stopped() {
         Ok(()) => Ok(()),
         Err(e) => Err(stopped.err().unwrap_or(e)),
     }
 }
 
-/// Stop `host`, whose Autostart is on, through its service manager: it stays stopped, and starts
-/// by itself again at the next login.
+/// `tooob stop` on `host`, whose Autostart is on: stop it through its service manager and keep it
+/// stopped, across logins and reboots. Its entry is unloaded (launchd) or disabled (systemd), and
+/// moved into its state folder, where nothing loads it at login or boot, and where `start` (#100)
+/// finds it to start it again the way it ran. The entry stays where it was if the Host won't stop.
 pub fn stop(host: &Entry) -> Result<()> {
-    match ServiceManager::here() {
-        Some(ServiceManager::Launchd) => call(
-            "launchctl",
-            &["kill", "SIGTERM", &launchd_service(&host.name)],
-        )?,
-        Some(ServiceManager::Systemd) => systemctl(&["stop", &unit(&host.name)])?,
-        None => bail!("no service manager runs {}", host.name),
+    let Some(file) = entry_file(host).filter(|file| file.exists()) else {
+        return Ok(());
+    };
+    let manager = ServiceManager::here();
+    let stopped = match manager {
+        Some(ServiceManager::Launchd) => {
+            call("launchctl", &["bootout", &launchd_service(&host.name)])
+        }
+        Some(ServiceManager::Systemd) => systemctl(&["disable", "--now", &unit(&host.name)]),
+        None => Ok(()),
+    };
+    // launchd refuses to unload an agent it hasn't loaded (between crashes, or one kept running
+    // from outside a login session): that's only a problem if the Host still runs.
+    if let Err(e) = host.until_stopped() {
+        return Err(stopped.err().unwrap_or(e));
     }
-    host.until_stopped()
+    let kept = stopped_entry_file(host).context("no entry")?;
+    move_file(&file, &kept)?;
+    if manager == Some(ServiceManager::Systemd) {
+        let _ = systemctl(&["daemon-reload"]);
+    }
+    Ok(())
+}
+
+/// Whether `host` was kept running and `tooob stop` stopped it: its entry is put by, to start it
+/// again the way it ran (#100).
+pub fn is_kept_stopped(host: &Entry) -> bool {
+    stopped_entry_file(host).is_some_and(|file| file.exists())
+}
+
+/// Where `tooob stop` puts `host`'s entry by: in its state folder, out of its service manager's
+/// sight. None without a service manager.
+pub fn stopped_entry_file(host: &Entry) -> Option<PathBuf> {
+    let entry = entry_file(host)?;
+    let name = entry.file_name()?.to_string_lossy().into_owned();
+    Some(host.state_dir.join(format!("{name}.stopped")))
+}
+
+/// Move `from` to `to`, which may be on another file system (a `TOOOB_HOME` elsewhere).
+fn move_file(from: &Path, to: &Path) -> Result<()> {
+    if std::fs::rename(from, to).is_err() {
+        std::fs::copy(from, to)?;
+        std::fs::remove_file(from)?;
+    }
+    Ok(())
 }
 
 /// Restart `host`, whose Autostart is on and which runs as `pid`, through its service manager, so
@@ -299,8 +379,8 @@ fn systemctl(args: &[&str]) -> Result<()> {
 }
 
 /// What the entry sets in the Host's environment: that it's the entry's own `tooob run` (which
-/// `run` allows for an enabled Host), where its Hosts are, when that isn't the default, and that
-/// its release check is off, when `TOOOB_NO_UPDATE_CHECK` says so as it's enabled.
+/// `run` allows for a Host kept running), where its Hosts are, when that isn't the default, and
+/// that its release check is off, when `TOOOB_NO_UPDATE_CHECK` says so as `-d` writes it.
 fn environment(host: &Entry) -> Result<Vec<(&'static str, String)>> {
     let mut env = vec![(AUTOSTART, host.name.clone())];
     if crate::upgrade::release_check_off() {
@@ -345,7 +425,7 @@ fn plist(host: &Entry, tooob: &Path) -> Result<String> {
     Ok(format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- tooob's Autostart for the Host its Label names: `tooob disable` removes it. -->
+<!-- tooob's Autostart for the Host its Label names: `tooob stop` stops it, and `tooob rm` removes it. -->
 <plist version="1.0">
 <dict>
 	<key>Label</key>
@@ -400,7 +480,8 @@ fn systemd_unit(host: &Entry, tooob: &Path) -> Result<String> {
         .map(|(k, v)| format!("Environment={}\n", quoted(&format!("{k}={v}"))))
         .collect();
     Ok(format!(
-        "# tooob's Autostart for the Host {name}: `tooob disable {name}` removes it.\n\
+        "# tooob's Autostart for the Host {name}: `tooob stop {name}` stops it, and `tooob rm \
+         {name}` removes it.\n\
          [Unit]\n\
          Description=tooob Host {name}\n\
          \n\
