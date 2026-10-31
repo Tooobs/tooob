@@ -299,10 +299,10 @@ fn systemctl(args: &[&str]) -> Result<()> {
 
 /// What the entry sets in the Host's environment: that it's the entry's own `tooob run` (which
 /// `run` allows for an enabled Host), where its Hosts are, when that isn't the default, and that
-/// it looks for no newer Release, when `TOOOB_NO_UPDATE_CHECK` says so as it's enabled.
+/// its release check is off, when `TOOOB_NO_UPDATE_CHECK` says so as it's enabled.
 fn environment(host: &Entry) -> Result<Vec<(&'static str, String)>> {
     let mut env = vec![(AUTOSTART, host.name.clone())];
-    if crate::upgrade::lookups_off() {
+    if crate::upgrade::release_check_off() {
         env.push(("TOOOB_NO_UPDATE_CHECK", "1".to_string()));
     }
     if let Some(dir) = std::env::var_os("TOOOB_HOME") {

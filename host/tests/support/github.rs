@@ -25,6 +25,8 @@ struct Shared {
     releases: Arc<Mutex<Vec<Published>>>,
     /// Every path asked for, in order.
     asked: Arc<Mutex<Vec<String>>>,
+    /// Whether its API refuses everyone, as GitHub's does past its rate limit.
+    refusing: Arc<Mutex<bool>>,
 }
 
 /// The stand-in GitHub; stopped when dropped.
@@ -79,6 +81,11 @@ impl TestGitHub {
         });
     }
 
+    /// From now on, its API answers 403 Forbidden, as GitHub's does past its rate limit.
+    pub fn refuse(&self) {
+        *self.shared.refusing.lock().unwrap() = true;
+    }
+
     /// Every path asked for so far, in order.
     pub fn asked(&self) -> Vec<String> {
         self.shared.asked.lock().unwrap().clone()
@@ -121,6 +128,9 @@ fn note(shared: &Shared, path: String) {
 
 async fn list(State(shared): State<Shared>, uri: axum::http::Uri) -> Response {
     note(&shared, uri.to_string());
+    if *shared.refusing.lock().unwrap() {
+        return (StatusCode::FORBIDDEN, r#"{"message": "rate limited"}"#).into_response();
+    }
     // Newest first, as GitHub lists them, with a draft nobody should see.
     let mut all: Vec<serde_json::Value> =
         shared.releases.lock().unwrap().iter().map(json).collect();

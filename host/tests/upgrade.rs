@@ -351,9 +351,28 @@ fn once_each_relay_serves_the_new_bootstrap_or_cant_be_reached_the_upgrade_goes_
         gone.url.clone()
     };
     relay.serve_bootstrap(Some(version_json(&newer(1), "tooob/7")));
+    let none = TestRelay::bootstrap_only();
+    let films = a_folder();
+    home.ok(&[
+        "add",
+        "films",
+        films.path().to_str().unwrap(),
+        "--relay",
+        &none.url,
+    ]);
+    none.serve_bootstrap(None);
 
     let out = home.tooob(&["upgrade", "--yes"]);
     assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains(&format!(
+            "tooob: warning: films's Relay {} serves no Bootstrap, so it's on a Bootstrap \
+             Mismatch whichever Release it runs: ",
+            none.url
+        )),
+        "{}",
+        stderr(&out)
+    );
     assert!(
         stderr(&out).contains(&format!(
             "tooob: warning: can't check blog's Relay {gone}, so can't tell whether tooob {} \
@@ -624,6 +643,102 @@ fn a_host_enabled_with_no_update_check_set_keeps_it_off_when_its_service_manager
             text.contains("<key>TOOOB_NO_UPDATE_CHECK</key>\n\t\t<string>1</string>")
                 || text.contains("Environment=\"TOOOB_NO_UPDATE_CHECK=1\""),
             "{tool}: {text}"
+        );
+    }
+}
+
+#[test]
+fn without_a_terminal_the_refusal_comes_before_any_relay_is_checked() {
+    let home = Home::new();
+    let github = TestGitHub::start();
+    github.publish(THIS, Some(tooob::PROTOCOL_VERSION));
+    github.publish(&newer(1), Some("tooob/7"));
+    home.releases_at(&github.url);
+    home.install_tooob();
+    let relay = TestRelay::bootstrap_only();
+    let photos = a_folder();
+    home.ok(&[
+        "add",
+        "photos",
+        photos.path().to_str().unwrap(),
+        "--relay",
+        &relay.url,
+    ]);
+
+    let out = home.tooob(&["upgrade"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).ends_with("\n  tooob upgrade --yes\n") && !stderr(&out).contains("Mismatch"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn a_lookup_that_fails_counts_too_so_hosts_dont_ask_github_again_until_the_next_day() {
+    let (home, github) = with_releases();
+    github.refuse();
+    let (photos, blog) = (a_folder(), a_folder());
+    home.ok(&["add", "photos", photos.path().to_str().unwrap(), "--local"]);
+    home.ok(&["add", "blog", blog.path().to_str().unwrap(), "--local"]);
+
+    let _photos = home.start("photos");
+    let started = std::time::Instant::now();
+    while github.lookups() < 1 {
+        assert!(started.elapsed().as_secs() < 10, "it never looked");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let _blog = home.start("blog");
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    assert_eq!(github.lookups(), 1, "{:?}", github.asked());
+}
+
+#[test]
+fn in_a_container_a_newer_release_says_to_pull_the_new_image() {
+    let (home, _github) = with_releases();
+    let photos = a_folder();
+    home.ok(&["add", "photos", photos.path().to_str().unwrap(), "--local"]);
+    let in_container = [("TOOOB_IN_CONTAINER", "1")];
+
+    let photos = home.start_with("photos", &in_container);
+    let said = format!("tooob {} is out: pull the new image", newer(1));
+    photos.until_it_says(&format!("photos: {said}\n"));
+    let out = home.tooob_with(&["ls"], &in_container);
+    assert!(
+        stdout(&out).ends_with(&format!("\n\n{said}\n")),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn releases_url_must_be_https_or_this_machine_and_a_release_number_is_strict() {
+    let (home, _github) = with_releases();
+    home.install_tooob();
+    let out = home.tooob_with(
+        &["upgrade", "--check"],
+        &[("TOOOB_RELEASES_URL", "http://releases.example/")],
+    );
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("TOOOB_RELEASES_URL must be https://, or http:// to this machine"),
+        "{}",
+        stderr(&out)
+    );
+    for wanted in [
+        "+0.2.0",
+        "0.+2.0",
+        "0.2.0-rc.01",
+        "00.2.0",
+        "0.2.0-beta.1",
+        "0.2",
+    ] {
+        let out = home.tooob(&["upgrade", wanted, "--check"]);
+        assert!(!out.status.success(), "{wanted}");
+        assert!(
+            stderr(&out).contains(&format!("{wanted:?} isn't a Release")),
+            "{wanted}: {}",
+            stderr(&out)
         );
     }
 }

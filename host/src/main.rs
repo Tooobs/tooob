@@ -3,7 +3,7 @@
 //! terminal closes is the operating system's job, never tooob's (ADR 0014). Owner commands talk to
 //! a running Host over its control socket (ADR 0010).
 use anyhow::{Context, Result, bail};
-use std::{collections::HashMap, path::Path, time::Duration};
+use std::{collections::HashMap, io::IsTerminal, path::Path, time::Duration};
 use tokio::signal::unix::{SignalKind, signal};
 use tooob::Network;
 use tooob::access::InviteOptions;
@@ -16,7 +16,7 @@ use tooob::hosts::{
     Entry, Home, NO_RELAY, RUN_YOUR_OWN, check_relay, name_char, no_invite_links, no_key_address,
     quote,
 };
-use tooob::upgrade::{self, Relays, Releases, Version};
+use tooob::upgrade::{self, Relays, ReleaseNumber, Releases};
 
 // musl's own allocator costs ~22% more CPU per byte served than glibc's (measured in #59), so
 // Linux Releases, which are static musl builds, use mimalloc.
@@ -137,7 +137,8 @@ async fn run() -> Result<()> {
         }
         Some("run") => {
             exactly(2, &[])?;
-            serve(&named(&home, &typed, "run", words.get(1))?, Vec::new()).await?;
+            let host = named(&home, &typed, "run", words.get(1))?;
+            serve(&host, home.state_dir(), Vec::new()).await?;
         }
         Some("share") => share(&home, &typed, &words, &flags, &invitees).await?,
         Some("ls") => {
@@ -284,7 +285,7 @@ async fn share(
     for warning in warnings(given, &path) {
         eprintln!("tooob: warning: {warning}");
     }
-    serve(&host, who).await
+    serve(&host, home.state_dir(), who).await
 }
 
 /// How many folders and files `share` looks through for what an Owner may not mean to hand out: a
@@ -438,7 +439,7 @@ async fn ls(home: &Home, json: bool) -> Result<()> {
             r.serves
         );
     }
-    if let Some(newer) = upgrade::newer_known(home.state_dir()) {
+    if let Some(newer) = upgrade::newer_release_known(home.state_dir()) {
         println!("\n{}", upgrade::is_out(&newer));
     }
     Ok(())
@@ -670,7 +671,8 @@ fn lasting(duration: Duration) -> String {
 
 /// `tooob run`: serve a Host here, holding the lock on its state, with its settings as its file
 /// says now. One process per Host: a second is refused, with the first one's pid.
-async fn serve(host: &Entry, invitees: Vec<Invitee>) -> Result<()> {
+/// `state` is its Home's state folder, where the box's release checks are kept.
+async fn serve(host: &Entry, state: &Path, invitees: Vec<Invitee>) -> Result<()> {
     if autostart::is_on(host) && !autostart::started_by_its_entry(host) {
         bail!(
             "{0} starts by itself, so its service manager runs it: `tooob logs {0} -f` follows \
@@ -703,7 +705,7 @@ async fn serve(host: &Entry, invitees: Vec<Invitee>) -> Result<()> {
             problem.at(&host.settings.relay)
         );
     }
-    serve_here(host, site, network, bootstrap, invitees).await
+    serve_here(host, state, site, network, bootstrap, invitees).await
 }
 
 /// How often a running Host checks its Relay's Bootstrap again: every 10 minutes, or as
@@ -712,9 +714,9 @@ fn check_every() -> Result<Duration> {
     every("TOOOB_BOOTSTRAP_CHECK_EVERY", Duration::from_secs(10 * 60))
 }
 
-/// How often a running Host looks for a newer Release: once a day for the whole box, or as
-/// `TOOOB_UPDATE_CHECK_EVERY` says (`1s`), which tests use.
-fn update_check_every() -> Result<Duration> {
+/// How often a running Host's release check looks for a newer Release: once a day for the whole
+/// box, or as `TOOOB_UPDATE_CHECK_EVERY` says (`1s`), which tests use.
+fn release_check_every() -> Result<Duration> {
     every("TOOOB_UPDATE_CHECK_EVERY", Duration::from_secs(86_400))
 }
 
@@ -735,13 +737,14 @@ fn every(var: &str, default: Duration) -> Result<Duration> {
 /// closes every Visitor's connection, so their browsers know at once. Its log goes to stderr.
 async fn serve_here(
     host: &Entry,
+    state: &Path,
     site: Site,
     network: Network,
     bootstrap: Option<Result<BootstrapVersion, Problem>>,
     invitees: Vec<Invitee>,
 ) -> Result<()> {
     let check_every = check_every()?;
-    let update_check_every = update_check_every()?;
+    let release_check_every = release_check_every()?;
     // Listening from before the Host starts, so a stop while it's still coming up is clean too.
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;
@@ -793,11 +796,8 @@ async fn serve_here(
         let watch = Watch::new(&host.settings.relay, &first);
         bootstrap::keep_checking(name, watch, running.control(), check_every)
     });
-    // A Host's state folder is in its Home's, where the box's newest Release is kept.
-    let _looking = match (upgrade::lookups_off(), host.state_dir.parent()) {
-        (false, Some(state)) => Some(upgrade::keep_looking(name, state, update_check_every)),
-        _ => None,
-    };
+    let _release_checks = (!upgrade::release_check_off())
+        .then(|| upgrade::keep_checking_releases(name, state, release_check_every));
     // Browsers reach a Host only through its Relay, so until it's there, its links lead nowhere.
     let online = async {
         let wait = Duration::from_secs(15);
@@ -920,22 +920,22 @@ async fn logs(host: &Entry, follow: bool) -> Result<()> {
 /// VERSION names, through that Release's own installer, only when the Owner says so (ADR 0024).
 async fn upgrade(home: &Home, typed: &Typed, wanted: Option<&String>, flags: &Flags) -> Result<()> {
     let releases = Releases::from_env()?;
-    let this = Version::this();
+    let this = ReleaseNumber::this();
     let target = match wanted {
         None => {
             let newest = releases.newest().await?;
-            if newest.version <= this {
+            if newest.number <= this {
                 println!("tooob {this} is the newest Release");
                 return Ok(());
             }
             println!(
                 "tooob {} is out (this is {this}): {}",
-                newest.version, newest.notes
+                newest.number, newest.notes
             );
             newest
         }
         Some(wanted) => {
-            let Some(version) = Version::parse(wanted) else {
+            let Some(version) = ReleaseNumber::parse(wanted) else {
                 bail!("{wanted:?} isn't a Release: say one like 0.2.0");
             };
             if version == this {
@@ -956,20 +956,26 @@ async fn upgrade(home: &Home, typed: &Typed, wanted: Option<&String>, flags: &Fl
         return Ok(());
     }
     upgrade::replaceable(&releases, &target)?;
-    let version = &target.version;
+    let version = &target.number;
+    let yes = flags.contains_key("yes");
+    if !yes && !std::io::stdin().is_terminal() {
+        return Err(typed.missing(
+            &format!("there's no terminal here to ask in, so say --yes to install tooob {version}"),
+            "--yes",
+        ));
+    }
     let checked = match flags.contains_key("anyway") {
-        true => Relays::Fine {
-            warnings: Vec::new(),
-        },
-        false => upgrade::check_relays(home, &target).await,
+        true => None,
+        false => Some(upgrade::check_relays(home, &target).await),
     };
     let warnings = match checked {
-        Relays::Fine { warnings } => warnings,
-        Relays::Mismatch {
+        None => Vec::new(),
+        Some(Relays::Fine { warnings }) => warnings,
+        Some(Relays::Mismatch {
             speaks,
             stranded,
             warnings,
-        } => {
+        }) => {
             for warning in warnings {
                 eprintln!("tooob: warning: {warning}");
             }
@@ -984,7 +990,7 @@ async fn upgrade(home: &Home, typed: &Typed, wanted: Option<&String>, flags: &Fl
                 "--anyway",
             ));
         }
-        Relays::CantTell => {
+        Some(Relays::CantTell) => {
             return Err(typed.missing(
                 &format!(
                     "tooob {version}'s notes don't say which Protocol Version it speaks, so \
@@ -998,7 +1004,7 @@ async fn upgrade(home: &Home, typed: &Typed, wanted: Option<&String>, flags: &Fl
     for warning in warnings {
         eprintln!("tooob: warning: {warning}");
     }
-    if !flags.contains_key("yes") && !asked_yes(typed, &target.version)? {
+    if !yes && !asked_yes(version)? {
         eprintln!("tooob: nothing installed");
         return Ok(());
     }
@@ -1011,7 +1017,7 @@ async fn upgrade(home: &Home, typed: &Typed, wanted: Option<&String>, flags: &Fl
 /// After an upgrade to `version`: restart each running Host that starts by itself, through its
 /// service manager, so it runs `version`, and name the Hosts run by hand, which keep the Release
 /// they started with until they're restarted.
-fn restart_after_upgrade(home: &Home, version: &Version) {
+fn restart_after_upgrade(home: &Home, version: &ReleaseNumber) {
     let (mut restarted, mut by_hand) = (Vec::new(), Vec::new());
     for host in home.hosts() {
         let Some(pid) = host.running() else { continue };
@@ -1037,22 +1043,16 @@ fn restart_after_upgrade(home: &Home, version: &Version) {
     if !by_hand.is_empty() {
         eprintln!(
             "tooob: still on {} until restarted: {}",
-            Version::this(),
+            ReleaseNumber::this(),
             by_hand.join(", ")
         );
     }
 }
 
-/// Ask the Owner whether to install `version`: `Install 0.2.0? [y/N]`, the one question tooob asks
-/// (ADR 0022). Without a terminal to ask in, it's refused, showing the command with `--yes`.
-fn asked_yes(typed: &Typed, version: &Version) -> Result<bool> {
-    use std::io::{BufRead, IsTerminal, Write};
-    if !std::io::stdin().is_terminal() {
-        return Err(typed.missing(
-            &format!("there's no terminal here to ask in, so say --yes to install tooob {version}"),
-            "--yes",
-        ));
-    }
+/// Ask the Owner, at a terminal, whether to install `version`: `Install 0.2.0? [y/N]`, the one
+/// question tooob asks (ADR 0022). Only y installs.
+fn asked_yes(version: &ReleaseNumber) -> Result<bool> {
+    use std::io::{BufRead, Write};
     eprint!("Install {version}? [y/N] ");
     std::io::stderr().flush()?;
     let mut answer = String::new();

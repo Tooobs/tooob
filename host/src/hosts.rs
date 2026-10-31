@@ -505,7 +505,7 @@ fn lock_file(state_dir: &Path) -> io::Result<File> {
 pub struct Lock(#[allow(dead_code)] File);
 
 /// A POSIX record lock on the whole file: `F_SETLK` takes it, `F_GETLK` says who holds it.
-fn record_lock(file: &File, cmd: libc::c_int) -> io::Result<libc::flock> {
+pub(crate) fn record_lock(file: &File, cmd: libc::c_int) -> io::Result<libc::flock> {
     let mut lock: libc::flock = unsafe { std::mem::zeroed() };
     lock.l_type = libc::F_WRLCK as _;
     lock.l_whence = libc::SEEK_SET as _;
