@@ -42,6 +42,7 @@ A home box serving a Site to invited Visitors in ordinary browsers, for technica
 
 - ✅ Invites for one device each, with expiry or First-Visit Approval; Pairing Invites; block, approve, unblock and revoke (before the issue tracker)
 - ⬜ An Invite can be reusable ([#18](https://github.com/Tooobs/tooob/issues/18)), and `tooob invites` shows readable expiry times ([#3](https://github.com/Tooobs/tooob/issues/3))
+- ✅ A Host keeps its own log, with timestamps and a size limit, and `tooob logs` reads it for any Host ([#91](https://github.com/Tooobs/tooob/issues/91))
 - ⬜ The Owner sees how much each Visitor uses ([#4](https://github.com/Tooobs/tooob/issues/4)), and a log of who got in, who was refused and what the Owner changed ([#23](https://github.com/Tooobs/tooob/issues/23))
 - ⬜ The Owner sets the Host's bandwidth, and the Direct Path isn't stuck at 80 Mbit/s ([#21](https://github.com/Tooobs/tooob/issues/21))
 - ⬜ A relay-only Host keeps the home IP hidden ([#25](https://github.com/Tooobs/tooob/issues/25))

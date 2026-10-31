@@ -7,6 +7,12 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
 
 ## Unreleased
 
+### Changed
+- **A Host keeps its own log** in its state folder, readable only by the Owner, with a timestamp on
+  every line, rolling over at about 1 MB into one older file. `tooob logs NAME` reads it for any
+  Host (`-n N|all`, `-f`, `--json`); an enabled Host's crash output is shown and folded in at its
+  next start (ADR 0025).
+
 ## 0.2.0 — 2026-10-31
 
 Protocol Version: `tooob/0`. Tested with iroh-relay 1.3.0.
