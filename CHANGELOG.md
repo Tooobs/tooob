@@ -7,6 +7,12 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
 
 ## Unreleased
 
+### Added
+- **The Host's log says who visits:** a Visitor getting in (first visit or return, and on which
+  path) and leaving, moves between the Relay and the Direct Path, refused devices, the Owner's
+  Invites, Blocks and approvals, and the Host's own starts and stops, each with an `event` and
+  `fields` in `tooob logs --json`. Never pages, files or addresses (ADR 0025).
+
 ### Changed
 - **A Host keeps its own log** in its state folder, readable only by the Owner, with a timestamp on
   every line, rolling over at about 1 MB into one older file. `tooob logs NAME` reads it for any
