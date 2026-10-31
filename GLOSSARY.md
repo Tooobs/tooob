@@ -67,7 +67,7 @@ What a Host keeps for itself and only tooob writes: its Host Key, Allowlist, Inv
 _Avoid_: data dir, storage
 
 **Autostart**:
-Whether the operating system starts a Host by itself: at login (or at boot on a headless Linux box), and again after a crash. `tooob enable` turns it on and `tooob disable` turns it off; `tooob ls` shows it. It says nothing about whether the Host is running now.
+Whether the operating system starts a Host by itself: at login (or at boot on a headless Linux box), and again after a crash. `tooob run NAME -d` (or `tooob share PATH -d`) turns it on, `tooob stop` keeps the Host stopped until `tooob start`, and `tooob rm` removes it with the Host; `tooob ls` shows it. It says nothing about whether the Host is running now.
 _Avoid_: enabled (as what `ls` shows), service, daemon
 
 **Host Key**:

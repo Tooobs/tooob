@@ -6,6 +6,8 @@ We rejected tooob detaching itself. A self-detached Host survives a closed termi
 
 A Host's settings (what it serves, its Relay, its Bootstrap) live in a file the Owner can edit, one per Host, apart from its state (Host Key, Allowlist, Invites, cookie jars), which only tooob writes. `run` takes no settings of its own, so a Host started by hand and the same Host started by the service manager behave the same.
 
+Amended 2026-10-31 (#96, #100): the commands are `run` and `run -d`. `tooob run NAME` serves the Host in the terminal; `tooob run NAME -d` (and `tooob share PATH -d`) hands it to the service manager, which runs it now, at login and after a crash. tooob still never backgrounds itself: `-d` writes the service entry, as `enable` did. `tooob stop` stops a Host and keeps it stopped, across logins and reboots, until `tooob start` starts it again the way it ran before; `tooob rm` stops it, removes its entry and deletes it. `enable` and `disable` are gone.
+
 ## Consequences
 
 - This amends ADR 0010. Owner commands still go through the Host when it's running. When it isn't, they change its state directly, so Invites can be made before a Host's first run. A running Host holds a lock on its state, which keeps a command from writing alongside it: the overwrite ADR 0010 rejected. Pairing Invites still need access to the home box itself.
