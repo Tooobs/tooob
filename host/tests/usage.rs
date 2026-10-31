@@ -283,7 +283,67 @@ async fn a_host_whose_usage_file_is_spoilt_still_starts_and_counts_afresh() {
         _site: site,
     };
     media.until_logged("usage.json isn't readable");
+    // Kept aside, as it was.
+    let bad = std::fs::read_to_string(format!("{state}/usage.bad")).unwrap();
+    assert_eq!(bad, "{ half a fi");
     let (jm, tab) = media.visitor("jm").await;
     tab.get("/bytes/1000").await.unwrap();
     assert!(about(&listed(&media.home, &jm)["sent"], 1000));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn setting_up_a_direct_path_isnt_counted_as_what_a_visitor_used() {
+    let media = Media::start_with(&QUICK).await;
+    let (jm, tab) = media.visitor("jm").await;
+    // Offers the Host can't use, each nearly as big as a line may be: its signaling, not the Site's.
+    let offer = "x".repeat(50_000);
+    for _ in 0..4 {
+        assert_eq!(tab.offer_direct_path(&offer).await, Ok(400));
+    }
+    tab.close().await;
+    media.until_logged(&format!("jm ({}) left after ", short(&jm)));
+    let left = &media.events("left")[0]["fields"];
+    assert!(about(&left["sent"], 0), "{left}");
+    assert!(about(&left["received"], 0), "{left}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn what_a_device_sent_while_it_was_refused_isnt_counted_once_its_let_in() {
+    let media = Media::start_with(&QUICK).await;
+    let link = media.home.ok(&["invite", "media", "gran", "--approve"]);
+    let token = link.trim().rsplit("#invite=").next().unwrap().to_string();
+    let gran = new_key();
+    let tab = media.connect(gran).await;
+    assert_eq!(tab.redeem(&token).await, Ok(Redeemed::AwaitingApproval));
+    // Asking again and again while she waits, each time with a big request.
+    let padding = "x".repeat(50_000);
+    for _ in 0..4 {
+        let asked = tab
+            .request("GET", "/", &[("x-padding", &padding)], b"")
+            .await;
+        assert_eq!(asked, Err(tooob::visit::VisitError::AwaitingApproval));
+    }
+    media.home.ok(&["approve", "media", &short(&gran)]);
+    tab.get("/bytes/1000").await.unwrap();
+    let used = listed(&media.home, &gran);
+    assert!(about(&used["sent"], 1000), "{used}");
+    assert!(about(&used["received"], 0), "{used}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn saving_usage_every_0s_is_refused() {
+    let home = Home::new();
+    let site = TestSite::start().await;
+    let relay = TestRelay::start();
+    home.ok(&[
+        "add",
+        "media",
+        &site.addr.to_string(),
+        "--relay",
+        &relay.url,
+    ]);
+    let out = home.tooob_with(&["run", "media"], &[("TOOOB_USAGE_SAVE_EVERY", "0s")]);
+    assert!(!out.status.success());
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(said.contains("TOOOB_USAGE_SAVE_EVERY"), "{said}");
 }

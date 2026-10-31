@@ -647,7 +647,7 @@ test('the Host counts what each Visitor downloads and uploads, on the Direct Pat
   const direct = await h.newVisitor(browser);
   const relayed = await h.newVisitor(browser);
   await h.breakDirectPath(relayed);
-  const sizes = { dee: [3_000_000, 2_000_000], rae: [1_500_000, 700_000] }; // downloaded, uploaded
+  const sizes = { dee: [3_000_000, 2_000_000], rae: [3_000_000, 2_000_000] }; // downloaded, uploaded
   const visit = async (page, label, path) => {
     await page.goto(invite(label));
     await h.siteText(page);
@@ -671,9 +671,17 @@ test('the Host counts what each Visitor downloads and uploads, on the Direct Pat
   await h.logged(name, /^dee .* left after/, 60000);
   await h.logged(name, /^rae .* left after/, 60000);
   const left = h.tooob(['logs', name, '-n', 'all', '--json']).split('\n').map((l) => JSON.parse(l)).filter((l) => l.event === 'left');
+  const over = {}; // what each path cost past the same download and upload
   for (const [label, [down, up]] of Object.entries(sizes)) {
     const { fields } = left.find((l) => l.fields.label === label);
     assert.ok(about(fields.sent, down) && about(fields.received, up), `${label}: ${JSON.stringify(fields)}`);
+    over[label] = { sent: fields.sent - down, received: fields.received - up };
+  }
+  // The same on either path, give or take a few bytes, and only the page and the lines of each
+  // request and reply: signaling a Direct Path isn't the Visitor's.
+  assert.ok(over.dee.sent < 1000 && over.dee.received < 2000, JSON.stringify(over));
+  for (const way of ['sent', 'received']) {
+    assert.ok(Math.abs(over.dee[way] - over.rae[way]) < 50, `${way}: ${JSON.stringify(over)}`);
   }
   assert.match(h.logOf(name).find((l) => l.startsWith('dee ') && / left after /.test(l)), / · sent 3\.0 MB, received 2\.0 MB$/);
 });

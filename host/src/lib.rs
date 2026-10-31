@@ -16,7 +16,6 @@ pub mod visit;
 mod visit_log;
 mod wire;
 
-pub use usage::amount;
 pub use wire::PROTOCOL_VERSION;
 
 use anyhow::{Context, Result, bail};
@@ -98,4 +97,51 @@ pub fn lasting(duration: std::time::Duration) -> String {
         s => (s, "second"),
     };
     format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
+}
+
+/// `0 B`, `512 B`, `4.1 KB`, `2.3 MB`, `456 MB`: in thousands, as file sizes are shown on a Mac.
+pub fn amount(bytes: u64) -> String {
+    if bytes < 1000 {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64;
+    let mut units = ["KB", "MB", "GB", "TB", "PB"].iter();
+    let mut unit = "B";
+    while value >= 999.5 {
+        match units.next() {
+            Some(next) => {
+                value /= 1000.0;
+                unit = next;
+            }
+            None => break,
+        }
+    }
+    match value {
+        v if v < 99.95 => format!("{v:.1} {unit}"),
+        v => format!("{v:.0} {unit}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::amount;
+
+    #[test]
+    fn amounts_are_in_thousands_with_a_decimal_below_a_hundred() {
+        for (bytes, said) in [
+            (0, "0 B"),
+            (999, "999 B"),
+            (1000, "1.0 KB"),
+            (4_130, "4.1 KB"),
+            (99_949, "99.9 KB"),
+            (450_312, "450 KB"),
+            (999_400, "999 KB"),
+            (999_600, "1.0 MB"),
+            (2_300_000, "2.3 MB"),
+            (456_000_000, "456 MB"),
+            (1_200_000_000, "1.2 GB"),
+        ] {
+            assert_eq!(amount(bytes), said, "{bytes}");
+        }
+    }
 }

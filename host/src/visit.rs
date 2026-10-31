@@ -115,6 +115,17 @@ impl Visit {
             .map_err(|_| VisitError::Connection(format!("unexpected standing reply: {head}")))
     }
 
+    /// Offer the Host a Direct Path with `sdp`, as the browser shell does, and signal no more:
+    /// the status of its answer.
+    pub async fn offer_direct_path(&self, sdp: &str) -> Result<u16, VisitError> {
+        let (mut send, mut recv) = self.conn.open_bi().await?;
+        wire::write_line(&mut send, &json!({"t": "rtc", "sdp": sdp})).await?;
+        send.finish()?;
+        let (head, _) = wire::read_line(&mut recv).await?;
+        refused(&head)?;
+        Ok(head["status"].as_u64().unwrap_or(0) as u16)
+    }
+
     pub async fn get(&self, path: &str) -> Result<Response, VisitError> {
         self.request("GET", path, &[], b"").await
     }

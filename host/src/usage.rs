@@ -29,6 +29,7 @@ const SAVE_EVERY: Duration = Duration::from_secs(60);
 
 /// Bytes sent to a Visitor and received from them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Used {
     pub sent: u64,
     pub received: u64,
@@ -95,8 +96,8 @@ impl Meter {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 struct Kept {
-    sent: u64,
-    received: u64,
+    #[serde(flatten)]
+    used: Used,
     /// When they were last seen, in Unix seconds: their last connection's end, or while they
     /// visit, the last save.
     last_seen: Option<u64>,
@@ -128,19 +129,26 @@ struct State {
 }
 
 impl Usage {
-    /// The usage kept at `path`, or none yet. A file that can't be read as usage is said and
-    /// started over: what Visitors used is never worth a Host not starting.
+    /// The usage kept at `path`, or none yet. A file that isn't usage (spoilt) is moved aside to
+    /// `usage.bad`, said, and started over: what Visitors used is never worth a Host not starting.
+    /// One that can't be read at all (its permissions) is an error, as the Allowlist's is: starting
+    /// over would save over what couldn't be read.
     pub(crate) fn open(path: impl Into<PathBuf>) -> io::Result<Usage> {
         let path = path.into();
         let (file, saved) = match std::fs::read(&path) {
             Ok(bytes) => match serde_json::from_slice::<File>(&bytes) {
                 Ok(file) => (file, bytes),
                 Err(e) => {
+                    let bad = path.with_extension("bad");
+                    let moved = match std::fs::rename(&path, &bad) {
+                        Ok(()) => format!("moved to {}", bad.display()),
+                        Err(e) => format!("couldn't move it aside: {e}"),
+                    };
                     crate::log::warning(&format!(
-                        "{} isn't readable ({e}): what each Visitor used starts over",
+                        "{} isn't readable ({e}), {moved}: what each Visitor used starts over",
                         path.display()
                     ));
-                    (File::default(), bytes)
+                    (File::default(), Vec::new())
                 }
             },
             Err(e) if e.kind() == io::ErrorKind::NotFound => (File::default(), Vec::new()),
@@ -180,10 +188,7 @@ impl Usage {
         let state = self.state.lock().unwrap();
         let kept = state.kept.get(key).cloned().unwrap_or_default();
         let this_run = state.meters.get(key).map(|m| m.read()).unwrap_or_default();
-        let total = Used {
-            sent: kept.sent,
-            received: kept.received,
-        } + this_run;
+        let total = kept.used + this_run;
         let last_seen = match state.visiting.contains(key) {
             true => Some(now),
             false => kept.last_seen,
@@ -199,9 +204,7 @@ impl Usage {
         let mut visitors = state.kept.clone();
         for (key, meter) in &state.meters {
             let kept = visitors.entry(key.clone()).or_default();
-            let used = meter.read();
-            kept.sent = kept.sent.saturating_add(used.sent);
-            kept.received = kept.received.saturating_add(used.received);
+            kept.used = kept.used + meter.read();
         }
         for key in &state.visiting {
             visitors.entry(key.clone()).or_default().last_seen = Some(now);
@@ -227,6 +230,9 @@ impl Usage {
             ),
             Err(_) => SAVE_EVERY,
         };
+        if every.is_zero() {
+            anyhow::bail!("in TOOOB_USAGE_SAVE_EVERY: say how often, more than 0s");
+        }
         let usage = self.clone();
         Ok(tokio::spawn(async move {
             let mut ticks = tokio::time::interval(every);
@@ -250,9 +256,35 @@ impl<T> Counted<T> {
     pub(crate) fn new(inner: T, presence: Presence) -> Counted<T> {
         Counted { inner, presence }
     }
+}
 
-    pub(crate) fn get_mut(&mut self) -> &mut T {
-        &mut self.inner
+/// A stream's reading, tallied to be counted later, or not.
+pub(crate) struct Tally<'a, R> {
+    inner: &'a mut R,
+    read: usize,
+}
+
+impl<'a, R> Tally<'a, R> {
+    pub(crate) fn new(inner: &'a mut R) -> Tally<'a, R> {
+        Tally { inner, read: 0 }
+    }
+
+    /// How many bytes were read through it.
+    pub(crate) fn read(&self) -> usize {
+        self.read
+    }
+}
+
+impl<R: AsyncRead + Unpin> AsyncRead for Tally<'_, R> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let before = buf.filled().len();
+        ready!(Pin::new(&mut *self.inner).poll_read(cx, buf))?;
+        self.read += buf.filled().len() - before;
+        Poll::Ready(Ok(()))
     }
 }
 
@@ -286,52 +318,5 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for Counted<T> {
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut self.inner).poll_shutdown(cx)
-    }
-}
-
-/// `0 B`, `512 B`, `4.1 KB`, `2.3 MB`, `456 MB`: in thousands, as file sizes are shown on a Mac.
-pub fn amount(bytes: u64) -> String {
-    if bytes < 1000 {
-        return format!("{bytes} B");
-    }
-    let mut value = bytes as f64;
-    let mut units = ["KB", "MB", "GB", "TB", "PB"].iter();
-    let mut unit = "B";
-    while value >= 999.5 {
-        match units.next() {
-            Some(next) => {
-                value /= 1000.0;
-                unit = next;
-            }
-            None => break,
-        }
-    }
-    match value {
-        v if v < 99.95 => format!("{v:.1} {unit}"),
-        v => format!("{v:.0} {unit}"),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::amount;
-
-    #[test]
-    fn amounts_are_in_thousands_with_a_decimal_below_a_hundred() {
-        for (bytes, said) in [
-            (0, "0 B"),
-            (999, "999 B"),
-            (1000, "1.0 KB"),
-            (4_130, "4.1 KB"),
-            (99_949, "99.9 KB"),
-            (450_312, "450 KB"),
-            (999_400, "999 KB"),
-            (999_600, "1.0 MB"),
-            (2_300_000, "2.3 MB"),
-            (456_000_000, "456 MB"),
-            (1_200_000_000, "1.2 GB"),
-        ] {
-            assert_eq!(amount(bytes), said, "{bytes}");
-        }
     }
 }

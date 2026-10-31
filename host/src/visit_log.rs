@@ -6,7 +6,7 @@
 use crate::access::Access;
 use crate::fields;
 use crate::log::{self, Fields};
-use crate::usage::{self, Meter, Usage, Used};
+use crate::usage::{Meter, Usage, Used};
 use std::{
     collections::HashMap,
     sync::{
@@ -380,8 +380,8 @@ impl Visits {
                     fields.insert("received".into(), used.received.into());
                     let (stayed, sent, received) = (
                         for_how_long(stayed),
-                        usage::amount(used.sent),
-                        usage::amount(used.received),
+                        crate::amount(used.sent),
+                        crate::amount(used.received),
                     );
                     let text = format!("left after {stayed} · sent {sent}, received {received}");
                     ("left", text)
@@ -429,7 +429,9 @@ struct Connection {
     joined: Mutex<bool>,
     /// Its Visitor's meter, once they're let in on it.
     meter: OnceLock<Arc<Meter>>,
-    /// What it carried before they were let in on it (the request that let them in), until then.
+    /// What it carried before they were let in on it, until then: the request that let them in,
+    /// and the last refusal's answer, if they were refused on it first (a Visitor awaiting
+    /// approval). What it carried while refused isn't theirs: each refusal clears it.
     early: Meter,
 }
 
@@ -499,6 +501,11 @@ impl Presence {
 
     /// The connection closed.
     pub(crate) fn closed(&self) {
+        // A stream counting as it was let in may have counted here just after this went to their
+        // meter: it goes there now.
+        if let Some(meter) = self.0.meter.get() {
+            meter.add(self.0.early.take());
+        }
         let mut joined = self.0.joined.lock().unwrap();
         if !std::mem::take(&mut *joined) {
             return;
@@ -564,6 +571,7 @@ impl Presence {
     /// The connection's device wasn't let in: logged unless it was within the grace already. Past
     /// the cap on devices named, it's counted in a line for them all instead.
     pub(crate) fn refused(&self, why: Refusal) {
+        self.0.early.take();
         let Connection { visits, key, .. } = &*self.0;
         let shared = &visits.0;
         {

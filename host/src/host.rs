@@ -3,7 +3,7 @@ use crate::Network;
 use crate::access::{Access, Decision, RedeemError, Redeemed};
 use crate::control::{Control, now};
 use crate::jars::{Jars, SiteClient};
-use crate::usage::{Counted, Usage};
+use crate::usage::{Counted, Tally, Usage};
 use crate::visit_log::{Presence, Refusal, Visits};
 use crate::wire::{self, ALPN};
 use anyhow::{Context, Result, bail};
@@ -327,9 +327,6 @@ impl ProtocolHandler for Admission {
         let presence = self.visits.connection(&visitor);
         while let Ok((send, recv)) = conn.accept_bi().await {
             presence.heard();
-            // Everything on it counts as what its Visitor used, once they're let in.
-            let send = Counted::new(send, presence.clone());
-            let recv = Counted::new(recv, presence.clone());
             let (this, visitor, conn) = (self.clone(), visitor.clone(), conn.clone());
             let (direct, presence) = (direct.clone(), presence.clone());
             tokio::spawn(async move {
@@ -378,17 +375,23 @@ impl Admission {
 
     /// An iroh stream: a request, or the browser setting up its Direct Path. Signaling goes only
     /// over iroh, on the connection the hello proved, which binds the Direct Path to this Visitor.
+    /// A request's every byte counts as what its Visitor used, once they're let in; signaling
+    /// doesn't: setting up a Direct Path is the Host's own doing, as a Relay's is (ADR 0025).
     async fn iroh_stream(
         &self,
-        mut send: Counted<SendStream>,
-        mut recv: Counted<RecvStream>,
+        mut send: SendStream,
+        mut recv: RecvStream,
         visitor: &str,
         conn: Connection,
         direct: &crate::direct::Slot,
         presence: &Presence,
     ) -> Result<()> {
-        let (head, rest) = wire::read_line(&mut recv).await?;
+        let mut tally = Tally::new(&mut recv);
+        let (head, rest) = wire::read_line(&mut tally).await?;
         if head["t"] != "rtc" {
+            presence.received(tally.read());
+            let send = Counted::new(send, presence.clone());
+            let recv = Counted::new(recv, presence.clone());
             return self
                 .serve(head, rest, send, recv, visitor, Some(presence))
                 .await;
@@ -400,13 +403,13 @@ impl Admission {
         if !matches!(decision, Decision::Allowed { .. }) {
             let reply = json!({"status": 403, "standing": standing(&decision)});
             wire::write_line(&mut send, &reply).await?;
-            send.get_mut().finish()?;
+            send.finish()?;
             return Ok(());
         }
         let offer = head["sdp"].as_str().unwrap_or_default();
         if head["restart"] == true {
             let restarted = crate::direct::restart(direct, offer, rest, &mut send, recv).await;
-            send.get_mut().finish()?;
+            send.finish()?;
             return restarted;
         }
         let ended = async move {
@@ -427,7 +430,7 @@ impl Admission {
             ended,
         )
         .await;
-        send.get_mut().finish()?;
+        send.finish()?;
         opened
     }
 

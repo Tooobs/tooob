@@ -270,15 +270,32 @@ impl Home {
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
+        // Read as it's written: a command saying more than a pipe holds would otherwise wait on us.
+        let drain = |mut pipe: Box<dyn std::io::Read + Send>| {
+            std::thread::spawn(move || {
+                let mut said = Vec::new();
+                pipe.read_to_end(&mut said).unwrap();
+                said
+            })
+        };
+        let stdout = drain(Box::new(child.stdout.take().unwrap()));
+        let stderr = drain(Box::new(child.stderr.take().unwrap()));
         let started = Instant::now();
-        while child.try_wait().unwrap().is_none() {
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
             if started.elapsed() > Duration::from_secs(30) {
                 let _ = child.kill();
                 panic!("tooob {args:?} didn't return within 30 s");
             }
             std::thread::sleep(Duration::from_millis(50));
+        };
+        Output {
+            status,
+            stdout: stdout.join().unwrap(),
+            stderr: stderr.join().unwrap(),
         }
-        child.wait_with_output().unwrap()
     }
 
     /// Run, expecting success; its stdout.

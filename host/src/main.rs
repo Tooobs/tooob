@@ -570,44 +570,62 @@ async fn owner_command(
 /// `tooob visitors NAME`: each Visitor, where they stand, and what they've used since they first
 /// got in (ADR 0025).
 fn print_visitors(visitors: &[tooob::access::VisitorInfo]) {
-    // Each Visitor, and their status, last seen, sent and received as shown.
-    type Row<'a> = (
-        &'a tooob::access::VisitorInfo,
-        String,
-        String,
-        String,
-        String,
-    );
+    /// A Visitor's row, as shown.
+    struct Row {
+        key: String,
+        label: String,
+        status: String,
+        seen: String,
+        sent: String,
+        received: String,
+        owner_device: bool,
+    }
     let now = tooob::control::now();
     let rows: Vec<Row> = visitors
         .iter()
-        .map(|v| {
-            let status = format!("{:?}", v.status);
-            let seen = v
+        .map(|v| Row {
+            key: v.key.chars().take(12).collect(),
+            label: v.label.clone(),
+            status: format!("{:?}", v.status),
+            seen: v
                 .last_seen
-                .map_or("-".into(), |at| ago(now.saturating_sub(at)));
-            let (sent, received) = (amount(v.sent), amount(v.received));
-            (v, status, seen, sent, received)
+                .map_or("-".into(), |at| ago(now.saturating_sub(at))),
+            sent: amount(v.sent),
+            received: amount(v.received),
+            owner_device: v.owner_device,
         })
         .collect();
-    let widest = |len: &dyn Fn(&Row) -> usize, header: &str| {
-        rows.iter().map(len).max().unwrap_or(0).max(header.len())
+    let header = Row {
+        key: "KEY".into(),
+        label: "LABEL".into(),
+        status: "STATUS".into(),
+        seen: "LAST SEEN".into(),
+        sent: "SENT".into(),
+        received: "RECEIVED".into(),
+        owner_device: false,
     };
-    let labels = widest(&|r| r.0.label.chars().count(), "LABEL");
-    let statuses = widest(&|r| r.1.len(), "STATUS");
-    let seens = widest(&|r| r.2.len(), "LAST SEEN");
-    let sents = widest(&|r| r.3.len(), "SENT");
-    let receiveds = widest(&|r| r.4.len(), "RECEIVED");
-    println!(
-        "{:<12}  {:<labels$}  {:<statuses$}  {:<seens$}  {:>sents$}  {:>receiveds$}",
-        "KEY", "LABEL", "STATUS", "LAST SEEN", "SENT", "RECEIVED"
-    );
-    for (v, status, seen, sent, received) in &rows {
-        let owner_device = if v.owner_device { "  owner device" } else { "" };
+    // Each column as wide as its widest, in characters: a Label can be "Mamá".
+    let widest = |column: fn(&Row) -> &str| {
+        std::iter::once(&header)
+            .chain(&rows)
+            .map(|r| column(r).chars().count())
+            .max()
+            .unwrap_or(0)
+    };
+    let widths = [
+        widest(|r| &r.key),
+        widest(|r| &r.label),
+        widest(|r| &r.status),
+        widest(|r| &r.seen),
+        widest(|r| &r.sent),
+        widest(|r| &r.received),
+    ];
+    for r in std::iter::once(&header).chain(&rows) {
+        let [key, label, status, seen, sent, received] = widths;
+        let owner_device = if r.owner_device { "  owner device" } else { "" };
         println!(
-            "{:<12}  {:<labels$}  {status:<statuses$}  {seen:<seens$}  {sent:>sents$}  {received:>receiveds$}{owner_device}",
-            &v.key[..12],
-            v.label,
+            "{:<key$}  {:<label$}  {:<status$}  {:<seen$}  {:>sent$}  {:>received$}{owner_device}",
+            r.key, r.label, r.status, r.seen, r.sent, r.received
         );
     }
 }
