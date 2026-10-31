@@ -12,6 +12,9 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
   path) and leaving, moves between the Relay and the Direct Path, refused devices, the Owner's
   Invites, Blocks and approvals, and the Host's own starts and stops, each with an `event` and
   `fields` in `tooob logs --json`. Never pages, files or addresses (ADR 0025).
+- **How much each Visitor uses:** a Visit's "left" line gives the bytes sent and received, and
+  `tooob visitors` shows LAST SEEN, SENT and RECEIVED since each Visitor first got in, kept across
+  restarts.
 
 ### Changed
 - **A Host keeps its own log** in its state folder, readable only by the Owner, with a timestamp on
