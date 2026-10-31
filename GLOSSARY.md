@@ -85,7 +85,7 @@ _Avoid_: domain, vanity URL, handle, Host Name (that's private to the Owner)
 ## Access
 
 **Invite**:
-A single-use, expiring permission for one device to become a Visitor, carried in an Invite Link.
+A single-use, expiring permission for one browser to become a Visitor, carried in an Invite Link. Another browser on the same device, or a private window, is another Visitor and needs an Invite of its own.
 _Avoid_: share, token, pass
 
 **Owner Invite**:

@@ -56,7 +56,7 @@ https://kgjwugk89iaan7dtoyuju7pts5r7j3f1zxm3zp8k98nepg1hq46y.relay.example/#invi
 - **The Host Key**: the Host's identity and its address, made with the Host (`tooob show` prints it). It's in z-base-32, 52 characters, so it fits in a hostname. It isn't secret: who gets in is decided on the Host.
 - **The Relay's domain**: the visitor's browser loads the Bootstrap from it, and reaches the Host through it.
 - **Together, the Key Address** (`<host key>.<relay domain>`): each Host is an origin of its own, so no Site's scripts can reach another's browser storage or Visitor Key. It lasts as long as the Host Key and the Relay: a new Relay, or a deleted Host, means new Invites for everyone.
-- **After `#`, the Invite**: browsers never send this part to a server, so the Relay never sees it. It works once, for one device, and the page drops it from the address bar once it's used.
+- **After `#`, the Invite**: browsers never send this part to a server, so the Relay never sees it. It works once, for one browser (another browser on the same phone or computer needs its own link), and the page drops it from the address bar once it's used.
 
 Each of a Site's pages has its own address on the Key Address: `https://<host key>.<relay domain>/subfolder/` opens that page ([ADR 0023](docs/adr/0023-site-pages-have-real-paths-on-their-key-address.md)). Links within a Site work as they would anywhere, and the address bar and the tab's title follow the Site, so a reload, a bookmark or a shared link lands on the page it was.
 
