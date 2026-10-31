@@ -115,7 +115,7 @@ async fn a_visitors_first_visit_is_logged_when_they_get_in_and_when_they_leave()
     let said = photos.said();
     let at = said.iter().position(|l| *l == got_in).unwrap();
     assert!(said[at + 1].starts_with(&left), "{said:#?}");
-    assert!(said[at + 1].ends_with(" s"), "{said:#?}");
+    assert!(said[at + 1].contains(" s · sent "), "{said:#?}");
     let got_in = &photos.events("got_in")[0];
     assert_eq!(got_in["fields"]["label"], "dave");
     assert_eq!(got_in["fields"]["key"], short(&dave));

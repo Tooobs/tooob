@@ -3,6 +3,7 @@ use crate::Network;
 use crate::access::{Access, Decision, RedeemError, Redeemed};
 use crate::control::{Control, now};
 use crate::jars::{Jars, SiteClient};
+use crate::usage::{Counted, Usage};
 use crate::visit_log::{Presence, Refusal, Visits};
 use crate::wire::{self, ALPN};
 use anyhow::{Context, Result, bail};
@@ -56,6 +57,9 @@ pub struct Host {
     control: Control,
     control_socket: crate::control::Listening,
     visits: Visits,
+    /// What its Visitors have used, and the task saving it every so often.
+    usage: Arc<Usage>,
+    saving: tokio::task::JoinHandle<()>,
 }
 
 impl Host {
@@ -92,7 +96,9 @@ impl Host {
         let access = Arc::new(Mutex::new(access));
         let changes = Arc::new(watch::Sender::new(()));
         let jars = Arc::new(Jars::open(config.data_dir.join("jars"))?);
-        let visits = Visits::new(access.clone())?;
+        let usage = Arc::new(Usage::open(config.data_dir.join("usage.json"))?);
+        let visits = Visits::new(access.clone(), usage.clone())?;
+        let saving = usage.save_every()?;
         let admission = Admission {
             host_key: endpoint.id(),
             access: access.clone(),
@@ -108,6 +114,7 @@ impl Host {
             stop: Default::default(),
             bootstrap: Default::default(),
             log: None,
+            usage: usage.clone(),
         };
         let router = Router::builder(endpoint).accept(ALPN, admission).spawn();
         let control_socket = crate::control::listen(&config.data_dir, control.clone())?;
@@ -116,6 +123,8 @@ impl Host {
             control,
             control_socket,
             visits,
+            usage,
+            saving,
         })
     }
 
@@ -129,11 +138,14 @@ impl Host {
         self.router.endpoint().online().await;
     }
 
-    /// Stop accepting Visitors and Owner commands, and close every connection: every Visit ends.
+    /// Stop accepting Visitors and Owner commands, and close every connection: every Visit ends,
+    /// and what each Visitor used is saved.
     pub async fn shutdown(self) {
         self.visits.end_all();
         self.control_socket.stop();
         let _ = self.router.shutdown().await;
+        self.saving.abort();
+        self.usage.save();
     }
 
     /// Resolves when the Owner asks this Host to stop (`tooob stop`).
@@ -315,6 +327,9 @@ impl ProtocolHandler for Admission {
         let presence = self.visits.connection(&visitor);
         while let Ok((send, recv)) = conn.accept_bi().await {
             presence.heard();
+            // Everything on it counts as what its Visitor used, once they're let in.
+            let send = Counted::new(send, presence.clone());
+            let recv = Counted::new(recv, presence.clone());
             let (this, visitor, conn) = (self.clone(), visitor.clone(), conn.clone());
             let (direct, presence) = (direct.clone(), presence.clone());
             tokio::spawn(async move {
@@ -365,8 +380,8 @@ impl Admission {
     /// over iroh, on the connection the hello proved, which binds the Direct Path to this Visitor.
     async fn iroh_stream(
         &self,
-        mut send: SendStream,
-        mut recv: RecvStream,
+        mut send: Counted<SendStream>,
+        mut recv: Counted<RecvStream>,
         visitor: &str,
         conn: Connection,
         direct: &crate::direct::Slot,
@@ -385,13 +400,13 @@ impl Admission {
         if !matches!(decision, Decision::Allowed { .. }) {
             let reply = json!({"status": 403, "standing": standing(&decision)});
             wire::write_line(&mut send, &reply).await?;
-            send.finish()?;
+            send.get_mut().finish()?;
             return Ok(());
         }
         let offer = head["sdp"].as_str().unwrap_or_default();
         if head["restart"] == true {
             let restarted = crate::direct::restart(direct, offer, rest, &mut send, recv).await;
-            send.finish()?;
+            send.get_mut().finish()?;
             return restarted;
         }
         let ended = async move {
@@ -412,7 +427,7 @@ impl Admission {
             ended,
         )
         .await;
-        send.finish()?;
+        send.get_mut().finish()?;
         opened
     }
 

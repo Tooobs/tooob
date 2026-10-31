@@ -240,6 +240,9 @@ fn the_owner_can_list_visitors_with_their_status() {
             owner_device: false,
             awaiting_owner_approval: false,
             status: Status::AwaitingApproval,
+            last_seen: None,
+            sent: 0,
+            received: 0,
         },
         VisitorInfo {
             key: MOM_PHONE.into(),
@@ -247,6 +250,9 @@ fn the_owner_can_list_visitors_with_their_status() {
             owner_device: false,
             awaiting_owner_approval: false,
             status: Status::Allowed,
+            last_seen: None,
+            sent: 0,
+            received: 0,
         },
         VisitorInfo {
             key: STRANGER.into(),
@@ -254,6 +260,9 @@ fn the_owner_can_list_visitors_with_their_status() {
             owner_device: false,
             awaiting_owner_approval: false,
             status: Status::Blocked,
+            last_seen: None,
+            sent: 0,
+            received: 0,
         },
     ];
     assert_eq!(listed, expected);

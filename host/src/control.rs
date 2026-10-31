@@ -35,6 +35,8 @@ pub struct Control {
     /// A stopped Host's log, which its Owner's commands write themselves; None for a running
     /// Host, whose log is this process's (ADR 0025).
     pub(crate) log: Option<Arc<crate::log::Log>>,
+    /// What each Visitor has used: counted as it goes while the Host runs, as kept when it doesn't.
+    pub(crate) usage: Arc<crate::usage::Usage>,
 }
 
 /// Where an Owner's change came from, as the log says (ADR 0025).
@@ -73,6 +75,7 @@ impl Control {
                 &data_dir.file_name().unwrap_or_default().to_string_lossy(),
                 false,
             ))),
+            usage: Arc::new(crate::usage::Usage::open(data_dir.join("usage.json"))?),
         })
     }
 
@@ -99,8 +102,15 @@ impl Control {
         self.access.lock().unwrap().invite(label, options, now())
     }
 
+    /// Every Visitor, with what they've used since they first got in and when they were last seen.
     pub fn visitors(&self) -> Vec<VisitorInfo> {
-        self.access.lock().unwrap().visitors()
+        let mut visitors = self.access.lock().unwrap().visitors();
+        let now = now();
+        for v in &mut visitors {
+            let (used, last_seen) = self.usage.of(&v.key, now);
+            (v.sent, v.received, v.last_seen) = (used.sent, used.received, last_seen);
+        }
+        visitors
     }
 
     /// Unused Invites that still work.
@@ -147,7 +157,8 @@ impl Control {
     }
 }
 
-pub(crate) fn now() -> u64 {
+/// Seconds since the Unix epoch.
+pub fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())

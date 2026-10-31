@@ -31,6 +31,15 @@ pub struct VisitorInfo {
     /// Used an Owner Invite; becomes an Owner Device once approved.
     pub awaiting_owner_approval: bool,
     pub status: Status,
+    /// When they were last seen, in Unix seconds: now while they visit; None if never, as far as
+    /// this Host has kept (ADR 0025).
+    #[serde(default)]
+    pub last_seen: Option<u64>,
+    /// Bytes sent to them, and received from them, since they first got in.
+    #[serde(default)]
+    pub sent: u64,
+    #[serde(default)]
+    pub received: u64,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -367,6 +376,8 @@ impl Access {
         }
     }
 
+    /// Every Visitor on the Allowlist, as it has them: what they used isn't the Allowlist's, and is
+    /// left at nothing here.
     pub fn visitors(&self) -> Vec<VisitorInfo> {
         self.state
             .visitors
@@ -383,6 +394,9 @@ impl Access {
                 } else {
                     Status::Allowed
                 },
+                last_seen: None,
+                sent: 0,
+                received: 0,
             })
             .collect()
     }

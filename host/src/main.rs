@@ -17,7 +17,7 @@ use tooob::hosts::{
 };
 use tooob::log::{self, Log, Logged};
 use tooob::upgrade::{self, Relays, ReleaseNumber, Releases};
-use tooob::{Network, lasting, seconds};
+use tooob::{Network, amount, lasting, seconds};
 
 // musl's own allocator costs ~22% more CPU per byte served than glibc's (measured in #59), so
 // Linux Releases, which are static musl builds, use mimalloc.
@@ -46,7 +46,9 @@ const USAGE: &str = "usage:
                                                   -f follows it, --json gives an object a line
   tooob invite NAME LABEL [--approve] [--owner] [--expires 1h]  print an Invite Link
   tooob pair NAME LABEL                           Pairing Invite (this box only)
-  tooob visitors NAME [--json] | invites NAME [--json]
+  tooob visitors NAME [--json]                    its Visitors: when each was last seen, and what
+                                                  was sent to them and received from them
+  tooob invites NAME [--json]                     its unused Invites
   tooob block NAME KEY | approve NAME KEY | unblock NAME KEY   KEY: a unique prefix is enough
   tooob revoke NAME INVITE-ID
   tooob upgrade [VERSION] [--check] [--yes] [--anyway]
@@ -542,16 +544,8 @@ async fn owner_command(
             let visitors = client.visitors().await.map_err(refused)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&visitors)?);
-            } else {
-                for v in visitors {
-                    let owner_device = if v.owner_device { "  owner device" } else { "" };
-                    println!(
-                        "{}  {:<20} {:?}{owner_device}",
-                        &v.key[..12],
-                        v.label,
-                        v.status
-                    );
-                }
+            } else if !visitors.is_empty() {
+                print_visitors(&visitors);
             }
         }
         "invites" => {
@@ -571,6 +565,62 @@ async fn owner_command(
         _ => unreachable!(),
     }
     Ok(())
+}
+
+/// `tooob visitors NAME`: each Visitor, where they stand, and what they've used since they first
+/// got in (ADR 0025).
+fn print_visitors(visitors: &[tooob::access::VisitorInfo]) {
+    // Each Visitor, and their status, last seen, sent and received as shown.
+    type Row<'a> = (
+        &'a tooob::access::VisitorInfo,
+        String,
+        String,
+        String,
+        String,
+    );
+    let now = tooob::control::now();
+    let rows: Vec<Row> = visitors
+        .iter()
+        .map(|v| {
+            let status = format!("{:?}", v.status);
+            let seen = v
+                .last_seen
+                .map_or("-".into(), |at| ago(now.saturating_sub(at)));
+            let (sent, received) = (amount(v.sent), amount(v.received));
+            (v, status, seen, sent, received)
+        })
+        .collect();
+    let widest = |len: &dyn Fn(&Row) -> usize, header: &str| {
+        rows.iter().map(len).max().unwrap_or(0).max(header.len())
+    };
+    let labels = widest(&|r| r.0.label.chars().count(), "LABEL");
+    let statuses = widest(&|r| r.1.len(), "STATUS");
+    let seens = widest(&|r| r.2.len(), "LAST SEEN");
+    let sents = widest(&|r| r.3.len(), "SENT");
+    let receiveds = widest(&|r| r.4.len(), "RECEIVED");
+    println!(
+        "{:<12}  {:<labels$}  {:<statuses$}  {:<seens$}  {:>sents$}  {:>receiveds$}",
+        "KEY", "LABEL", "STATUS", "LAST SEEN", "SENT", "RECEIVED"
+    );
+    for (v, status, seen, sent, received) in &rows {
+        let owner_device = if v.owner_device { "  owner device" } else { "" };
+        println!(
+            "{:<12}  {:<labels$}  {status:<statuses$}  {seen:<seens$}  {sent:>sents$}  {received:>receiveds$}{owner_device}",
+            &v.key[..12],
+            v.label,
+        );
+    }
+}
+
+/// How long ago, `secs` seconds: `now` within the minute, `5 min ago`, `3 h ago`, `2 days ago`.
+fn ago(secs: u64) -> String {
+    match secs {
+        s if s < 60 => "now".into(),
+        s if s < 3600 => format!("{} min ago", s / 60),
+        s if s < 86_400 => format!("{} h ago", s / 3600),
+        s if s < 2 * 86_400 => "1 day ago".into(),
+        s => format!("{} days ago", s / 86_400),
+    }
 }
 
 /// The Host a command names, by its name, what it serves or a Host Key prefix. Never a

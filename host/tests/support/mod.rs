@@ -70,6 +70,15 @@ impl TestSite {
                     format!("{size} {}", hex(&hash.finalize()))
                 }),
             )
+            // A download of `size` bytes, like a photo or a video.
+            .route(
+                "/bytes/{size}",
+                any(
+                    |axum::extract::Path(size): axum::extract::Path<usize>| async move {
+                        vec![7u8; size]
+                    },
+                ),
+            )
             // A Site that has stopped answering: takes the request and never replies.
             .route(
                 "/hang",

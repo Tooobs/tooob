@@ -11,10 +11,12 @@ mod jars;
 pub mod log;
 mod shared_folder;
 pub mod upgrade;
+mod usage;
 pub mod visit;
 mod visit_log;
 mod wire;
 
+pub use usage::amount;
 pub use wire::PROTOCOL_VERSION;
 
 use anyhow::{Context, Result, bail};

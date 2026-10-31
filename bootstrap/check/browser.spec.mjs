@@ -626,7 +626,7 @@ test("the Host's log says a Visitor got in on the Direct Path, of which kind, an
   const got = await h.logged(name, /^mom \([0-9a-f]{8}\) got in/);
   assert.match(got, /^mom \([0-9a-f]{8}\) got in · first visit · direct · LAN$/);
   await page.context().close(); // the Host hears of a closed tab once iroh gives up on it
-  assert.match(await h.logged(name, /^mom .* left after/, 60000), /^mom \([0-9a-f]{8}\) left after \d+ s$/);
+  assert.match(await h.logged(name, /^mom .* left after/, 60000), /^mom \([0-9a-f]{8}\) left after \d+ s · sent [\d.]+ [KMG]?B, received [\d.]+ [KMG]?B$/);
   assert.deepEqual(addressesIn(name, site), []);
 });
 
@@ -640,6 +640,42 @@ test("the Host's log says when a Visitor moves from the Relay onto the Direct Pa
   await h.logged(name, /^mom \([0-9a-f]{8}\) got in · first visit · relay$/);
   await h.pathIs(page, 'direct', 30000);
   await h.logged(name, /^mom \([0-9a-f]{8}\) moved to direct · LAN$/);
+});
+
+test('the Host counts what each Visitor downloads and uploads, on the Direct Path and over the Relay', async ({ browser, relay }) => {
+  const { name, invite } = await hostWithSite(relay, { TOOOB_VISIT_GRACE: '1s' });
+  const direct = await h.newVisitor(browser);
+  const relayed = await h.newVisitor(browser);
+  await h.breakDirectPath(relayed);
+  const sizes = { dee: [3_000_000, 2_000_000], rae: [1_500_000, 700_000] }; // downloaded, uploaded
+  const visit = async (page, label, path) => {
+    await page.goto(invite(label));
+    await h.siteText(page);
+    await h.pathIs(page, path, 20000);
+    const [down, up] = sizes[label];
+    assert.equal(await h.siteFetch(page, `/bytes/${down}`), `200 ${down}`);
+    const frame = await (await page.$('iframe')).contentFrame();
+    const reply = await frame.evaluate((up) => fetch('/upload', { method: 'POST', body: new Uint8Array(up) }).then((r) => r.text()), up);
+    assert.equal(reply, `received ${up}`);
+  };
+  await Promise.all([visit(direct, 'dee', 'direct'), visit(relayed, 'rae', 'relay')]);
+  // Each counted at least what they downloaded and uploaded, and not much more: the Site's page,
+  // and each request's and reply's own lines.
+  const about = (n, atLeast) => n >= atLeast && n < atLeast + 100_000;
+  const listed = JSON.parse(h.tooob(['visitors', name, '--json']));
+  for (const [label, [down, up]] of Object.entries(sizes)) {
+    const v = listed.find((v) => v.label === label);
+    assert.ok(about(v.sent, down) && about(v.received, up), `${label}: ${JSON.stringify(v)}`);
+  }
+  await Promise.all([direct.context().close(), relayed.context().close()]); // heard once iroh gives up on them
+  await h.logged(name, /^dee .* left after/, 60000);
+  await h.logged(name, /^rae .* left after/, 60000);
+  const left = h.tooob(['logs', name, '-n', 'all', '--json']).split('\n').map((l) => JSON.parse(l)).filter((l) => l.event === 'left');
+  for (const [label, [down, up]] of Object.entries(sizes)) {
+    const { fields } = left.find((l) => l.fields.label === label);
+    assert.ok(about(fields.sent, down) && about(fields.received, up), `${label}: ${JSON.stringify(fields)}`);
+  }
+  assert.match(h.logOf(name).find((l) => l.startsWith('dee ') && / left after /.test(l)), / · sent 3\.0 MB, received 2\.0 MB$/);
 });
 
 test("the Host's log never says a Visitor who closed their tab moved to the Relay", async ({ browser, relay }) => {

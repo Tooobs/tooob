@@ -63,7 +63,7 @@ What a Host serves and which Relay it uses, in a file the Owner edits by hand (`
 _Avoid_: config (unqualified), options, preferences
 
 **Host State**:
-What a Host keeps for itself and only tooob writes: its Host Key, Allowlist, Invites and cookie jars, in its state folder. Whether the Host is running or stopped isn't part of it.
+What a Host keeps for itself and only tooob writes: its Host Key, Allowlist, Invites, cookie jars and what each Visitor has used (bytes sent and received, and when they were last seen), in its state folder. Whether the Host is running or stopped isn't part of it.
 _Avoid_: data dir, storage
 
 **Autostart**:

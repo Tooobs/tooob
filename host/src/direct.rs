@@ -288,8 +288,9 @@ impl PeerConnectionEventHandler for Handler {
     async fn on_data_channel(&self, dc: Arc<dyn DataChannel>) {
         let (admission, visitor, credit) =
             (self.admission.clone(), self.visitor.clone(), self.credit);
+        let presence = self.presence.clone();
         tokio::spawn(async move {
-            if let Err(e) = mux(dc, admission, visitor.clone(), credit).await {
+            if let Err(e) = mux(dc, admission, visitor.clone(), credit, presence).await {
                 crate::log::about_a_visitor(Some(&visitor), &format!("direct path: {e:#}"));
             }
         });
@@ -380,12 +381,15 @@ impl Stream {
 }
 
 /// Demultiplex the channel: each stream id gets its request handling, a feeder passing its input
-/// on, and a task pumping its reply back as DATA messages and a final FIN.
+/// on, and a task pumping its reply back as DATA messages and a final FIN. Each stream's bytes
+/// count as what its Visitor used, on `presence`, as an iroh stream's do: DATA's payloads, not the
+/// channel's own messages.
 async fn mux(
     dc: Arc<dyn DataChannel>,
     admission: Admission,
     visitor: String,
     credit: bool,
+    presence: Presence,
 ) -> Result<()> {
     let mut streams: HashMap<u32, Stream> = HashMap::new();
     // The browser numbers its streams 1, 2, 3...: an id up to this one is a stream that's over,
@@ -406,7 +410,14 @@ async fn mux(
             DATA => {
                 if id > newest {
                     newest = id;
-                    let stream = serve(id, dc.clone(), admission.clone(), visitor.clone(), credit);
+                    let stream = serve(
+                        id,
+                        dc.clone(),
+                        admission.clone(),
+                        visitor.clone(),
+                        credit,
+                        presence.clone(),
+                    );
                     streams.insert(id, stream);
                 }
                 let Some(stream) = streams.get(&id) else {
@@ -414,6 +425,7 @@ async fn mux(
                 };
                 let (room, input) = (stream.room.clone(), stream.input.clone());
                 let payload = m.data.split_off(5).freeze();
+                presence.received(payload.len());
                 let n = taken(&payload);
                 let room = if credit {
                     // Never waits: a browser that takes credit stays within it.
@@ -479,6 +491,7 @@ fn serve(
     admission: Admission,
     visitor: String,
     credit: bool,
+    presence: Presence,
 ) -> Stream {
     let (host_side, pump_side) = tokio::io::duplex(256 * 1024);
     let (mut reply, mut to_host) = tokio::io::split(pump_side);
@@ -523,6 +536,7 @@ fn serve(
                     if dc.send(message(DATA, id, &buf[..n])).await.is_err() {
                         return;
                     }
+                    presence.sent(n);
                 }
             }
         }

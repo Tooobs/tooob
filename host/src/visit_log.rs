@@ -6,10 +6,11 @@
 use crate::access::Access;
 use crate::fields;
 use crate::log::{self, Fields};
+use crate::usage::{self, Meter, Usage, Used};
 use std::{
     collections::HashMap,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
@@ -109,6 +110,8 @@ struct Shared {
     refused_cap: usize,
     /// Its Visitors' Labels, as they are when the log names them, and whether they've been in.
     access: Arc<Mutex<Access>>,
+    /// What each Visitor has used, which their Visits count on.
+    usage: Arc<Usage>,
     state: Mutex<State>,
 }
 
@@ -145,16 +148,24 @@ struct Visit {
     heard: Instant,
     /// Tells its watch something changed.
     nudge: Arc<Notify>,
+    /// Its Visitor's meter for this run, and what was on it when the Visit started.
+    meter: Arc<Meter>,
+    at_start: Used,
 }
 
 /// What the log is to say of a Visit.
 enum Said {
     GotIn { first: bool, path: Path },
     Moved(Path),
-    Left { stayed: Duration },
+    Left { stayed: Duration, used: Used },
 }
 
 impl Visit {
+    /// What it has used so far, sent to its Visitor and received from them: its running total.
+    fn used(&self) -> Used {
+        self.meter.read() - self.at_start
+    }
+
     fn path(&self) -> Path {
         match self.directs.values().min() {
             Some(kind) => Path::Direct(*kind),
@@ -186,7 +197,8 @@ impl Visit {
             }
             self.got_in(&mut says);
             let stayed = self.last_left.saturating_duration_since(self.started);
-            says.push(Said::Left { stayed });
+            let used = self.used();
+            says.push(Said::Left { stayed, used });
             return (says, None, true);
         }
         let path = self.path();
@@ -216,7 +228,7 @@ impl Visit {
 
 impl Visits {
     /// A running Host's Visits, of the Visitors `access` has, waiting as the environment says.
-    pub(crate) fn new(access: Arc<Mutex<Access>>) -> anyhow::Result<Visits> {
+    pub(crate) fn new(access: Arc<Mutex<Access>>, usage: Arc<Usage>) -> anyhow::Result<Visits> {
         let var = |var: &str| std::env::var(var).ok();
         let wait = |name: &str, default: Duration| -> anyhow::Result<Duration> {
             match var(name) {
@@ -239,6 +251,7 @@ impl Visits {
             direct_wait: wait("TOOOB_DIRECT_WAIT", DIRECT_WAIT)?,
             refused_cap,
             access,
+            usage,
             state: Mutex::default(),
         })))
     }
@@ -249,11 +262,14 @@ impl Visits {
             visits: self.clone(),
             key: key.to_string(),
             joined: Mutex::new(false),
+            meter: OnceLock::new(),
+            early: Meter::default(),
         }))
     }
 
     /// The Host stops: every Visit ends now, and the log says so.
     pub(crate) fn end_all(&self) {
+        let usage = &self.0.usage;
         let ended: Vec<(String, String, Vec<Said>)> = {
             let mut state = self.0.state.lock().unwrap();
             state.over = true;
@@ -269,7 +285,9 @@ impl Visits {
                         visit.last_left
                     };
                     let stayed = last.saturating_duration_since(visit.started);
-                    says.push(Said::Left { stayed });
+                    let used = visit.used();
+                    says.push(Said::Left { stayed, used });
+                    usage.left(&key, unix_time(last));
                     (key, visit.label, says)
                 })
                 .collect()
@@ -307,12 +325,16 @@ impl Visits {
                     let (says, next, ended) = visit.settle(Instant::now(), &visits.0);
                     let label = visit.label.clone();
                     if ended {
+                        let last_left = visit.last_left;
                         state.visits.remove(&key);
+                        visits.0.usage.left(&key, unix_time(last_left));
                     }
                     (says, next, ended, label)
                 };
                 visits.say(&key, &label, says);
                 if ended {
+                    let usage = visits.0.usage.clone();
+                    let _ = tokio::task::spawn_blocking(move || usage.save()).await;
                     return;
                 }
                 match next {
@@ -352,9 +374,17 @@ impl Visits {
                     fields.extend(path.fields());
                     ("path", format!("moved to {}", path.said()))
                 }
-                Said::Left { stayed } => {
+                Said::Left { stayed, used } => {
                     fields.insert("seconds".into(), stayed.as_secs().into());
-                    ("left", format!("left after {}", for_how_long(stayed)))
+                    fields.insert("sent".into(), used.sent.into());
+                    fields.insert("received".into(), used.received.into());
+                    let (stayed, sent, received) = (
+                        for_how_long(stayed),
+                        usage::amount(used.sent),
+                        usage::amount(used.received),
+                    );
+                    let text = format!("left after {stayed} · sent {sent}, received {received}");
+                    ("left", text)
                 }
             };
             log::event(event, fields, &format!("{label} ({short}) {text}"));
@@ -365,6 +395,11 @@ impl Visits {
 /// A Visitor as an event's fields name them: their Label and short Visitor Key.
 fn who(label: &str, key: &str) -> Fields {
     fields! {"label" => label, "key" => short(key)}
+}
+
+/// `at` as Unix seconds.
+fn unix_time(at: Instant) -> u64 {
+    crate::control::now().saturating_sub(Instant::now().saturating_duration_since(at).as_secs())
 }
 
 /// `40 s`, `7 min`, `2 h 5 min`.
@@ -392,6 +427,10 @@ struct Connection {
     key: String,
     /// Whether it's counted in its Visitor's Visit.
     joined: Mutex<bool>,
+    /// Its Visitor's meter, once they're let in on it.
+    meter: OnceLock<Arc<Meter>>,
+    /// What it carried before they were let in on it (the request that let them in), until then.
+    early: Meter,
 }
 
 /// Ids for Direct Paths, unique in this process.
@@ -407,6 +446,7 @@ impl Presence {
         if *joined {
             return;
         }
+        let meter = self.0.meter.get_or_init(|| shared.usage.meter(key)).clone();
         let starts = {
             let state = shared.state.lock().unwrap();
             if state.over {
@@ -422,13 +462,19 @@ impl Presence {
         }
         *joined = true;
         let now = Instant::now();
+        // From now on its traffic counts on their meter, and so does what it carried till now.
+        let early = self.0.early.take();
         if let Some(visit) = state.visits.get_mut(key) {
             // Another of their connections started it meanwhile.
+            meter.add(early);
             visit.connections += 1;
             visit.first |= first;
             visit.nudge.notify_one();
             return;
         }
+        let at_start = meter.read();
+        meter.add(early);
+        shared.usage.arrived(key);
         let nudge = Arc::new(Notify::new());
         state.visits.insert(
             key.clone(),
@@ -443,6 +489,8 @@ impl Presence {
                 path_since: now,
                 heard: now,
                 nudge: nudge.clone(),
+                meter,
+                at_start,
             },
         );
         drop(state);
@@ -475,6 +523,21 @@ impl Presence {
                 visit.nudge.notify_one();
             }
         }
+    }
+
+    /// `n` bytes went to its Visitor on it.
+    pub(crate) fn sent(&self, n: usize) {
+        self.meter().sent(n);
+    }
+
+    /// `n` bytes came from its Visitor on it.
+    pub(crate) fn received(&self, n: usize) {
+        self.meter().received(n);
+    }
+
+    /// Where its traffic counts: on its Visitor's meter once they're let in on it.
+    fn meter(&self) -> &Meter {
+        self.0.meter.get().map_or(&self.0.early, |meter| meter)
     }
 
     /// A new Direct Path for this connection; its id.
