@@ -345,19 +345,18 @@ impl Home {
         }
     }
 
-    /// Wait until Host `name`'s own log says `what`: where to look for a Host its service manager
-    /// runs, which prints nothing.
+    /// Wait until Host `name`'s own log, as `tooob logs` shows it, says `what`: where to look for
+    /// a Host its service manager runs, which prints nothing.
     pub fn until_logged(&self, name: &str, what: &str) {
-        let log = self.shown(name, "log");
-        let read = || std::fs::read_to_string(&log).unwrap_or_default();
+        let shown = || self.ok(&["logs", name, "-n", "all"]);
         let started = Instant::now();
-        while !read().contains(what) {
+        while !shown().contains(what) {
             assert!(
                 started.elapsed() < Duration::from_secs(20),
                 "{name} never logged {what:?}:\n{}",
-                read()
+                shown()
             );
-            std::thread::sleep(Duration::from_millis(50));
+            std::thread::sleep(Duration::from_millis(100));
         }
     }
 

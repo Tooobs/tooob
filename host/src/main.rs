@@ -676,7 +676,6 @@ fn lasting(duration: Duration) -> String {
 /// says now. One process per Host: a second is refused, with the first one's pid.
 /// `state` is its Home's state folder, where the box's release checks are kept.
 async fn serve(host: &Entry, state: &Path, invitees: Vec<Invitee>) -> Result<()> {
-    log::keep_output_off_the_log(&host.state_dir);
     if autostart::is_on(host) && !autostart::started_by_its_entry(host) {
         bail!(
             "{0} starts by itself, so its service manager runs it: `tooob logs {0} -f` follows \
@@ -694,6 +693,11 @@ async fn serve(host: &Entry, state: &Path, invitees: Vec<Invitee>) -> Result<()>
         &host.name,
         !autostart::started_by_its_entry(host),
     ));
+    if let Err(e) = log::keep_output_off_the_log(&host.state_dir) {
+        log.write(&format!(
+            "warning: couldn't keep what it prints out of its log: {e}"
+        ));
+    }
     log.take_dying_words();
     match serve_locked(host, state, invitees).await {
         Ok(()) => Ok(()),
@@ -898,7 +902,8 @@ async fn stop(host: &Entry) -> Result<()> {
 }
 
 /// `tooob logs`: a Host's log, the last 50 lines of it or as many as `-n` says (`all`); and with
-/// `-f`, what it writes next, until Ctrl-C. With `--json`, an object a line.
+/// `-f`, what it writes next, until Ctrl-C. With `--json`, an object a line. Last, what it said as
+/// it stopped that isn't in its log yet.
 async fn logs(host: &Entry, flags: &Flags) -> Result<()> {
     use std::io::Write;
     let last = match flags.get("lines").cloned().flatten() {
@@ -919,23 +924,26 @@ async fn logs(host: &Entry, flags: &Flags) -> Result<()> {
     let lines = log.so_far()?;
     let from = last.map_or(0, |n| lines.len().saturating_sub(n));
     let json = flags.contains_key("json");
-    let show = |lines: &[String]| -> Result<()> {
+    let show = |kept: &[String], dying: &[log::Line]| -> Result<()> {
         let mut out = std::io::stdout().lock();
-        for line in lines {
+        for line in kept {
             match json {
-                true => {
-                    let line = log::Line::parse(&host.name, line);
-                    writeln!(out, "{}", serde_json::to_string(&line)?)?
-                }
+                true => writeln!(out, "{}", log::as_json(&host.name, line))?,
+                false => writeln!(out, "{}", log::Line::parse(&host.name, line))?,
+            }
+        }
+        for line in dying {
+            match json {
+                true => writeln!(out, "{}", serde_json::to_string(line)?)?,
                 false => writeln!(out, "{line}")?,
             }
         }
         Ok(out.flush()?)
     };
-    show(&lines[from..])?;
+    show(&lines[from..], &log.dying_words(&host.name)?)?;
     while flags.contains_key("follow") {
         tokio::time::sleep(Duration::from_millis(200)).await;
-        show(&log.more()?)?;
+        show(&log.more()?, &log.dying_words(&host.name)?)?;
     }
     Ok(())
 }

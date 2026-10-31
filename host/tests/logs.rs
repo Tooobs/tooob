@@ -1,8 +1,9 @@
-//! A Host's own log (ADR 0025): written by the Host itself, however it was started, each line with
-//! its time, bounded by rolling over; read with `tooob logs NAME`. Through the `tooob` command, run
-//! as a script would.
+//! A Host's own log (ADR 0025): written by the Host itself, however it was started, a JSON object a
+//! line with its time, bounded by rolling over; read with `tooob logs NAME`. Through the `tooob`
+//! command, run as a script would.
 mod support;
 
+use serde_json::{Value, json};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use support::home::{Home, a_folder};
@@ -10,18 +11,19 @@ use support::home::{Home, a_folder};
 /// A time zone five hours behind UTC with no summer time, so a local time is told from UTC.
 const TZ: (&str, &str) = ("TZ", "XYZ+5");
 
-/// Now, to the minute, in `TZ`, as `date` says it.
-fn local_minute() -> String {
+/// Now, to the minute, in `TZ`, as `date` says it in `format`.
+fn local_minute(format: &str) -> String {
     let out = std::process::Command::new("date")
-        .arg("+%Y-%m-%d %H:%M")
+        .arg(format!("+{format}"))
         .env(TZ.0, TZ.1)
         .output()
         .unwrap();
     String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
 
-/// Whether `line` starts with a time, `2026-10-31 14:02:11` and two spaces, in `minutes`.
-fn timed_in(line: &str, minutes: &[String]) -> bool {
+/// Whether `line`, as `tooob logs` shows it, starts with a time, `2026-10-31 14:02:11` and two
+/// spaces, in one of `minutes`.
+fn shown_in(line: &str, minutes: &[String]) -> bool {
     let shape = line.len() > 21
         && line.char_indices().take(21).all(|(i, c)| match i {
             4 | 7 => c == '-',
@@ -41,6 +43,20 @@ fn mode(file: impl AsRef<Path>) -> u32 {
     std::fs::metadata(file).unwrap().permissions().mode() & 0o777
 }
 
+fn stderr(out: &std::process::Output) -> String {
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
+/// A line of photos' log as it keeps it, at a time long gone.
+fn old_line(text: &str) -> String {
+    json!({"time": "2026-10-30T09:00:00-05:00", "host": "photos", "text": text}).to_string() + "\n"
+}
+
+/// That line as `tooob logs` shows it.
+fn shown(text: &str) -> String {
+    format!("2026-10-30 09:00:00  photos: {text}\n")
+}
+
 #[test]
 fn a_host_run_by_hand_writes_its_own_log_each_line_in_local_time_and_prints_it_too() {
     let home = Home::new();
@@ -48,32 +64,46 @@ fn a_host_run_by_hand_writes_its_own_log_each_line_in_local_time_and_prints_it_t
     home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
     let log = home.shown("photos", "log");
 
-    let before = local_minute();
+    let before = (
+        local_minute("%Y-%m-%dT%H:%M"),
+        local_minute("%Y-%m-%d %H:%M"),
+    );
     let mut running = home.start_with("photos", &[TZ]);
     assert!(running.stop_with(libc::SIGTERM).success());
-    let minutes = [before, local_minute()];
+    let after = (
+        local_minute("%Y-%m-%dT%H:%M"),
+        local_minute("%Y-%m-%d %H:%M"),
+    );
 
-    let written = read(&log);
     assert_eq!(mode(&log), 0o600, "only the Owner's account reads it");
-    assert!(written.contains("  photos: serving "), "{written}");
-    assert!(written.ends_with("  photos: stopped\n"), "{written}");
-    for line in written.lines() {
-        assert!(timed_in(line, &minutes), "{line:?} in:\n{written}");
+    let kept = read(&log);
+    for line in kept.lines() {
+        let line: Value = serde_json::from_str(line).unwrap();
+        let time = line["time"].as_str().unwrap();
+        assert!(
+            (time.starts_with(&before.0) || time.starts_with(&after.0))
+                && time.ends_with("-05:00")
+                && time.len() == 25,
+            "local time with its offset from UTC: {line}"
+        );
+        assert_eq!(line["host"], "photos", "{line}");
+    }
+
+    let shown = home.ok(&["logs", "photos", "-n", "all"]);
+    assert_eq!(shown.lines().count(), kept.lines().count());
+    assert!(shown.contains("  photos: serving "), "{shown}");
+    assert!(shown.ends_with("  photos: stopped\n"), "{shown}");
+    for line in shown.lines() {
+        assert!(
+            shown_in(line, &[before.1.clone(), after.1.clone()]),
+            "{line:?}"
+        );
         assert!(
             running.log().contains(&format!("{line}\n")),
             "its terminal had each line: {line:?} in:\n{}",
             running.log()
         );
     }
-}
-
-fn stderr(out: &std::process::Output) -> String {
-    String::from_utf8_lossy(&out.stderr).into_owned()
-}
-
-/// A log line as a Host writes it, at a time long gone.
-fn old_line(text: &str) -> String {
-    format!("2026-10-30 09:00:00  photos: {text}\n")
 }
 
 #[test]
@@ -83,8 +113,10 @@ fn logs_shows_the_last_50_lines_of_any_hosts_log_or_n_of_them_or_all() {
     home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
     home.ok(&["add", "films", "127.0.0.1:8096", "--local"]);
     let log = home.shown("photos", "log");
-    let lines: Vec<String> = (0..120).map(|i| old_line(&format!("line {i}"))).collect();
-    std::fs::write(&log, lines.concat()).unwrap();
+    let texts: Vec<String> = (0..120).map(|i| format!("line {i}")).collect();
+    let kept: String = texts.iter().map(|t| old_line(t)).collect();
+    std::fs::write(&log, kept).unwrap();
+    let lines: Vec<String> = texts.iter().map(|t| shown(t)).collect();
 
     assert_eq!(home.ok(&["logs", "photos"]), lines[70..].concat());
     assert_eq!(
@@ -101,7 +133,6 @@ fn logs_shows_the_last_50_lines_of_any_hosts_log_or_n_of_them_or_all() {
             format!("tooob: -n takes a number of lines, or all: not {bad:?}\n")
         );
     }
-
     let out = home.tooob(&["logs", "photos", "-n"]);
     assert_eq!(stderr(&out), "tooob: -n needs a value\n");
 
@@ -128,7 +159,8 @@ fn a_log_past_its_limit_rolls_over_to_one_older_file_replacing_the_one_before() 
     let log = home.shown("photos", "log");
     let older = format!("{log}.1");
     std::fs::write(&older, old_line("from long ago")).unwrap();
-    let old: String = (0..20).map(|i| old_line(&format!("line {i}"))).collect();
+    let texts: Vec<String> = (0..20).map(|i| format!("line {i}")).collect();
+    let old: String = texts.iter().map(|t| old_line(t)).collect();
     std::fs::write(&log, &old).unwrap();
 
     // Room for a few more bytes, not a line.
@@ -139,11 +171,18 @@ fn a_log_past_its_limit_rolls_over_to_one_older_file_replacing_the_one_before() 
     assert_eq!(read(&older), old, "the older file is the log as it was");
     assert_eq!(mode(&older), 0o600);
     let new = read(&log);
-    assert!(new.contains("photos: starting") && new.ends_with("photos: stopped\n"));
+    assert!(
+        new.contains("\"starting ") && new.contains("\"stopped\""),
+        "{new}"
+    );
     assert!(!new.contains("line 19"), "{new}");
     assert!(new.len() <= old.len() + 20, "{}", new.len());
     assert!(!Path::new(&format!("{log}.2")).exists());
-    assert_eq!(home.ok(&["logs", "photos", "-n", "all"]), old + &new);
+    let all = home.ok(&["logs", "photos", "-n", "all"]);
+    let before: String = texts.iter().map(|t| shown(t)).collect();
+    assert!(all.starts_with(&before), "{all}");
+    assert!(all.ends_with("  photos: stopped\n"), "{all}");
+    assert_eq!(all.lines().count(), 20 + new.lines().count());
 }
 
 #[test]
@@ -162,46 +201,51 @@ fn logs_f_follows_what_it_writes_next_across_a_roll_over() {
     assert!(running.stop_with(libc::SIGTERM).success());
     following.until_it_says("photos: stopped\n");
     assert_eq!(read(&format!("{log}.1")), old, "it rolled over");
-    assert_eq!(following.log(), old_line("line 29") + &read(&log));
+    let followed = following.log();
+    assert!(followed.starts_with(&shown("line 29")), "{followed}");
+    assert!(followed.contains("  photos: starting "), "{followed}");
+    assert_eq!(followed.lines().count(), 1 + read(&log).lines().count());
 }
 
 #[test]
-fn logs_json_gives_an_object_a_line_with_its_time_its_host_and_what_it_says() {
+fn logs_json_passes_each_line_through_and_gives_a_line_it_didnt_write_no_time() {
     let home = Home::new();
     let folder = a_folder();
     home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
     let log = home.shown("photos", "log");
     let older = format!("{log}.1");
     std::fs::write(&older, old_line("serving /photos")).unwrap();
-    // A line it didn't write itself: a crash's, under 0.2.0's Autostart.
+    // One with a field a later tooob adds; and one it didn't write itself: 0.2.0's, or a crash's.
+    let later = json!({
+        "time": "2026-10-30T09:00:01-05:00", "host": "photos", "text": "jm got in",
+        "event": "visit"
+    });
     std::fs::write(
         &log,
-        old_line("a Visitor's: \"quoted\"") + "thread 'main' panicked at src/main.rs:1:1:\n",
+        format!("{later}\nthread 'main' panicked at src/main.rs:1:1:\n"),
     )
     .unwrap();
 
-    let json = home.ok(&["logs", "photos", "--json"]);
-    let objects: Vec<serde_json::Value> = json
+    let out = home.ok(&["logs", "photos", "--json"]);
+    let objects: Vec<Value> = out
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert_eq!(
         objects,
         [
-            serde_json::json!({
-                "time": "2026-10-30T09:00:00", "host": "photos", "text": "serving /photos"
-            }),
-            serde_json::json!({
-                "time": "2026-10-30T09:00:00", "host": "photos", "text": "a Visitor's: \"quoted\""
-            }),
-            serde_json::json!({
+            json!({"time": "2026-10-30T09:00:00-05:00", "host": "photos", "text": "serving /photos"}),
+            later,
+            json!({
                 "time": null, "host": "photos", "text": "thread 'main' panicked at src/main.rs:1:1:"
             }),
         ]
     );
     assert_eq!(
-        home.ok(&["logs", "photos", "--json", "-n", "1"]),
-        json.lines().last().unwrap().to_string() + "\n"
+        home.ok(&["logs", "photos"]),
+        shown("serving /photos")
+            + "2026-10-30 09:00:01  photos: jm got in\n"
+            + "thread 'main' panicked at src/main.rs:1:1:\n"
     );
 }
 
@@ -213,12 +257,12 @@ fn a_host_its_service_manager_runs_writes_only_its_log_and_prints_nothing() {
     let home = Home::new();
     let folder = a_folder();
     home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
-    let log = home.shown("photos", "log");
 
     let mut running = home.spawn_with(&["run", "photos"], &[AS_ITS_ENTRY]);
     home.until_logged("photos", "photos: serving ");
     assert!(running.stop_with(libc::SIGTERM).success());
-    assert!(read(&log).ends_with("photos: stopped\n"), "{}", read(&log));
+    let shown = home.ok(&["logs", "photos"]);
+    assert!(shown.ends_with("photos: stopped\n"), "{shown}");
     assert_eq!(
         running.log(),
         "",
@@ -226,35 +270,41 @@ fn a_host_its_service_manager_runs_writes_only_its_log_and_prints_nothing() {
     );
 }
 
+/// Write `said` to photos' crash log, as its service manager would as it died, dated then in
+/// `TZ`.
+fn crashed(home: &Home, said: &str) -> String {
+    let crashes = format!("{}/crash.log", home.shown("photos", "state folder"));
+    std::fs::write(&crashes, said).unwrap();
+    let touched = std::process::Command::new("touch")
+        .args(["-t", "202610300901.30", &crashes])
+        .env(TZ.0, TZ.1)
+        .status()
+        .unwrap();
+    assert!(touched.success());
+    crashes
+}
+
+const PANIC: &str = "thread 'main' panicked at src/main.rs:1:1:\nsomething broke\n";
+
 #[test]
 fn a_hosts_dying_words_are_moved_into_its_log_when_it_next_starts() {
     let home = Home::new();
     let folder = a_folder();
     home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
     let log = home.shown("photos", "log");
-    let crashes = format!("{}/crash.log", home.shown("photos", "state folder"));
     std::fs::write(&log, old_line("an older line")).unwrap();
-    std::fs::write(
-        &crashes,
-        "thread 'main' panicked at src/main.rs:1:1:\nsomething broke\n",
-    )
-    .unwrap();
-    // As it was when the Host died.
-    let touched = std::process::Command::new("touch")
-        .args(["-t", "202610300901.30", &crashes])
-        .status()
-        .unwrap();
-    assert!(touched.success());
+    let crashes = crashed(&home, PANIC);
 
-    let mut running = home.spawn_with(&["run", "photos"], &[AS_ITS_ENTRY]);
+    let mut running = home.spawn_with(&["run", "photos"], &[AS_ITS_ENTRY, TZ]);
     home.until_logged("photos", "photos: serving ");
     assert!(running.stop_with(libc::SIGTERM).success());
-    let lines: Vec<String> = read(&log).lines().map(String::from).collect();
+    let shown_now = home.ok(&["logs", "photos", "-n", "all"]);
+    let lines: Vec<&str> = shown_now.lines().collect();
     assert_eq!(
         lines[..4],
         [
             "2026-10-30 09:00:00  photos: an older line",
-            "2026-10-30 09:01:30  photos: it last stopped saying, in crash.log:",
+            "2026-10-30 09:01:30  photos: before it stopped last time, it said:",
             "2026-10-30 09:01:30  photos:   thread 'main' panicked at src/main.rs:1:1:",
             "2026-10-30 09:01:30  photos:   something broke",
         ],
@@ -263,6 +313,53 @@ fn a_hosts_dying_words_are_moved_into_its_log_when_it_next_starts() {
     assert!(lines[4].contains("photos: starting"), "{lines:#?}");
     assert_eq!(read(&crashes), "", "said once");
     assert_eq!(mode(&crashes), 0o600);
+}
+
+#[test]
+fn logs_shows_what_a_host_said_as_it_stopped_that_isnt_in_its_log_yet() {
+    // Its service manager gave up restarting it, so it never moved them into its log.
+    let home = Home::new();
+    let folder = a_folder();
+    home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
+    let log = home.shown("photos", "log");
+    std::fs::write(&log, old_line("serving /photos")).unwrap();
+    let crashes = crashed(&home, PANIC);
+
+    let not_yet = "before it stopped last time, it said (not in its log yet):";
+    let logs = |args: &[&str]| {
+        let out = home.tooob_with(&[&["logs", "photos"], args].concat(), &[TZ]);
+        assert!(out.status.success(), "{}", stderr(&out));
+        String::from_utf8(out.stdout).unwrap()
+    };
+    assert_eq!(
+        logs(&["-n", "1"]),
+        shown("serving /photos")
+            + "2026-10-30 09:01:30  photos: "
+            + not_yet
+            + "\n2026-10-30 09:01:30  photos:   thread 'main' panicked at src/main.rs:1:1:\n\
+               2026-10-30 09:01:30  photos:   something broke\n"
+    );
+    let objects: Vec<Value> = logs(&["--json"])
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        objects[1],
+        json!({"time": "2026-10-30T09:01:30-05:00", "host": "photos", "text": not_yet})
+    );
+
+    let following = home.spawn_with(&["logs", "photos", "-f"], &[TZ]);
+    following.until_it_says("  something broke\n");
+    {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&crashes)
+            .unwrap();
+        file.write_all(b"and then some\n").unwrap();
+    }
+    following.until_it_says("photos:   and then some\n");
+    assert_eq!(following.log().matches(not_yet).count(), 1);
 }
 
 /// `tooob run photos` as an Autostart entry from tooob 0.2.0 starts it: its output appended to
@@ -283,8 +380,25 @@ fn run_as_a_0_2_0_entry(home: &Home, log: &str) -> std::process::Child {
         .unwrap()
 }
 
+/// What process `pid`'s file descriptor `fd` is open on.
+fn open_on(pid: u32, fd: u32) -> String {
+    if cfg!(target_os = "linux") {
+        let link = std::fs::read_link(format!("/proc/{pid}/fd/{fd}")).unwrap();
+        return link.display().to_string();
+    }
+    let out = std::process::Command::new("lsof")
+        .args(["-a", "-p", &pid.to_string(), "-d", &fd.to_string(), "-Fn"])
+        .output()
+        .unwrap();
+    let out = String::from_utf8_lossy(&out.stdout).into_owned();
+    out.lines()
+        .find_map(|l| l.strip_prefix('n'))
+        .unwrap_or_else(|| panic!("no file for fd {fd}: {out}"))
+        .to_string()
+}
+
 #[test]
-fn a_host_whose_entry_points_its_output_at_its_log_keeps_its_dying_words_out_of_it() {
+fn a_host_whose_entry_points_its_output_at_its_log_moves_it_to_its_crash_log_once_it_runs() {
     let home = Home::new();
     let folder = a_folder();
     home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
@@ -293,23 +407,62 @@ fn a_host_whose_entry_points_its_output_at_its_log_keeps_its_dying_words_out_of_
 
     let mut first = run_as_a_0_2_0_entry(&home, &log);
     home.until_logged("photos", "photos: serving ");
-    // A second one, refused before it opens its log: what it says is a crash's.
+    for fd in [1, 2] {
+        let on = open_on(first.id(), fd);
+        assert!(on.ends_with("/photos/crash.log"), "fd {fd}: {on}");
+    }
+    // A second one is refused before it takes the lock, so it says why where it was told to.
     let second = run_as_a_0_2_0_entry(&home, &log).wait().unwrap();
     assert!(!second.success());
     unsafe { libc::kill(first.id() as i32, libc::SIGTERM) };
     assert!(first.wait().unwrap().success());
 
-    let written = read(&log);
-    for line in written.lines() {
-        assert!(
-            line.starts_with("20") && line.contains("  photos: "),
-            "only its own lines, each once: {line:?} in:\n{written}"
-        );
-    }
-    assert_eq!(written.matches("photos: serving ").count(), 1, "{written}");
     assert!(
-        read(&crashes).contains("already running"),
+        !read(&crashes).contains("already running"),
         "{}",
         read(&crashes)
     );
+    let shown = home.ok(&["logs", "photos", "-n", "all"]);
+    assert_eq!(shown.matches("photos: serving ").count(), 1, "{shown}");
+    assert!(
+        shown.contains("\ntooob: photos is already running"),
+        "{shown}"
+    );
+    assert!(shown.ends_with("photos: stopped\n"), "{shown}");
+}
+
+#[test]
+fn two_writers_of_one_log_never_cross_lines_or_roll_over_twice() {
+    // A running Host and a command made while it's stopped (#23) may write the same log: here, two
+    // of tooob's own writers, each with its own lock file open, as two processes would have.
+    let state = tempfile::tempdir().unwrap();
+    let text = "x".repeat(200);
+    std::thread::scope(|s| {
+        for name in ["photos", "other"] {
+            let (dir, text) = (state.path(), &text);
+            s.spawn(move || {
+                let log = tooob::log::Log::open(dir, name, false);
+                for _ in 0..6000 {
+                    log.write(text);
+                }
+            });
+        }
+    });
+    let log = state.path().join("host.log");
+    let older = state.path().join("host.log.1");
+    for file in [&log, &older] {
+        let kept = std::fs::read_to_string(file).unwrap();
+        for line in kept.lines() {
+            let line: Value = serde_json::from_str(line).unwrap_or_else(|e| panic!("{e}: {line}"));
+            assert_eq!(line["text"], text.as_str());
+        }
+        assert!(
+            kept.len() <= 1_000_000,
+            "{}: {}",
+            file.display(),
+            kept.len()
+        );
+    }
+    let older = std::fs::metadata(&older).unwrap().len();
+    assert!(older > 999_000, "rolled over full, not twice: {older}");
 }
