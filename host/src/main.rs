@@ -144,7 +144,10 @@ async fn run() -> Result<()> {
             exactly(2, &["detach"])?;
             let host = named(&home, &typed, "run", words.get(1))?;
             match flags.contains_key("detach") {
-                true => keep_running(&host)?,
+                true => {
+                    let keeper = autostart::require_keeping_running(&host.name)?;
+                    say(&keeper.keep_running(&host)?);
+                }
                 false => serve(&host, home.state_dir(), Vec::new()).await?,
             }
         }
@@ -267,59 +270,71 @@ async fn share(
         .collect();
     // A reused Host keeps its own Relay; the flags are for a new one. Invites need a Key Address,
     // so without one, `--invite` is refused.
-    let detach = flags.contains_key("detach");
-    let host = match home
+    let found = home
         .hosts()
         .into_iter()
-        .find(|h| h.settings.serves == serves)
-    {
+        .find(|h| h.settings.serves == serves);
+    let name = match (&found, flags.get("name").cloned().flatten()) {
+        (Some(host), _) => host.name.clone(),
+        (None, Some(name)) => name,
+        (None, None) => free_name(home, &path),
+    };
+    let keeper = match flags.contains_key("detach") {
+        true => Some(autostart::require_keeping_running(&name)?),
+        false => None,
+    };
+    let (host, added) = match found {
         Some(host) => {
             if !who.is_empty() {
                 host.key_address()?;
             }
-            if detach {
-                autostart::can_keep_running(&host.name)?;
-                autostart::not_run_by_hand(&host)?;
-            }
-            host
+            (host, false)
         }
         None => {
             let relay = new_host_relay(typed, flags).await?;
             if let Some(why) = no_key_address(&relay).filter(|_| !who.is_empty()) {
                 bail!(no_invite_links("the new Host", why));
             }
-            let name = match flags.get("name").cloned().flatten() {
-                Some(name) => name,
-                None => free_name(home, &path),
-            };
-            if detach {
-                autostart::can_keep_running(&name)?;
-            }
-            home.add(&name, &serves, &relay)?
+            (home.add(&name, &serves, &relay)?, true)
         }
     };
     for warning in warnings(given, &path) {
         eprintln!("tooob: warning: {warning}");
     }
-    if !detach && !autostart::is_on(&host) {
-        return serve(&host, home.state_dir(), who).await;
-    }
-    // Its service manager runs it, or is about to: the Invites are made here, through the Host
-    // if it's running and in its state if not, and never by a second copy of it (#96).
+    // Kept running before any Invite is made: when its service manager refuses, nothing is added.
+    let said = match &keeper {
+        Some(keeper) => match keeper.keep_running(&host) {
+            Ok(said) => said,
+            Err(e) if added => {
+                host.remove()?;
+                return Err(e);
+            }
+            Err(e) => return Err(e),
+        },
+        None if autostart::is_on(&host) => vec![in_the_background(&host)],
+        None => return serve(&host, home.state_dir(), who).await,
+    };
+    // Its service manager runs it, or is starting it: the Invites are made here, through the Host
+    // or in its state, and never by a second copy of it (#96).
     let client = host.client();
     for who in &who {
         invite_given(&host, &client, who).await?;
     }
-    match (detach, host.running()) {
-        (true, _) => keep_running(&host)?,
-        (false, Some(_)) => eprintln!("tooob: {}", autostart::already_running(&host.name)),
-        (false, None) => eprintln!(
-            "tooob: {0} is kept running in the background, though it isn't running now: `tooob \
-             run {0} -d` starts it, and `tooob logs {0}` says why it stopped",
+    say(&said);
+    Ok(())
+}
+
+/// What `share` says of a Host its service manager keeps running: that it runs in the
+/// background, or that it's stopped now and how to start it.
+fn in_the_background(host: &Entry) -> String {
+    match host.running() {
+        Some(_) => autostart::already_running(&host.name),
+        None => format!(
+            "{0} is set to keep running, but stopped now: `tooob run {0} -d` starts it, and \
+             `tooob logs {0}` says why it stopped",
             host.name
         ),
     }
-    Ok(())
 }
 
 /// How many folders and files `share` looks through for what an Owner may not mean to hand out: a
@@ -976,20 +991,18 @@ async fn invite_given(host: &Entry, client: &Client, who: &Invitee) -> Result<()
     invite(host, client, &who.label, options).await
 }
 
-/// `-d`: hand a Host to its service manager, which keeps it running (ADR 0014), saying so.
-fn keep_running(host: &Entry) -> Result<()> {
-    for line in autostart::keep_running(host)? {
+/// Tell the Owner `lines`, a line each.
+fn say(lines: &[String]) {
+    for line in lines {
         eprintln!("tooob: {line}");
     }
-    Ok(())
 }
 
 /// Stop a running Host, and wait until it has: through its service manager when it's kept
 /// running, which then keeps it stopped across logins and reboots (ADR 0014); otherwise by asking
 /// it.
 async fn stop(host: &Entry) -> Result<()> {
-    if autostart::is_on(host) {
-        autostart::stop(host)?;
+    if autostart::stop(host)? {
         eprintln!(
             "tooob: {0} is stopped, and stays stopped across logins and reboots: `tooob run {0} \
              -d` keeps it running again",

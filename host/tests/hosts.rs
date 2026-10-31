@@ -1295,9 +1295,10 @@ fn stop_on_a_host_kept_running_stops_it_and_keeps_it_stopped_until_run_d() {
         ),
         (
             "systemctl",
-            "--user disable --now tooob@photos.service".to_string(),
+            "--user stop tooob@photos.service".to_string(),
             vec![
-                "--user disable --now tooob@photos.service".to_string(),
+                "--user disable tooob@photos.service".to_string(),
+                "--user stop tooob@photos.service".to_string(),
                 "--user daemon-reload".to_string(),
             ],
         ),
@@ -1352,6 +1353,91 @@ fn stop_on_a_host_kept_running_stops_it_and_keeps_it_stopped_until_run_d() {
         assert_eq!(entries(&home).len(), 1, "{tool}: kept running again");
         assert!(home.row("photos").contains(" yes "), "{tool}");
     }
+}
+
+#[test]
+fn a_stop_cut_short_leaves_nothing_to_start_at_login_and_stop_again_finishes_it() {
+    for stops in [
+        (
+            "launchctl",
+            format!("bootout gui/{}/net.tooobs.photos", uid()),
+        ),
+        ("systemctl", "--user stop tooob@photos.service".to_string()),
+    ] {
+        let (tool, stops) = stops;
+        let home = Home::new();
+        let folder = a_folder();
+        home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
+        home.install_tooob();
+        let pid = home.stand_ins().join("pid");
+        // The first stop is cut short just as it asks the service manager to stop the Host, as
+        // a Ctrl-C would: the stand-in kills `tooob stop` itself.
+        let cut = home.stand_ins().join("cut");
+        home.stand_in(
+            tool,
+            &format!(
+                "case \"$*\" in '{stops}') if [ -e '{cut}' ]; then /bin/rm '{cut}'; kill -9 $PPID; \
+                 else read pid < '{pid}'; kill -TERM $pid; fi;; esac",
+                cut = cut.display(),
+                pid = pid.display()
+            ),
+        );
+        home.ok(&["run", "photos", "-d"]);
+        let running = run_as_its_entry(&home);
+        std::fs::write(&pid, running.child.id().to_string()).unwrap();
+        std::fs::write(&cut, "").unwrap();
+
+        let out = home.tooob(&["stop", "photos"]);
+        assert!(!out.status.success(), "{tool}: cut short");
+        assert!(home.row("photos").contains("running"), "{tool}");
+        assert!(
+            entries(&home).is_empty(),
+            "{tool}: nothing to start at login: {:?}",
+            entries(&home)
+        );
+
+        let out = home.tooob(&["stop", "photos"]);
+        assert!(out.status.success(), "{tool}: {}", stderr(&out));
+        assert!(
+            stderr(&out).contains("stays stopped"),
+            "{tool}: {}",
+            stderr(&out)
+        );
+        let row = home.row("photos");
+        assert!(
+            row.contains("stopped") && row.contains(" no "),
+            "{tool}: {row}"
+        );
+        home.ok(&["run", "photos", "-d"]);
+        assert_eq!(entries(&home).len(), 1, "{tool}");
+    }
+}
+
+#[test]
+fn a_stop_its_service_manager_refuses_leaves_the_host_kept_running_and_says_so() {
+    let home = Home::new();
+    let folder = a_folder();
+    home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
+    home.install_tooob();
+    home.stand_in(
+        "launchctl",
+        "case \"$*\" in bootout*) echo 'Boot-out failed: 1: Operation not permitted' >&2; exit 1;; \
+         esac",
+    );
+    home.ok(&["run", "photos", "-d"]);
+    let _running = run_as_its_entry(&home);
+
+    let out = home.tooob(&["stop", "photos"]);
+    assert!(!out.status.success());
+    let said = stderr(&out);
+    assert!(
+        said.contains("photos didn't stop, so it's still kept running")
+            && said.contains("Operation not permitted"),
+        "{said}"
+    );
+    assert_eq!(entries(&home).len(), 1, "its entry is back");
+    let row = home.row("photos");
+    assert!(row.contains("running") && row.contains(" yes "), "{row}");
 }
 
 #[test]
@@ -1467,6 +1553,42 @@ fn share_d_adds_a_host_invites_and_keeps_it_running_and_again_once_its_stopped()
     assert!(home.ok(&["invites", &name]).contains("Cy"));
     assert_eq!(entries(&home).len(), 1, "kept running again");
     assert_eq!(home.calls("launchctl").last(), Some(&load));
+}
+
+#[test]
+fn share_d_its_service_manager_refuses_adds_no_host_and_no_invites() {
+    let home = Home::new();
+    let relay = TestRelay::start();
+    home.install_tooob();
+    home.stand_in(
+        "launchctl",
+        "case \"$*\" in bootstrap*) echo 'no session' >&2; exit 5;; esac",
+    );
+    let new = a_folder();
+    let out = home.tooob(&[
+        "share",
+        new.path().to_str().unwrap(),
+        "--relay",
+        &relay.url,
+        "--invite",
+        "Ann",
+        "-d",
+    ]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("no session"), "{}", stderr(&out));
+    assert_eq!(home.ok(&["ls"]).lines().count(), 1, "no Host was added");
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("#invite="));
+
+    let reused = a_folder();
+    let path = reused.path().to_str().unwrap();
+    home.ok(&["add", "photos", path, "--relay", &relay.url]);
+    let out = home.tooob(&["share", path, "--invite", "Bea", "-d"]);
+    assert!(!out.status.success());
+    assert!(
+        home.ok(&["invites", "photos"]).is_empty(),
+        "no Invite was made"
+    );
+    assert!(entries(&home).is_empty(), "{:?}", entries(&home));
 }
 
 #[test]

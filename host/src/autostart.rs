@@ -95,11 +95,16 @@ fn launchd_service(name: &str) -> String {
     format!("{}/{}", launchd_domain(), label(name))
 }
 
-/// Whether `host` can be kept running here: this box's service manager, if it has one, and tooob
-/// where the install script puts it, which the entry runs. Checked by `keep_running` before it
-/// changes anything, and by anything that must know before it stops a Host serving in a terminal
-/// (#97): each refusal says what to type instead.
-pub fn can_keep_running(name: &str) -> Result<ServiceManager> {
+/// What keeping a Host running here takes, checked: this box's service manager, and tooob where
+/// the install script puts it, which the Host's entry runs.
+pub struct Keeper {
+    manager: ServiceManager,
+    tooob: PathBuf,
+}
+
+/// Check that the Host `name` can be kept running here, before anything changes, or bail saying
+/// what to type instead.
+pub fn require_keeping_running(name: &str) -> Result<Keeper> {
     let neither = || {
         anyhow!(
             "keeping {0} running needs systemd or launchd, and this system has neither.\n  Have \
@@ -125,104 +130,99 @@ pub fn can_keep_running(name: &str) -> Result<ServiceManager> {
             quote(path(&tooob)?),
         );
     }
-    Ok(manager)
+    Ok(Keeper { manager, tooob })
 }
 
-/// `tooob run NAME -d`: keep `host` running, now and after logins, reboots and crashes, by
-/// writing its entry and starting it through its service manager, from scratch if it had one
-/// already. tooob never backgrounds it itself (ADR 0014). Nothing is left behind when the service
-/// manager refuses. What to tell the Owner, a line each.
-pub fn keep_running(host: &Entry) -> Result<Vec<String>> {
-    let manager = can_keep_running(&host.name)?;
-    let tooob = installed_tooob()?;
-    let file = entry_file(host).context("no entry")?;
-    let was_on = file.exists();
-    if was_on && host.running().is_some() {
-        return Ok(vec![already_running(&host.name)]);
-    }
-    not_run_by_hand(host)?;
-    if was_on && manager == ServiceManager::Launchd {
-        // launchd loads an agent once: unload it (stopping the Host) to load what's written now.
-        let _ = call("launchctl", &["bootout", &launchd_service(&host.name)]);
-        host.until_stopped()?;
-    }
-    std::fs::create_dir_all(file.parent().unwrap())?;
-    let text = match manager {
-        ServiceManager::Launchd => plist(host, &tooob)?,
-        ServiceManager::Systemd => systemd_unit(host, &tooob)?,
-    };
-    std::fs::write(&file, text)?;
-    crate::log::make_crash_file(&host.state_dir)?;
-    let started = match manager {
-        ServiceManager::Launchd => {
-            let load = || call("launchctl", &["bootstrap", &launchd_domain(), path(&file)?]);
-            // Just unloaded, launchd may still be letting go of it for a moment.
-            let mut loaded = load();
-            for _ in 0..5 {
-                if loaded.is_ok() || !was_on {
-                    break;
+impl Keeper {
+    /// `-d`: keep `host` running, now and after logins, reboots and crashes, by writing its entry
+    /// and starting it through its service manager, from scratch if it had one already. tooob
+    /// never backgrounds it itself (ADR 0014). Refused while it runs by hand. Nothing is left
+    /// behind when the service manager refuses. What to tell the Owner, a line each.
+    pub fn keep_running(&self, host: &Entry) -> Result<Vec<String>> {
+        let manager = self.manager;
+        let file = entry_file(host).context("no entry")?;
+        let was_on = file.exists();
+        if was_on && host.running().is_some() {
+            return Ok(vec![already_running(&host.name)]);
+        }
+        if let Some(pid) = host.running() {
+            bail!(
+                "{0} is running here (pid {pid}), started by hand: stop it first (Ctrl-C where it \
+                 runs, or `tooob stop {0}`), then `tooob run {0} -d`",
+                host.name
+            );
+        }
+        if was_on && manager == ServiceManager::Launchd {
+            // launchd loads an agent once: unload it (stopping the Host) to load what's written
+            // now.
+            let _ = call("launchctl", &["bootout", &launchd_service(&host.name)]);
+            host.until_stopped()?;
+        }
+        std::fs::create_dir_all(file.parent().unwrap())?;
+        let text = match manager {
+            ServiceManager::Launchd => plist(host, &self.tooob)?,
+            ServiceManager::Systemd => systemd_unit(host, &self.tooob)?,
+        };
+        std::fs::write(&file, text)?;
+        crate::log::make_crash_file(&host.state_dir)?;
+        let started = match manager {
+            ServiceManager::Launchd => {
+                let load = || call("launchctl", &["bootstrap", &launchd_domain(), path(&file)?]);
+                // Just unloaded, launchd may still be letting go of it for a moment.
+                let mut loaded = load();
+                for _ in 0..5 {
+                    if loaded.is_ok() || !was_on {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    loaded = load();
                 }
-                std::thread::sleep(std::time::Duration::from_millis(500));
-                loaded = load();
+                loaded
             }
-            loaded
+            ServiceManager::Systemd => {
+                let unit = unit(&host.name);
+                systemctl(&["daemon-reload"])
+                    .and_then(|()| systemctl(&["enable", &unit]))
+                    .and_then(|()| systemctl(&["restart", &unit]))
+                    .inspect_err(|_| {
+                        let _ = systemctl(&["disable", &unit]);
+                    })
+            }
+        };
+        if let Err(e) = started {
+            let _ = std::fs::remove_file(&file);
+            if manager == ServiceManager::Systemd {
+                let _ = systemctl(&["daemon-reload"]);
+            }
+            return Err(e);
         }
-        ServiceManager::Systemd => {
-            let unit = unit(&host.name);
-            systemctl(&["daemon-reload"])
-                .and_then(|()| systemctl(&["enable", &unit]))
-                .and_then(|()| systemctl(&["restart", &unit]))
-                .inspect_err(|_| {
-                    let _ = systemctl(&["disable", &unit]);
-                })
-        }
-    };
-    if let Err(e) = started {
-        let _ = std::fs::remove_file(&file);
-        if manager == ServiceManager::Systemd {
-            let _ = systemctl(&["daemon-reload"]);
-        }
-        return Err(e);
+        // Kept running again: whatever `tooob stop` put by is done with.
+        forget_put_by(host);
+        let name = &host.name;
+        let mut said = vec![kept_running(name)];
+        said.push(match manager {
+            ServiceManager::Launchd => {
+                "While it serves, this Mac won't idle-sleep, but closing its lid still sleeps it."
+                    .into()
+            }
+            ServiceManager::Systemd => "On a box nobody stays logged in to, `loginctl \
+                                        enable-linger` keeps it running from boot, logged in or \
+                                        not."
+                .into(),
+        });
+        Ok(said)
     }
-    // Kept running again: whatever `tooob stop` put by is done with.
-    if let Some(kept) = stopped_entry_file(host) {
-        let _ = std::fs::remove_file(kept);
-    }
-    let name = &host.name;
-    let mut said = vec![kept_running(name)];
-    said.push(match manager {
-        ServiceManager::Launchd => {
-            "While it serves, this Mac won't idle-sleep, but closing its lid still sleeps it."
-                .into()
-        }
-        ServiceManager::Systemd => "On a box nobody stays logged in to, `loginctl enable-linger` \
-                                    keeps it running from boot, logged in or not."
-            .into(),
-    });
-    Ok(said)
-}
-
-/// Refused while `host` runs by hand, with no entry: `-d` would start a second copy.
-pub fn not_run_by_hand(host: &Entry) -> Result<()> {
-    if let Some(pid) = host.running().filter(|_| !is_on(host)) {
-        bail!(
-            "{0} is running here (pid {pid}), started by hand: stop it first (Ctrl-C where it \
-             runs, or `tooob stop {0}`), then `tooob run {0} -d`",
-            host.name
-        );
-    }
-    Ok(())
 }
 
 /// What `keep_running` says first: that `name` is kept running, and how to follow and stop it.
-pub fn kept_running(name: &str) -> String {
+fn kept_running(name: &str) -> String {
     format!(
         "{name} is kept running now, and after logins, reboots and crashes: `tooob logs {name} \
          -f` follows it, and `tooob stop {name}` stops it."
     )
 }
 
-/// What `-d` says of a Host its service manager is running already: nothing is changed.
+/// What's said of a Host its service manager is running already.
 pub fn already_running(name: &str) -> String {
     format!(
         "{name} is already running in the background: `tooob logs {name} -f` follows it, and \
@@ -234,9 +234,7 @@ pub fn already_running(name: &str) -> String {
 /// whatever the service manager says, and whatever `tooob stop` put by. Nothing to do when it was
 /// never kept running.
 pub fn remove(host: &Entry) -> Result<()> {
-    if let Some(kept) = stopped_entry_file(host) {
-        let _ = std::fs::remove_file(kept);
-    }
+    forget_put_by(host);
     let Some(file) = entry_file(host).filter(|file| file.exists()) else {
         return Ok(());
     };
@@ -259,54 +257,123 @@ pub fn remove(host: &Entry) -> Result<()> {
     }
 }
 
-/// `tooob stop` on `host`, whose Autostart is on: stop it through its service manager and keep it
-/// stopped, across logins and reboots. Its entry is unloaded (launchd) or disabled (systemd), and
-/// moved into its state folder, where nothing loads it at login or boot, and where `start` (#100)
-/// finds it to start it again the way it ran. The entry stays where it was if the Host won't stop.
-pub fn stop(host: &Entry) -> Result<()> {
-    let Some(file) = entry_file(host).filter(|file| file.exists()) else {
-        return Ok(());
+/// `tooob stop` on `host`: if it's kept running, or a stop of it was cut short, stop it through
+/// its service manager and keep it stopped, across logins and reboots; false when its service
+/// manager has nothing to do with it.
+///
+/// Its entry goes out of the service manager's sight first, into its state folder (systemd's
+/// unit is disabled just before, which needs the file), so whatever happens next, no login or
+/// reboot brings the Host back; then it's stopped. If it won't stop, its entry is put back, and
+/// it's still kept running. The entry is put by as `.stopping` until the Host has stopped, then
+/// `.stopped`, where `start` (#100) finds it: the next `stop` finishes one cut short in between.
+pub fn stop(host: &Entry) -> Result<bool> {
+    let (Some(entry), Some(stopping), Some(stopped)) = (
+        entry_file(host),
+        put_by(host, "stopping"),
+        put_by(host, "stopped"),
+    ) else {
+        return Ok(false);
     };
-    let manager = ServiceManager::here();
-    let stopped = match manager {
-        Some(ServiceManager::Launchd) => {
-            call("launchctl", &["bootout", &launchd_service(&host.name)])
+    let name = &host.name;
+    let fresh = entry.exists();
+    if !fresh && !stopping.exists() {
+        return Ok(false);
+    }
+    let systemd = ServiceManager::here() == Some(ServiceManager::Systemd);
+    let unit = unit(name);
+    let mut put = Ok(());
+    if fresh {
+        if systemd {
+            let _ = systemctl(&["disable", &unit]);
         }
-        Some(ServiceManager::Systemd) => systemctl(&["disable", "--now", &unit(&host.name)]),
+        put = move_file(&entry, &stopping);
+        if let Err(e) = &put
+            && !systemd
+        {
+            bail!("{name} wasn't stopped: its entry couldn't be put by ({e:#})");
+        }
+    }
+    let asked = match ServiceManager::here() {
+        Some(ServiceManager::Launchd) => call("launchctl", &["bootout", &launchd_service(name)]),
+        Some(ServiceManager::Systemd) => systemctl(&["stop", &unit]),
         None => Ok(()),
     };
+    if systemd {
+        let _ = systemctl(&["daemon-reload"]);
+    }
     // launchd refuses to unload an agent it hasn't loaded (between crashes, or one kept running
     // from outside a login session): that's only a problem if the Host still runs.
     if let Err(e) = host.until_stopped() {
-        return Err(stopped.err().unwrap_or(e));
+        let why = asked.err().unwrap_or(e);
+        if !fresh {
+            return Err(why);
+        }
+        let back = match &put {
+            Ok(()) => move_file(&stopping, &entry),
+            Err(_) => Ok(()),
+        };
+        if systemd {
+            let _ = systemctl(&["daemon-reload"]);
+            let _ = systemctl(&["enable", &unit]);
+        }
+        return Err(match back {
+            Ok(()) => anyhow!("{name} didn't stop, so it's still kept running: {why:#}"),
+            Err(e) => anyhow!(
+                "{name} didn't stop ({why:#}), and its entry couldn't be put back ({e:#}): \
+                 move {} to {} to keep it running",
+                stopping.display(),
+                entry.display()
+            ),
+        });
     }
-    let kept = stopped_entry_file(host).context("no entry")?;
-    move_file(&file, &kept)?;
-    if manager == Some(ServiceManager::Systemd) {
-        let _ = systemctl(&["daemon-reload"]);
+    let done = put.and_then(|()| Ok(std::fs::rename(&stopping, &stopped)?));
+    if let Err(e) = done {
+        let left = if entry.exists() { &entry } else { &stopping };
+        bail!(
+            "{name} is stopped, but its entry couldn't be put by ({e:#}): it's still at {}, and \
+             `tooob stop {name}` again finishes the job",
+            left.display()
+        );
     }
-    Ok(())
+    Ok(true)
 }
 
 /// Whether `host` was kept running and `tooob stop` stopped it: its entry is put by, to start it
 /// again the way it ran (#100).
 pub fn is_kept_stopped(host: &Entry) -> bool {
-    stopped_entry_file(host).is_some_and(|file| file.exists())
+    ["stopped", "stopping"]
+        .iter()
+        .any(|state| put_by(host, state).is_some_and(|file| file.exists()))
 }
 
-/// Where `tooob stop` puts `host`'s entry by: in its state folder, out of its service manager's
-/// sight. None without a service manager.
-pub fn stopped_entry_file(host: &Entry) -> Option<PathBuf> {
+/// Where `tooob stop` puts `host`'s entry by, as `state` (`stopping`, then `stopped`): in its
+/// state folder, out of its service manager's sight. None without a service manager.
+fn put_by(host: &Entry, state: &str) -> Option<PathBuf> {
     let entry = entry_file(host)?;
     let name = entry.file_name()?.to_string_lossy().into_owned();
-    Some(host.state_dir.join(format!("{name}.stopped")))
+    Some(host.state_dir.join(format!("{name}.{state}")))
 }
 
-/// Move `from` to `to`, which may be on another file system (a `TOOOB_HOME` elsewhere).
+/// Forget whatever `tooob stop` put by for `host`. Deliberately quiet: a file that isn't there,
+/// or can't go, changes nothing about whether the Host is kept running, which only its entry says.
+fn forget_put_by(host: &Entry) {
+    for state in ["stopped", "stopping"] {
+        if let Some(file) = put_by(host, state) {
+            let _ = std::fs::remove_file(file);
+        }
+    }
+}
+
+/// Move `from` to `to`, which may be on another file system (a `TOOOB_HOME` elsewhere). On
+/// failure, `from` is as it was and nothing is left at `to`.
 fn move_file(from: &Path, to: &Path) -> Result<()> {
-    if std::fs::rename(from, to).is_err() {
-        std::fs::copy(from, to)?;
-        std::fs::remove_file(from)?;
+    if std::fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    let copied = std::fs::copy(from, to).and_then(|_| std::fs::remove_file(from));
+    if let Err(e) = copied {
+        let _ = std::fs::remove_file(to);
+        return Err(e.into());
     }
     Ok(())
 }
