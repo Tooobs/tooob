@@ -196,7 +196,8 @@ impl Home {
         }
     }
 
-    fn command(&self, args: &[&str]) -> Command {
+    /// `tooob ARGS` as it runs here, not started.
+    pub fn command(&self, args: &[&str]) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_tooob"));
         cmd.args(args)
             .env("TOOOB_HOME", self.0.path())
@@ -341,6 +342,22 @@ impl Home {
         Running {
             child,
             log: log.into_temp_path(),
+        }
+    }
+
+    /// Wait until Host `name`'s own log says `what`: where to look for a Host its service manager
+    /// runs, which prints nothing.
+    pub fn until_logged(&self, name: &str, what: &str) {
+        let log = self.shown(name, "log");
+        let read = || std::fs::read_to_string(&log).unwrap_or_default();
+        let started = Instant::now();
+        while !read().contains(what) {
+            assert!(
+                started.elapsed() < Duration::from_secs(20),
+                "{name} never logged {what:?}:\n{}",
+                read()
+            );
+            std::thread::sleep(Duration::from_millis(50));
         }
     }
 

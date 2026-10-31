@@ -16,6 +16,7 @@ use tooob::hosts::{
     Entry, Home, NO_RELAY, RUN_YOUR_OWN, check_relay, name_char, no_invite_links, no_key_address,
     quote,
 };
+use tooob::log::{self, Log, Logged};
 use tooob::upgrade::{self, Relays, ReleaseNumber, Releases};
 
 // musl's own allocator costs ~22% more CPU per byte served than glibc's (measured in #59), so
@@ -41,8 +42,8 @@ const USAGE: &str = "usage:
   tooob enable NAME                               start it by itself, now, at login and again after
                                                   a failure (launchd or systemd runs it)
   tooob disable NAME                              stop it, and stop starting it by itself
-  tooob logs NAME [-f]                            the log of a Host that starts by itself; -f
-                                                  follows it
+  tooob logs NAME [-n N|all] [-f] [--json]       its log, the last 50 lines, N, or all of it;
+                                                  -f follows it, --json gives an object a line
   tooob invite NAME LABEL [--approve] [--owner] [--expires 1h]  print an Invite Link
   tooob pair NAME LABEL                           Pairing Invite (this box only)
   tooob visitors NAME [--json] | invites NAME [--json]
@@ -60,7 +61,7 @@ Host is running or not. There's no default Relay: deploy/ shows how to run your 
 asked but upgrade's one question: what's missing is an error that shows the command to type.
 Running Hosts look for a newer Release once a day, and say when one is out.";
 
-const VALUE_FLAGS: &[&str] = &["relay", "expires", "name"];
+const VALUE_FLAGS: &[&str] = &["relay", "expires", "name", "lines"];
 const BARE_FLAGS: &[&str] = &[
     "local", "json", "approve", "owner", "follow", "yes", "check", "anyway",
 ];
@@ -80,7 +81,9 @@ type Flags = HashMap<String, Option<String>>;
 #[tokio::main]
 async fn main() {
     if let Err(e) = run().await {
-        eprintln!("tooob: {e:#}");
+        if !e.is::<Logged>() {
+            eprintln!("tooob: {e:#}");
+        }
         std::process::exit(1);
     }
 }
@@ -161,9 +164,9 @@ async fn run() -> Result<()> {
             autostart::disable(&named(&home, &typed, "disable", words.get(1))?)?;
         }
         Some("logs") => {
-            exactly(2, &["follow"])?;
+            exactly(2, &["follow", "lines", "json"])?;
             let host = named(&home, &typed, "logs", words.get(1))?;
-            logs(&host, flags.contains_key("follow")).await?;
+            logs(&host, &flags).await?;
         }
         Some("rm") => {
             exactly(2, &[])?;
@@ -673,6 +676,7 @@ fn lasting(duration: Duration) -> String {
 /// says now. One process per Host: a second is refused, with the first one's pid.
 /// `state` is its Home's state folder, where the box's release checks are kept.
 async fn serve(host: &Entry, state: &Path, invitees: Vec<Invitee>) -> Result<()> {
+    log::keep_output_off_the_log(&host.state_dir);
     if autostart::is_on(host) && !autostart::started_by_its_entry(host) {
         bail!(
             "{0} starts by itself, so its service manager runs it: `tooob logs {0} -f` follows \
@@ -684,6 +688,24 @@ async fn serve(host: &Entry, state: &Path, invitees: Vec<Invitee>) -> Result<()>
         host.key_address()?; // say so now, not once it's serving
     }
     let _lock = host.lock()?;
+    // From here on, what it says is its log's: however it was started (ADR 0025).
+    let log = log::keep(Log::open(
+        &host.state_dir,
+        &host.name,
+        !autostart::started_by_its_entry(host),
+    ));
+    log.take_dying_words();
+    match serve_locked(host, state, invitees).await {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            log.write(&format!("{e:#}"));
+            Err(Logged.into())
+        }
+    }
+}
+
+/// `tooob run`, holding the lock on its state, with its log kept.
+async fn serve_locked(host: &Entry, state: &Path, invitees: Vec<Invitee>) -> Result<()> {
     let site = host.settings.site()?;
     let network = host
         .settings
@@ -699,8 +721,7 @@ async fn serve(host: &Entry, state: &Path, invitees: Vec<Invitee>) -> Result<()>
         && !matches!(problem, Problem::Unreachable(_))
     {
         bail!(
-            "{} won't start ({} names its Relay): {}",
-            host.name,
+            "won't start ({} names its Relay): {}",
             host.settings_file.display(),
             problem.at(&host.settings.relay)
         );
@@ -734,7 +755,7 @@ fn every(var: &str, default: Duration) -> Result<Duration> {
 
 /// Run the Host in this process until it's told to stop: Ctrl-C, SIGTERM from Docker or a
 /// service manager, SIGHUP from a closing terminal, or the Owner (`tooob stop`). Stopping cleanly
-/// closes every Visitor's connection, so their browsers know at once. Its log goes to stderr.
+/// closes every Visitor's connection, so their browsers know at once. What it says goes in its log.
 async fn serve_here(
     host: &Entry,
     state: &Path,
@@ -770,16 +791,16 @@ async fn serve_here(
         Some(Ok(version)) => format!(", Bootstrap {version}"),
         Some(Err(_)) => ", Bootstrap unknown".to_string(),
     };
-    eprintln!(
-        "tooob: {name}: starting {}{beside}",
+    log::line(&format!(
+        "starting {}{beside}",
         release_and_protocol_version()
-    );
+    ));
     if let Some(Err(problem)) = &bootstrap {
-        eprintln!(
-            "tooob: {name}: warning: {}; it's checked again every {}",
+        log::line(&format!(
+            "warning: {}; it's checked again every {}",
             problem.at(&host.settings.relay),
             lasting(check_every)
-        );
+        ));
     }
     let running = Host::start(HostConfig {
         site,
@@ -787,23 +808,23 @@ async fn serve_here(
         network,
     })
     .await?;
-    eprintln!(
-        "tooob: {name}: Host {}, through {through}",
+    log::line(&format!(
+        "Host {}, through {through}",
         running.address().id.to_z32()
-    );
+    ));
     // Until this returns: the Host stops, and its checks with it.
     let _checking = bootstrap.map(|first| {
         let watch = Watch::new(&host.settings.relay, &first);
-        bootstrap::keep_checking(name, watch, running.control(), check_every)
+        bootstrap::keep_checking(watch, running.control(), check_every)
     });
     let _release_checks = (!upgrade::release_check_off())
-        .then(|| upgrade::keep_checking_releases(name, state, release_check_every));
+        .then(|| upgrade::keep_checking_releases(state, release_check_every));
     // Browsers reach a Host only through its Relay, so until it's there, its links lead nowhere.
     let online = async {
         let wait = Duration::from_secs(15);
         if !local && tokio::time::timeout(wait, running.online()).await.is_err() {
-            eprintln!(
-                "tooob: {name}: warning: not on its Relay yet, so Visitors' browsers can't reach it for now"
+            log::line(
+                "warning: not on its Relay yet, so Visitors' browsers can't reach it for now",
             );
         }
     };
@@ -813,14 +834,13 @@ async fn serve_here(
         _ = running.stop_requested() => true,
     };
     if !stopped_early {
-        eprintln!("tooob: {name}: serving {serving}");
+        log::line(&format!("serving {serving}"));
         // While it serves, and no longer: a Host started by hand behaves as one started by
         // itself (ADR 0014).
         let awake = Awake::hold(&format!("tooob: {name} is serving"));
         if awake.is_some() {
-            eprintln!(
-                "tooob: {name}: this Mac won't idle-sleep while it serves (closing its lid still \
-                 sleeps it)"
+            log::line(
+                "this Mac won't idle-sleep while it serves (closing its lid still sleeps it)",
             );
         }
         // The socket only: this process holds the lock, and taking it again here would release it.
@@ -838,9 +858,9 @@ async fn serve_here(
         .await
         .is_err()
     {
-        eprintln!("tooob: {name}: warning: didn't stop cleanly within 5 s");
+        log::line("warning: didn't stop cleanly within 5 s");
     }
-    eprintln!("tooob: {name}: stopped");
+    log::line("stopped");
     Ok(())
 }
 
@@ -877,43 +897,47 @@ async fn stop(host: &Entry) -> Result<()> {
     host.until_stopped()
 }
 
-/// `tooob logs`: the log a Host's service manager writes, all of it; and with `-f`, what it writes
-/// next, until Ctrl-C.
-async fn logs(host: &Entry, follow: bool) -> Result<()> {
-    use std::io::{Seek, Write};
-    use std::os::unix::fs::MetadataExt;
-    let file = host.log_file();
-    if !file.exists() && !autostart::is_on(host) {
-        bail!(
-            "{0} has no log: a Host writes one when it starts by itself (`tooob enable {0}`); run \
-             by hand, it logs where it runs",
+/// `tooob logs`: a Host's log, the last 50 lines of it or as many as `-n` says (`all`); and with
+/// `-f`, what it writes next, until Ctrl-C. With `--json`, an object a line.
+async fn logs(host: &Entry, flags: &Flags) -> Result<()> {
+    use std::io::Write;
+    let last = match flags.get("lines").cloned().flatten() {
+        None => Some(50),
+        Some(all) if all == "all" => None,
+        Some(n) => match n.parse::<usize>() {
+            Ok(n) => Some(n),
+            _ => bail!("-n takes a number of lines, or all: not {n:?}"),
+        },
+    };
+    let mut log = log::Reader::open(&host.state_dir);
+    if !log.exists() {
+        eprintln!(
+            "tooob: {} has no log yet: a Host starts one when it first runs",
             host.name
         );
     }
-    let mut log: Option<std::fs::File> = None;
-    loop {
-        // A new file, or one emptied: read it from the start.
-        if let Ok(here) = std::fs::metadata(&file) {
-            let stale = match log.as_mut() {
-                Some(open) => {
-                    open.metadata()?.ino() != here.ino() || here.len() < open.stream_position()?
+    let lines = log.so_far()?;
+    let from = last.map_or(0, |n| lines.len().saturating_sub(n));
+    let json = flags.contains_key("json");
+    let show = |lines: &[String]| -> Result<()> {
+        let mut out = std::io::stdout().lock();
+        for line in lines {
+            match json {
+                true => {
+                    let line = log::Line::parse(&host.name, line);
+                    writeln!(out, "{}", serde_json::to_string(&line)?)?
                 }
-                None => true,
-            };
-            if stale {
-                log = std::fs::File::open(&file).ok();
+                false => writeln!(out, "{line}")?,
             }
         }
-        if let Some(open) = log.as_mut() {
-            let mut out = std::io::stdout().lock();
-            std::io::copy(open, &mut out)?;
-            out.flush()?;
-        }
-        if !follow {
-            return Ok(());
-        }
+        Ok(out.flush()?)
+    };
+    show(&lines[from..])?;
+    while flags.contains_key("follow") {
         tokio::time::sleep(Duration::from_millis(200)).await;
+        show(&log.more()?)?;
     }
+    Ok(())
 }
 
 /// `tooob upgrade [VERSION]`: replace this box's `tooob` with the newest final Release, or the one
@@ -1104,10 +1128,11 @@ impl Typed {
     }
 }
 
-/// The flag `arg` is, without its dashes; `-f` is `--follow`. None for a word.
+/// The flag `arg` is, without its dashes; `-f` is `--follow`, `-n` is `--lines`. None for a word.
 fn flag_name(arg: &str) -> Option<&str> {
     match arg {
         "-f" => Some("follow"),
+        "-n" => Some("lines"),
         _ => arg.strip_prefix("--"),
     }
 }
@@ -1120,9 +1145,7 @@ fn parse(args: impl Iterator<Item = String>) -> Result<(Vec<String>, Flags, Vec<
         match flag_name(&a) {
             Some("invite") => invitees.push(args.next().context("--invite needs a Label")?),
             Some(name) if VALUE_FLAGS.contains(&name) => {
-                let value = args
-                    .next()
-                    .with_context(|| format!("--{name} needs a value"))?;
+                let value = args.next().with_context(|| format!("{a} needs a value"))?;
                 flags.insert(name.to_string(), Some(value));
             }
             Some(name) if BARE_FLAGS.contains(&name) => {

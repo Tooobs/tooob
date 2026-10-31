@@ -180,17 +180,16 @@ impl Watch {
     }
 }
 
-/// Check the Relay's Bootstrap every `every` while the Host named `name` runs, logging what
+/// Check the Relay's Bootstrap every `every` while the Host runs, logging what
 /// changes and telling `control`, for `tooob ls` and `tooob show`. The Host keeps serving
 /// whatever is found: Visitors already connected keep working. Stops when dropped.
-pub fn keep_checking(name: &str, mut watch: Watch, control: Control, every: Duration) -> Checking {
-    let name = name.to_string();
+pub fn keep_checking(mut watch: Watch, control: Control, every: Duration) -> Checking {
     control.found_bootstrap(watch.found());
     Checking(tokio::spawn(async move {
         loop {
             tokio::time::sleep(every).await;
             if let Some(said) = watch.update(check(&watch.relay).await) {
-                eprintln!("tooob: {name}: {said}");
+                crate::log::line(&said);
             }
             control.found_bootstrap(watch.found());
         }

@@ -143,6 +143,7 @@ pub fn enable(host: &Entry) -> Result<Vec<String>> {
         ServiceManager::Systemd => systemd_unit(host, &tooob)?,
     };
     std::fs::write(&file, text)?;
+    crate::log::make_crash_file(&host.state_dir)?;
     let started = match manager {
         ServiceManager::Launchd => {
             let load = || call("launchctl", &["bootstrap", &launchd_domain(), path(&file)?]);
@@ -325,7 +326,8 @@ fn environment(host: &Entry) -> Result<Vec<(&'static str, String)>> {
 pub const AUTOSTART: &str = "TOOOB_AUTOSTART";
 
 /// A launchd agent for `host`: run at load (login), kept alive while it exits with a failure, with
-/// its output in its log. Interactive, so macOS doesn't throttle what it serves.
+/// its output, only its dying words since it writes its own log, in its crash log. Interactive, so
+/// macOS doesn't throttle what it serves.
 fn plist(host: &Entry, tooob: &Path) -> Result<String> {
     let string = |s: &str| {
         format!(
@@ -335,7 +337,7 @@ fn plist(host: &Entry, tooob: &Path) -> Result<String> {
                 .replace('>', "&gt;")
         )
     };
-    let log = string(path(&host.log_file())?);
+    let crashes = string(path(&crate::log::crash_file(&host.state_dir))?);
     let env: String = environment(host)?
         .iter()
         .map(|(k, v)| format!("\t\t<key>{k}</key>\n\t\t{}\n", string(v)))
@@ -367,9 +369,9 @@ fn plist(host: &Entry, tooob: &Path) -> Result<String> {
 	<key>ProcessType</key>
 	<string>Interactive</string>
 	<key>StandardOutPath</key>
-	{log}
+	{crashes}
 	<key>StandardErrorPath</key>
-	{log}
+	{crashes}
 </dict>
 </plist>
 "#,
@@ -380,7 +382,8 @@ fn plist(host: &Entry, tooob: &Path) -> Result<String> {
 }
 
 /// A systemd user unit for `host`: started with the user's own service manager (at login, or at
-/// boot with lingering), restarted when it exits with a failure, with its output in its log.
+/// boot with lingering), restarted when it exits with a failure, with its output, only its dying
+/// words since it writes its own log, in its crash log.
 fn systemd_unit(host: &Entry, tooob: &Path) -> Result<String> {
     // Quoted, with systemd's own specifiers (`%`) escaped.
     let quoted = |s: &str| {
@@ -391,7 +394,7 @@ fn systemd_unit(host: &Entry, tooob: &Path) -> Result<String> {
                 .replace('%', "%%")
         )
     };
-    let log = path(&host.log_file())?.replace('%', "%%");
+    let crashes = path(&crate::log::crash_file(&host.state_dir))?.replace('%', "%%");
     let env: String = environment(host)?
         .iter()
         .map(|(k, v)| format!("Environment={}\n", quoted(&format!("{k}={v}"))))
@@ -406,8 +409,8 @@ fn systemd_unit(host: &Entry, tooob: &Path) -> Result<String> {
          {env}\
          Restart=on-failure\n\
          RestartSec=5\n\
-         StandardOutput=append:{log}\n\
-         StandardError=append:{log}\n\
+         StandardOutput=append:{crashes}\n\
+         StandardError=append:{crashes}\n\
          \n\
          [Install]\n\
          WantedBy=default.target\n",

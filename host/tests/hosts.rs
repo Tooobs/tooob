@@ -78,7 +78,7 @@ fn add_needs_a_relay_and_a_bootstrap_is_refused() {
     for command in [
         "tooob enable NAME",
         "tooob disable NAME",
-        "tooob logs NAME [-f]",
+        "tooob logs NAME [-n N|all] [-f] [--json]",
     ] {
         assert!(usage.contains(command), "{command}: {usage}");
     }
@@ -1005,6 +1005,20 @@ fn enable_with_neither_systemd_nor_launchd_says_what_to_have_run_and_writes_noth
     assert!(home.row("blog").contains(" no "), "{}", home.row("blog"));
 }
 
+/// Where `photos`' service manager puts what it prints itself: only its dying words, since it
+/// writes its own log (ADR 0025).
+fn crash_log(home: &Home) -> String {
+    format!("{}/crash.log", home.shown("photos", "state folder"))
+}
+
+/// The crash log is made by `enable`, so the service manager appends to a file only the Owner's
+/// account reads.
+fn assert_crash_log_is_private(crashes: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(crashes).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600, "{crashes}");
+}
+
 /// This user's id, as launchd's `gui/UID` domain names it.
 fn uid() -> u32 {
     unsafe { libc::getuid() }
@@ -1017,7 +1031,7 @@ fn enable_with_launchd_writes_a_launch_agent_running_the_installed_tooob_and_loa
     home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
     let installed = home.install_tooob();
     home.stand_in("launchctl", "");
-    let log = home.shown("photos", "log");
+    let crashes = crash_log(&home);
     assert_eq!(home.shown("photos", "Autostart"), "no");
 
     let out = home.tooob(&["enable", "photos"]);
@@ -1056,8 +1070,8 @@ fn enable_with_launchd_writes_a_launch_agent_running_the_installed_tooob_and_loa
             "KeepAlive",
             "<dict>\n\t\t<key>SuccessfulExit</key>\n\t\t<false/>\n\t</dict>".to_string(),
         ),
-        ("StandardOutPath", format!("<string>{log}</string>")),
-        ("StandardErrorPath", format!("<string>{log}</string>")),
+        ("StandardOutPath", format!("<string>{crashes}</string>")),
+        ("StandardErrorPath", format!("<string>{crashes}</string>")),
     ] {
         let at = format!("<key>{key}</key>\n\t{value}");
         assert!(plist.contains(&at), "no {at}\nin:\n{plist}");
@@ -1080,6 +1094,7 @@ fn enable_with_launchd_writes_a_launch_agent_running_the_installed_tooob_and_loa
         home.calls("launchctl"),
         [format!("bootstrap gui/{} {}", uid(), agent.display())]
     );
+    assert_crash_log_is_private(&crashes);
     let row: Vec<String> = home
         .row("photos")
         .split_whitespace()
@@ -1095,7 +1110,7 @@ fn enable_with_systemd_writes_a_user_unit_running_the_installed_tooob_and_starts
     home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
     let installed = home.install_tooob();
     home.stand_in("systemctl", "");
-    let log = home.shown("photos", "log");
+    let crashes = crash_log(&home);
 
     let out = home.tooob(&["enable", "photos"]);
     assert!(out.status.success(), "{}", stderr(&out));
@@ -1113,8 +1128,8 @@ fn enable_with_systemd_writes_a_user_unit_running_the_installed_tooob_and_starts
         format!("ExecStart=\"{}\" run photos", installed.display()),
         format!("Environment=\"TOOOB_HOME={}\"", home.0.path().display()),
         "Restart=on-failure".to_string(),
-        format!("StandardOutput=append:{log}"),
-        format!("StandardError=append:{log}"),
+        format!("StandardOutput=append:{crashes}"),
+        format!("StandardError=append:{crashes}"),
         "WantedBy=default.target".to_string(),
     ] {
         assert!(text.lines().any(|l| l == line), "no {line}\nin:\n{text}");
@@ -1128,6 +1143,7 @@ fn enable_with_systemd_writes_a_user_unit_running_the_installed_tooob_and_starts
             "--user restart tooob@photos.service",
         ]
     );
+    assert_crash_log_is_private(&crashes);
     assert!(
         home.row("photos").contains(" yes "),
         "{}",
@@ -1223,12 +1239,12 @@ fn entry_env(home: &Home) -> Vec<(String, String)> {
     env
 }
 
-/// `tooob run photos` as its entry starts it, once it's serving.
+/// `tooob run photos` as its entry starts it, once its log says it's serving: it prints nothing.
 fn run_as_its_entry(home: &Home) -> support::home::Running {
     let env = entry_env(home);
     let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let running = home.spawn_with(&["run", "photos"], &env);
-    running.until_it_says("serving");
+    home.until_logged("photos", "photos: serving ");
     running
 }
 
@@ -1376,54 +1392,16 @@ fn enable_on_an_enabled_host_starts_it_afresh_through_its_service_manager() {
     let agent = entries(&home)[0].clone();
     let load = format!("bootstrap gui/{} {}", uid(), agent.display());
     assert_eq!(home.calls("launchctl"), [load.clone(), unload, load]);
-    running.until_it_says("photos: stopped");
+    home.until_logged("photos", "photos: stopped");
+    drop(running);
 }
 
 #[test]
-fn logs_shows_an_enabled_hosts_log_and_follows_it_with_f() {
+fn logs_with_no_host_name_lists_the_hosts() {
     let home = Home::new();
     let folder = a_folder();
     home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
     home.ok(&["add", "films", "127.0.0.1:8096", "--local"]);
-    let none = home.tooob(&["logs", "photos"]);
-    assert!(!none.status.success());
-    assert_eq!(
-        stderr(&none),
-        "tooob: photos has no log: a Host writes one when it starts by itself (`tooob enable \
-         photos`); run by hand, it logs where it runs\n"
-    );
-
-    home.install_tooob();
-    home.stand_in("launchctl", "");
-    home.ok(&["enable", "photos"]);
-    // As launchd would: the Host's output, appended to its log.
-    let log = home.shown("photos", "log");
-    let append = |line: &str| {
-        use std::io::Write;
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log)
-            .unwrap();
-        writeln!(file, "{line}").unwrap();
-    };
-    append("tooob: photos: starting");
-    append("tooob: photos: serving");
-    assert_eq!(
-        home.ok(&["logs", "photos"]),
-        "tooob: photos: starting\ntooob: photos: serving\n"
-    );
-
-    let following = home.spawn(&["logs", "photos", "-f"]);
-    following.until_it_says("photos: serving\n");
-    append("tooob: photos: stopped");
-    following.until_it_says("photos: serving\ntooob: photos: stopped\n");
-    assert!(
-        !following
-            .log()
-            .contains("tooob: photos: starting\ntooob: photos: starting")
-    );
-
     let out = home.tooob(&["logs"]);
     assert_eq!(
         stderr(&out),

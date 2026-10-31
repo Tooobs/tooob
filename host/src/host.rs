@@ -64,11 +64,11 @@ impl Host {
         if config.data_dir.exists() {
             let mode = std::fs::metadata(&config.data_dir)?.permissions().mode();
             if mode & 0o077 != 0 {
-                eprintln!(
-                    "tooob: warning: {} is readable by other accounts (mode {:o}); consider `chmod 700` on it",
+                crate::log::line(&format!(
+                    "warning: {} is readable by other accounts (mode {:o}); consider `chmod 700` on it",
                     config.data_dir.display(),
                     mode & 0o777
-                );
+                ));
             }
         } else {
             std::fs::DirBuilder::new()
@@ -195,10 +195,10 @@ pub(crate) fn load_host_key(data_dir: &std::path::Path) -> Result<SecretKey> {
         let bytes: [u8; 32] = bytes.try_into().ok().context("bad host key file")?;
         // Tighten older key files; if the filesystem won't let us, say so rather than refuse to run.
         if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
-            eprintln!(
-                "tooob: warning: couldn't make {} private: {e}",
+            crate::log::line(&format!(
+                "warning: couldn't make {} private: {e}",
                 path.display()
-            );
+            ));
         }
         return Ok(SecretKey::from_bytes(&bytes));
     }
@@ -296,7 +296,7 @@ impl ProtocolHandler for Admission {
         let visitor = match tokio::time::timeout(wait, hello).await {
             Ok(Ok(visitor)) => visitor,
             Ok(Err(e)) => {
-                eprintln!("tooob: refused a hello: {e:#}");
+                crate::log::line(&format!("refused a hello: {e:#}"));
                 conn.close(1u32.into(), b"bad hello");
                 return Ok(());
             }
@@ -311,7 +311,7 @@ impl ProtocolHandler for Admission {
             let direct = direct.clone();
             tokio::spawn(async move {
                 if let Err(e) = this.iroh_stream(send, recv, &visitor, conn, &direct).await {
-                    eprintln!("tooob: stream from {}: {e:#}", &visitor[..8]);
+                    crate::log::line(&format!("stream from {}: {e:#}", &visitor[..8]));
                 }
             });
         }
@@ -637,7 +637,8 @@ impl Admission {
         wire::write_line(send, &reply).await?;
         let mut stream = resp.bytes_stream();
         while let Some(chunk) = stream.next().await {
-            send.write_all(&chunk?).await?;
+            // Without its URL: which pages a Visitor opens is never logged (ADR 0025).
+            send.write_all(&chunk.map_err(|e| e.without_url())?).await?;
         }
         Ok(())
     }

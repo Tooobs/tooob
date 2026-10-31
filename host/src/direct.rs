@@ -262,7 +262,7 @@ impl PeerConnectionEventHandler for Handler {
             (self.admission.clone(), self.visitor.clone(), self.credit);
         tokio::spawn(async move {
             if let Err(e) = mux(dc, admission, visitor, credit).await {
-                eprintln!("tooob: direct path: {e:#}");
+                crate::log::line(&format!("direct path: {e:#}"));
             }
         });
     }
@@ -340,10 +340,10 @@ async fn mux(
                     // Never waits: a browser that takes credit stays within it.
                     match room.try_acquire_many_owned(n) {
                         Err(TryAcquireError::NoPermits) => {
-                            eprintln!(
-                                "tooob: direct stream from {}: sent past its credit",
+                            crate::log::line(&format!(
+                                "direct stream from {}: sent past its credit",
                                 &visitor[..8]
-                            );
+                            ));
                             if let Some(stream) = streams.remove(&id) {
                                 stream.reset().await;
                             }
@@ -403,7 +403,7 @@ fn serve(
     let (recv, send) = tokio::io::split(host_side);
     let serving = tokio::spawn(async move {
         if let Err(e) = admission.stream(send, recv, &visitor).await {
-            eprintln!("tooob: direct stream from {}: {e:#}", &visitor[..8]);
+            crate::log::line(&format!("direct stream from {}: {e:#}", &visitor[..8]));
         }
     });
     let (input, mut queue) = mpsc::unbounded_channel::<Bytes>();

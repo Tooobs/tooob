@@ -353,9 +353,9 @@ impl Entry {
         crate::host::host_key(&self.state_dir)
     }
 
-    /// Where the service manager writes its output (#40).
+    /// Its log, which it writes itself however it was started (ADR 0025).
     pub fn log_file(&self) -> PathBuf {
-        self.state_dir.join("host.log")
+        crate::log::file(&self.state_dir)
     }
 
     /// The pid of the process running this Host, if one is. Asks without taking the lock, so it

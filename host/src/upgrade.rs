@@ -548,11 +548,11 @@ async fn newest_checked(state: &Path, every: Duration) -> Option<ReleaseNumber> 
     ReleaseNumber::parse(&newest?)
 }
 
-/// While the Host named `name` runs, check for a newer Release each `every` (at most once each
+/// While the Host runs, check for a newer Release each `every` (at most once each
 /// `every` for the whole box: see `newest_checked`), and say once in its log when one is out.
 /// `state` is its Home's state folder. Stops when dropped.
-pub fn keep_checking_releases(name: &str, state: &Path, every: Duration) -> ReleaseChecks {
-    let (name, state) = (name.to_string(), state.to_path_buf());
+pub fn keep_checking_releases(state: &Path, every: Duration) -> ReleaseChecks {
+    let state = state.to_path_buf();
     // Often enough to notice another Host's check.
     let nap = every.min(Duration::from_secs(3600));
     ReleaseChecks(tokio::spawn(async move {
@@ -562,7 +562,7 @@ pub fn keep_checking_releases(name: &str, state: &Path, every: Duration) -> Rele
                 && newest > ReleaseNumber::this()
                 && said.as_ref() != Some(&newest)
             {
-                eprintln!("tooob: {name}: {}", is_out(&newest));
+                crate::log::line(&is_out(&newest));
                 said = Some(newest);
             }
             tokio::time::sleep(nap).await;

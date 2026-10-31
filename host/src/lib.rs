@@ -8,6 +8,7 @@ mod direct;
 pub mod host;
 pub mod hosts;
 mod jars;
+pub mod log;
 mod shared_folder;
 pub mod upgrade;
 pub mod visit;

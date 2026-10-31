@@ -155,7 +155,7 @@ pub(crate) fn listen(data_dir: &Path, control: Control) -> Result<Listening> {
             let control = control.clone();
             tokio::spawn(async move {
                 if let Err(e) = answer(stream, &control).await {
-                    eprintln!("tooob: control request: {e:#}");
+                    crate::log::line(&format!("control request: {e:#}"));
                 }
             });
         }

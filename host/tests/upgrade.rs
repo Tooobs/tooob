@@ -488,7 +488,7 @@ fn after_an_upgrade_enabled_hosts_run_the_new_release_and_hosts_run_by_hand_are_
         std::fs::write(&armed, "").unwrap();
         let enabled = home.calls(tool).len();
         let photos = home.spawn_with(&["run", "photos"], &[("TOOOB_AUTOSTART", "photos")]);
-        photos.until_it_says("serving");
+        home.until_logged("photos", "photos: serving ");
         std::fs::write(&pid, photos.child.id().to_string()).unwrap();
         let _blog = home.start("blog");
 
@@ -499,7 +499,8 @@ fn after_an_upgrade_enabled_hosts_run_the_new_release_and_hosts_run_by_hand_are_
         let mut calls = vec![stop.clone(), start.clone()];
         calls.dedup();
         assert_eq!(home.calls(tool)[enabled..], calls, "{tool}");
-        photos.until_it_says("photos: stopped");
+        home.until_logged("photos", "photos: stopped");
+        drop(photos);
         let said = stderr(&out);
         assert!(
             said.contains(&format!("tooob: restarted on tooob {}: photos\n", newer(1))),

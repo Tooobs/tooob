@@ -91,7 +91,7 @@ impl Jar {
     fn load(path: PathBuf) -> Jar {
         let store = match fs::File::open(&path) {
             Ok(f) => cookie_store::serde::json::load(io::BufReader::new(f)).unwrap_or_else(|e| {
-                eprintln!("tooob: warning: starting {} afresh: {e}", path.display());
+                crate::log::line(&format!("warning: starting {} afresh: {e}", path.display()));
                 Default::default()
             }),
             Err(_) => Default::default(),
@@ -115,7 +115,7 @@ fn remove(path: &std::path::Path) {
         if let Err(e) = fs::remove_file(&path)
             && e.kind() != io::ErrorKind::NotFound
         {
-            eprintln!("tooob: warning: couldn't remove {}: {e}", path.display());
+            crate::log::line(&format!("warning: couldn't remove {}: {e}", path.display()));
         }
     }
 }
@@ -140,7 +140,10 @@ impl reqwest::cookie::CookieStore for Jar {
                 .map_err(io::Error::other)
                 .and_then(|()| crate::save_privately(&self.path, &saved));
         if let Err(e) = result {
-            eprintln!("tooob: warning: couldn't save {}: {e}", self.path.display());
+            crate::log::line(&format!(
+                "warning: couldn't save {}: {e}",
+                self.path.display()
+            ));
         }
     }
 
