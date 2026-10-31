@@ -211,13 +211,16 @@ const HOME = mkdtempSync(join(tmpdir(), 'tooob-home-'));
 const ENV = { ...process.env, TOOOB_HOME: HOME, TOOOB_NO_UPDATE_CHECK: '1' };
 let hosts = 0;
 
-/** A Host for a Site's web app, through a Relay, running; `name` runs one made earlier again. */
-export async function startHost(site, relay, name) {
+/**
+ * A Host for a Site's web app, through a Relay, running; `name` runs one made earlier again. `env`
+ * is more of its environment: test hooks such as TOOOB_VISIT_GRACE.
+ */
+export async function startHost(site, relay, name, env = {}) {
   if (!name) {
     name = `site-${++hosts}`;
     await add([name, site.addr, '--relay', relay]);
   }
-  return runHost(name);
+  return runHost(name, env);
 }
 
 /** A Host sharing PATH (a Shared Folder, or a single file), through a Relay, running. */
@@ -228,8 +231,8 @@ export async function startShare(path, relay) {
 }
 
 /** `tooob run NAME`, once it's serving. */
-async function runHost(name) {
-  const host = start(TOOOB, ['run', name], ENV);
+async function runHost(name, env = {}) {
+  const host = start(TOOOB, ['run', name], { ...ENV, ...env });
   await until(async () => host.output().includes('serving'), `tooob run ${name}`);
   return {
     name,
@@ -253,6 +256,18 @@ function add(args) {
 
 export function tooob(args) {
   return execFileSync(TOOOB, args, { encoding: 'utf8', env: ENV }).trim();
+}
+
+/** Host `name`'s own log, as `tooob logs` shows it, without times: a line each. */
+export function logOf(name) {
+  return tooob(['logs', name, '-n', 'all']).split('\n').map((l) => l.replace(/^\S+ \S+ {2}[^:]+: /, ''));
+}
+
+/** Wait until Host `name`'s log has a line matching `re`; that line. */
+export async function logged(name, re, ms = 20000) {
+  let line;
+  await until(async () => (line = logOf(name).find((l) => re.test(l))), `${name} to log ${re}`, ms);
+  return line;
 }
 
 /** A fresh browser profile: its own storage, so its own Visitor Key. */

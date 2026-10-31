@@ -5,9 +5,9 @@ use sha2::{Digest, Sha256};
 use std::{collections::HashMap, fs, io, path::PathBuf};
 
 /// How long an Invite Link works if nobody uses it.
-const INVITE_LIFETIME_SECS: u64 = 7 * 24 * 60 * 60;
+pub(crate) const INVITE_LIFETIME_SECS: u64 = 7 * 24 * 60 * 60;
 /// Pairing Invites are the most powerful Invite and normally used on the spot.
-const PAIRING_LIFETIME_SECS: u64 = 60 * 60;
+pub(crate) const PAIRING_LIFETIME_SECS: u64 = 60 * 60;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Decision {
@@ -122,6 +122,14 @@ struct Visitor {
     /// Used an Owner Invite and awaits approval to become an Owner Device; keeps its access meanwhile.
     #[serde(default)]
     awaiting_owner_approval: bool,
+    /// Has been let in at least once: its next Visit is a return (ADR 0025). A Visitor kept
+    /// before tooob recorded this has been.
+    #[serde(default = "yes")]
+    visited: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// Everything that must survive a restart.
@@ -261,6 +269,7 @@ impl Access {
                 approved: pairing || !(invite.first_visit_approval || invite.owner_invite),
                 owner_device: invite.owner_invite,
                 awaiting_owner_approval: false,
+                visited: false,
             },
         };
         let outcome = if updated.approved && !updated.awaiting_owner_approval {
@@ -298,9 +307,37 @@ impl Access {
             .collect()
     }
 
+    /// The short id and Label of the Invite `token` is for, used or not, if the Host still has it.
+    pub fn invite_named(&self, token: &str) -> Option<(String, String)> {
+        let id = invite_id(token);
+        let invite = self.state.invites.get(&id)?;
+        Some((short_id(&id), invite.label.clone()))
+    }
+
+    /// The Label of the Visitor whose Visitor Key is `visitor_key`, if it's one.
+    pub fn label(&self, visitor_key: &str) -> Option<String> {
+        Some(self.state.visitors.get(visitor_key)?.label.clone())
+    }
+
+    /// The Visitor is let in: whether it's their first time, which it is only once. Kept with the
+    /// access state; if that can't be saved, it's their first time again next time.
+    pub fn first_visit(&mut self, visitor_key: &str) -> bool {
+        let Some(v) = self.state.visitors.get_mut(visitor_key) else {
+            return false;
+        };
+        if v.visited {
+            return false;
+        }
+        v.visited = true;
+        if let Err(e) = self.save() {
+            crate::log::warning(&format!("couldn't save that a Visitor has been in: {e}"));
+        }
+        true
+    }
+
     /// Kill an Invite Link before anyone uses it (sent to the wrong chat). Takes access away, so an
-    /// Agent may do it directly (ADR 0006).
-    pub fn revoke(&mut self, id: &str) -> Result<(), ChangeError> {
+    /// Agent may do it directly (ADR 0006). The Label it was for.
+    pub fn revoke(&mut self, id: &str) -> Result<String, ChangeError> {
         let key = self
             .state
             .invites
@@ -313,7 +350,7 @@ impl Access {
             self.state.invites.insert(key, removed);
             return Err(ChangeError::Storage(e.to_string()));
         }
-        Ok(())
+        Ok(removed.label)
     }
 
     pub fn admits(&self, visitor_key: &str) -> Decision {

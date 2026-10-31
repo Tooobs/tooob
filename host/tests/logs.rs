@@ -6,7 +6,7 @@ mod support;
 use serde_json::{Value, json};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use support::home::{Home, a_folder};
+use support::home::{Home, TestRelay, a_folder, version_json};
 
 /// A time zone five hours behind UTC with no summer time, so a local time is told from UTC.
 const TZ: (&str, &str) = ("TZ", "XYZ+5");
@@ -465,4 +465,50 @@ fn two_writers_of_one_log_never_cross_lines_or_roll_over_twice() {
     }
     let older = std::fs::metadata(&older).unwrap().len();
     assert!(older > 999_000, "rolled over full, not twice: {older}");
+}
+
+/// Host photos' log's lines, as `tooob logs --json` gives them.
+fn events(home: &Home) -> Vec<Value> {
+    home.ok(&["logs", "photos", "-n", "all", "--json"])
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+#[test]
+fn a_hosts_own_events_are_named_in_its_log_starting_serving_warnings_a_mismatch_and_stopping() {
+    let home = Home::new();
+    let folder = a_folder();
+    let relay = TestRelay::start();
+    let path = folder.path().to_str().unwrap();
+    home.ok(&["add", "photos", path, "--relay", &relay.url]);
+    let every = ("TOOOB_BOOTSTRAP_CHECK_EVERY", "1s");
+    let mut running = home.start_with("photos", &[every]);
+    relay.serve_bootstrap(Some(version_json("0.9.0", "tooob/9")));
+    home.until_logged("photos", "tooob/9");
+    relay.serve_bootstrap(None);
+    home.until_logged("photos", "serves no Bootstrap");
+    assert!(running.stop_with(libc::SIGTERM).success());
+
+    let lines = events(&home);
+    let named =
+        |event: &str| -> Vec<&Value> { lines.iter().filter(|l| l["event"] == event).collect() };
+    let starting = named("starting");
+    assert_eq!(starting.len(), 1, "{lines:#?}");
+    assert_eq!(starting[0]["fields"]["release"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(
+        starting[0]["fields"]["protocol_version"],
+        tooob::PROTOCOL_VERSION
+    );
+    assert_eq!(named("serving").len(), 1, "{lines:#?}");
+    let mismatches = named("bootstrap_mismatch");
+    assert_eq!(mismatches.len(), 2, "{lines:#?}");
+    assert!(
+        mismatches[0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("warning: ")
+    );
+    assert_eq!(mismatches[0]["fields"]["protocol_version"], "tooob/9");
+    assert_eq!(lines.last().unwrap()["event"], "stopped", "{lines:#?}");
 }

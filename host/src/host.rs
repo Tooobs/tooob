@@ -3,6 +3,7 @@ use crate::Network;
 use crate::access::{Access, Decision, RedeemError, Redeemed};
 use crate::control::{Control, now};
 use crate::jars::{Jars, SiteClient};
+use crate::visits::{Presence, Refusal, Visits};
 use crate::wire::{self, ALPN};
 use anyhow::{Context, Result, bail};
 use futures::{SinkExt, StreamExt};
@@ -54,6 +55,7 @@ pub struct Host {
     router: Router,
     control: Control,
     control_socket: crate::control::Listening,
+    visits: Visits,
 }
 
 impl Host {
@@ -64,8 +66,8 @@ impl Host {
         if config.data_dir.exists() {
             let mode = std::fs::metadata(&config.data_dir)?.permissions().mode();
             if mode & 0o077 != 0 {
-                crate::log::line(&format!(
-                    "warning: {} is readable by other accounts (mode {:o}); consider `chmod 700` on it",
+                crate::log::warning(&format!(
+                    "{} is readable by other accounts (mode {:o}); consider `chmod 700` on it",
                     config.data_dir.display(),
                     mode & 0o777
                 ));
@@ -90,12 +92,14 @@ impl Host {
         let access = Arc::new(Mutex::new(access));
         let changes = Arc::new(watch::Sender::new(()));
         let jars = Arc::new(Jars::open(config.data_dir.join("jars"))?);
+        let visits = Visits::new()?;
         let admission = Admission {
             host_key: endpoint.id(),
             access: access.clone(),
             site,
             jars: jars.clone(),
             changes: changes.clone(),
+            visits: visits.clone(),
         };
         let control = Control {
             access,
@@ -103,6 +107,7 @@ impl Host {
             jars,
             stop: Default::default(),
             bootstrap: Default::default(),
+            log: None,
         };
         let router = Router::builder(endpoint).accept(ALPN, admission).spawn();
         let control_socket = crate::control::listen(&config.data_dir, control.clone())?;
@@ -110,6 +115,7 @@ impl Host {
             router,
             control,
             control_socket,
+            visits,
         })
     }
 
@@ -123,8 +129,9 @@ impl Host {
         self.router.endpoint().online().await;
     }
 
-    /// Stop accepting Visitors and Owner commands, and close every connection.
+    /// Stop accepting Visitors and Owner commands, and close every connection: every Visit ends.
     pub async fn shutdown(self) {
+        self.visits.end_all();
         self.control_socket.stop();
         let _ = self.router.shutdown().await;
     }
@@ -195,10 +202,7 @@ pub(crate) fn load_host_key(data_dir: &std::path::Path) -> Result<SecretKey> {
         let bytes: [u8; 32] = bytes.try_into().ok().context("bad host key file")?;
         // Tighten older key files; if the filesystem won't let us, say so rather than refuse to run.
         if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
-            crate::log::line(&format!(
-                "warning: couldn't make {} private: {e}",
-                path.display()
-            ));
+            crate::log::warning(&format!("couldn't make {} private: {e}", path.display()));
         }
         return Ok(SecretKey::from_bytes(&bytes));
     }
@@ -223,6 +227,8 @@ pub(crate) struct Admission {
     site: Site,
     /// Each Visitor's Site cookies, kept on disk across restarts (ADR 0005).
     jars: Arc<Jars>,
+    /// What the log says of each Visitor's Visit (ADR 0025).
+    visits: Visits,
 }
 
 /// A request body up to this size goes to the Site whole, with its Content-Length, as a browser
@@ -296,7 +302,7 @@ impl ProtocolHandler for Admission {
         let visitor = match tokio::time::timeout(wait, hello).await {
             Ok(Ok(visitor)) => visitor,
             Ok(Err(e)) => {
-                crate::log::line(&format!("refused a hello: {e:#}"));
+                crate::log::about_a_visitor(&format!("refused a hello: {e:#}"));
                 conn.close(1u32.into(), b"bad hello");
                 return Ok(());
             }
@@ -306,15 +312,18 @@ impl ProtocolHandler for Admission {
             }
         };
         let direct = crate::direct::Slot::default();
+        let presence = self.visits.connection(&visitor);
         while let Ok((send, recv)) = conn.accept_bi().await {
             let (this, visitor, conn) = (self.clone(), visitor.clone(), conn.clone());
-            let direct = direct.clone();
+            let (direct, presence) = (direct.clone(), presence.clone());
             tokio::spawn(async move {
-                if let Err(e) = this.iroh_stream(send, recv, &visitor, conn, &direct).await {
-                    crate::log::line(&format!("stream from {}: {e:#}", &visitor[..8]));
+                let served = this.iroh_stream(send, recv, &visitor, conn, &direct, &presence);
+                if let Err(e) = served.await {
+                    crate::log::about_a_visitor(&format!("stream from {}: {e:#}", &visitor[..8]));
                 }
             });
         }
+        presence.closed();
         Ok(())
     }
 }
@@ -357,14 +366,18 @@ impl Admission {
         visitor: &str,
         conn: Connection,
         direct: &crate::direct::Slot,
+        presence: &Presence,
     ) -> Result<()> {
         let (head, rest) = wire::read_line(&mut recv).await?;
         if head["t"] != "rtc" {
-            return self.serve(head, rest, send, recv, visitor).await;
+            return self
+                .serve(head, rest, send, recv, visitor, Some(presence))
+                .await;
         }
         // Only for a Visitor who's in: a Direct Path costs the home box a peer connection and its
         // UDP sockets. Its requests still go through the access check one by one.
         let decision = self.access.lock().unwrap().admits(visitor);
+        self.heard(presence, visitor, &decision);
         if !matches!(decision, Decision::Allowed { .. }) {
             let reply = json!({"status": 403, "standing": standing(&decision)});
             wire::write_line(&mut send, &reply).await?;
@@ -391,6 +404,7 @@ impl Admission {
             recv,
             self.clone(),
             visitor.into(),
+            presence.clone(),
             ended,
         )
         .await;
@@ -407,9 +421,31 @@ impl Admission {
         visitor: &str,
     ) -> Result<()> {
         let (head, rest) = wire::read_line(&mut recv).await?;
-        self.serve(head, rest, send, recv, visitor).await
+        self.serve(head, rest, send, recv, visitor, None).await
     }
 
+    /// Tell the log what the Host decided for `visitor` on `presence`'s connection: let in, or
+    /// refused, and why.
+    fn heard(&self, presence: &Presence, visitor: &str, decision: &Decision) {
+        match decision {
+            Decision::Allowed { label, .. } => {
+                presence.let_in(label, || self.access.lock().unwrap().first_visit(visitor))
+            }
+            Decision::AwaitingApproval { label } => {
+                presence.refused(Refusal::AwaitingApproval(label.clone()))
+            }
+            Decision::Denied => {
+                let label = self.access.lock().unwrap().label(visitor);
+                presence.refused(match label {
+                    Some(label) => Refusal::Blocked(label),
+                    None => Refusal::Unknown,
+                })
+            }
+        }
+    }
+
+    /// Serve one request. `presence` is its connection's part in its Visitor's Visit, for a
+    /// request on an iroh connection; one on a Direct Path is already part of it.
     async fn serve(
         &self,
         head: Value,
@@ -417,23 +453,54 @@ impl Admission {
         mut send: impl AsyncWrite + Unpin + Send,
         recv: impl AsyncRead + Unpin + Send + 'static,
         visitor: &str,
+        presence: Option<&Presence>,
     ) -> Result<()> {
+        let heard = |decision: &Decision| {
+            if let Some(presence) = presence {
+                self.heard(presence, visitor, decision);
+            }
+        };
         if head["t"] == "standing" {
             // Where this Visitor stands, without touching the Site: the browser decides what to show.
-            let standing = standing(&self.access.lock().unwrap().admits(visitor));
+            let decision = self.access.lock().unwrap().admits(visitor);
+            heard(&decision);
+            let standing = standing(&decision);
             wire::write_line(&mut send, &json!({"status": 200, "standing": standing})).await?;
         } else if head["t"] == "redeem" {
             let token = head["token"].as_str().unwrap_or_default();
-            let reply = match self.access.lock().unwrap().redeem(token, visitor, now()) {
+            let redeemed = self.access.lock().unwrap().redeem(token, visitor, now());
+            let reply = match &redeemed {
                 Ok(Redeemed::Admitted) => json!({"status": 200, "redeemed": "admitted"}),
                 Ok(Redeemed::AwaitingApproval) => {
                     json!({"status": 200, "redeemed": "awaiting_approval"})
                 }
-                Err(e) => json!({"status": 403, "error": redeem_error_code(&e)}),
+                Err(e) => json!({"status": 403, "error": redeem_error_code(e)}),
             };
+            let decision = self.access.lock().unwrap().admits(visitor);
+            match (&redeemed, presence) {
+                // Refused, and not in by another Invite: the Invite is what the log names.
+                (Err(e @ (RedeemError::Expired | RedeemError::AlreadyUsed)), Some(presence))
+                    if decision == Decision::Denied =>
+                {
+                    let invite = self.access.lock().unwrap().invite_named(token);
+                    let reason = redeem_error_code(e);
+                    presence.refused(Refusal::Invite { reason, invite });
+                }
+                (Err(RedeemError::UnknownInvite), Some(presence))
+                    if decision == Decision::Denied =>
+                {
+                    let reason = "unknown_invite";
+                    presence.refused(Refusal::Invite {
+                        reason,
+                        invite: None,
+                    });
+                }
+                _ => heard(&decision),
+            }
             wire::write_line(&mut send, &reply).await?;
         } else {
             let decision = self.access.lock().unwrap().admits(visitor);
+            heard(&decision);
             let path = head["path"].as_str().unwrap_or("/");
             match (decision, &self.site) {
                 (Decision::Allowed { .. }, Site::SharedFolder(root)) => {

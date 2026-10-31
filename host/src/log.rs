@@ -121,6 +121,15 @@ impl Log {
         self.record(&lines);
     }
 
+    /// Log an `event`, now: `text` for people, one line, and `fields` for `tooob logs --json`.
+    pub fn event(&self, event: &str, fields: Fields, text: &str) {
+        let time = local_time(SystemTime::now());
+        let mut line = Line::new(Some(time), &self.name, &text.replace('\n', " "));
+        line.event = Some(event.to_string());
+        line.fields = (!fields.is_empty()).then_some(fields);
+        self.record(&[line]);
+    }
+
     /// Append `lines` to the log, and print them where they're printed.
     fn record(&self, lines: &[Line]) {
         let json: String = lines
@@ -246,6 +255,26 @@ pub struct Line {
     pub time: Option<String>,
     pub host: String,
     pub text: String,
+    /// What happened, for a line that's one of the Host's events (`got_in`, `blocked`…).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event: Option<String>,
+    /// The event's particulars, so `tooob logs --json` needn't be read from its text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fields: Option<Fields>,
+}
+
+/// An event's particulars: `{"label": "dave", "key": "3f2a91c0", …}`.
+pub type Fields = serde_json::Map<String, serde_json::Value>;
+
+/// `fields!{"label" => label, "key" => key}`: an event's particulars.
+#[macro_export]
+macro_rules! fields {
+    ($($name:expr => $value:expr),* $(,)?) => {{
+        #[allow(unused_mut)]
+        let mut fields = $crate::log::Fields::new();
+        $(fields.insert($name.to_string(), serde_json::json!($value));)*
+        fields
+    }};
 }
 
 impl Line {
@@ -254,6 +283,8 @@ impl Line {
             time,
             host: host.to_string(),
             text: text.to_string(),
+            event: None,
+            fields: None,
         }
     }
 
@@ -358,6 +389,68 @@ pub fn line(text: &str) {
         Some(log) => log.write(text),
         None => eprintln!("tooob: {text}"),
     }
+}
+
+/// Log an `event` in this process's Host's log (`Log::event`); its text on stderr without one.
+pub fn event(event: &str, fields: Fields, text: &str) {
+    match KEPT.get() {
+        Some(log) => log.event(event, fields, text),
+        None => eprintln!("tooob: {text}"),
+    }
+}
+
+/// Log `text`, a line about a Visitor's connection that may carry what it or its browser sent (an
+/// error from WebRTC, iroh or a bad request), with any address in it taken out: where Visitors
+/// are is never logged (ADR 0025).
+pub fn about_a_visitor(text: &str) {
+    line(&without_addresses(text));
+}
+
+/// `text` with each IP address in it (with a port or not, IPv6 in brackets or not) and each mDNS
+/// name a browser gives its own (`….local`) said as `an address`.
+pub fn without_addresses(text: &str) -> String {
+    let part =
+        |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | ':' | '[' | ']' | '%' | '-');
+    let mut said = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find(part) {
+        said.push_str(&rest[..start]);
+        let len = rest[start..]
+            .find(|c| !part(c))
+            .unwrap_or(rest.len() - start);
+        let word = &rest[start..start + len];
+        // A sentence's own punctuation after it isn't part of it.
+        let bare = word.trim_end_matches(['.', ':', '-']);
+        if is_an_address(bare) {
+            said.push_str("an address");
+            said.push_str(&word[bare.len()..]);
+        } else {
+            said.push_str(word);
+        }
+        rest = &rest[start + len..];
+    }
+    said.push_str(rest);
+    said
+}
+
+fn is_an_address(word: &str) -> bool {
+    use std::net::{IpAddr, SocketAddr};
+    let unzoned = |w: &str| w.split('%').next().unwrap_or(w).to_string();
+    let plain = unzoned(word.trim_matches(['[', ']']));
+    word.parse::<SocketAddr>().is_ok()
+        || plain.parse::<IpAddr>().is_ok()
+        || word.rsplit_once(':').is_some_and(|(ip, port)| {
+            port.parse::<u16>().is_ok()
+                && unzoned(ip.trim_matches(['[', ']']))
+                    .parse::<IpAddr>()
+                    .is_ok()
+        })
+        || (word.len() > ".local".len() && word.ends_with(".local"))
+}
+
+/// Log `warning: text` in this process's Host's log, as a `warning` event.
+pub fn warning(text: &str) {
+    event("warning", Fields::new(), &format!("warning: {text}"));
 }
 
 /// An error already in the Host's log, and printed with it where it's printed: nothing more to say.

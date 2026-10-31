@@ -78,6 +78,12 @@ impl Visit {
         })
     }
 
+    /// Close the connection, as a browser tab's shell does when it goes: the Host hears at once.
+    pub async fn close(self) {
+        self.conn.close(0u32.into(), b"bye");
+        self._endpoint.close().await;
+    }
+
     /// Wait until the connection to the Host is closed, by either end.
     pub async fn closed(&self) {
         self.conn.closed().await;

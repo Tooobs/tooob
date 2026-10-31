@@ -29,12 +29,12 @@ const test = base.extend({
   relay: [async ({ irohRelay }, use) => use((await h.startRelayFront(irohRelay)).url), { scope: 'worker' }],
 });
 
-async function hostWithSite(relay) {
+async function hostWithSite(relay, env = {}) {
   const site = await h.startSite();
-  let host = await h.startHost(site, relay);
+  let host = await h.startHost(site, relay, undefined, env);
   const { name } = host;
   const invite = (label, ...flags) => h.tooob(['invite', name, label, ...flags]);
-  const start = async () => (host = await h.startHost(site, relay, name)); // the same Host: same Host Key and Allowlist
+  const start = async () => (host = await h.startHost(site, relay, name, env)); // the same Host: same Host Key and Allowlist
   const restart = async () => {
     await host.stop();
     await start();
@@ -609,6 +609,60 @@ test('the pill says a Direct Path from elsewhere was punched through NAT, withou
   await h.siteText(page);
   await h.pillSays(page, / · direct · NAT punched$/, 20000);
   assert.doesNotMatch(await h.statusText(page), /203\.0\.113/);
+});
+
+/** Any IPv4 or IPv6 address in `text`. */
+const ADDRESS = /\b\d{1,3}(\.\d{1,3}){3}\b|\b[0-9a-f]{0,4}(:[0-9a-f]{0,4}){2,7}\b/i;
+
+/** Host `name`'s log, but for its Site's own address, which it says it serves: every other address in it. */
+const addressesIn = (name, site) => h.logOf(name).filter((l) => ADDRESS.test(l.replaceAll(site.addr, 'SITE')));
+
+test("the Host's log says a Visitor got in on the Direct Path, of which kind, and when they left", async ({ browser, relay }) => {
+  const { name, invite, site } = await hostWithSite(relay, { TOOOB_VISIT_GRACE: '1s' });
+  const page = await h.newVisitor(browser);
+  await page.goto(invite('mom'));
+  await h.siteText(page);
+  await h.pillSays(page, / · direct · LAN$/, 20000);
+  const got = await h.logged(name, /^mom \([0-9a-f]{8}\) got in/);
+  assert.match(got, /^mom \([0-9a-f]{8}\) got in · first visit · direct · LAN$/);
+  await page.context().close(); // the Host hears of a closed tab once iroh gives up on it
+  assert.match(await h.logged(name, /^mom .* left after/, 60000), /^mom \([0-9a-f]{8}\) left after \d+ s$/);
+  assert.deepEqual(addressesIn(name, site), []);
+});
+
+test("the Host's log says when a Visitor moves from the Relay onto the Direct Path", async ({ browser, relay }) => {
+  // The Visit's path settles in 1 s, well before the browser tries the Direct Path again.
+  const { name, invite } = await hostWithSite(relay, { TOOOB_DIRECT_WAIT: '1s' });
+  const page = await h.newVisitor(browser);
+  await h.breakDirectPath(page, 1);
+  await page.goto(invite('mom'));
+  await h.siteText(page);
+  await h.logged(name, /^mom \([0-9a-f]{8}\) got in · first visit · relay$/);
+  await h.pathIs(page, 'direct', 30000);
+  await h.logged(name, /^mom \([0-9a-f]{8}\) moved to direct · LAN$/);
+});
+
+test("a Visitor's address never reaches the Host's log, even in an error it logs", async ({ browser, relay }) => {
+  const { name, invite, site } = await hostWithSite(relay);
+  const page = await h.newVisitor(browser);
+  // The browser's first offer has an origin line the Host can't parse, with an address in it:
+  // its error says that line.
+  await page.addInitScript(() => {
+    const real = Object.getOwnPropertyDescriptor(RTCPeerConnection.prototype, 'localDescription').get;
+    let spoilt = false;
+    Object.defineProperty(RTCPeerConnection.prototype, 'localDescription', {
+      get() {
+        const desc = real.call(this);
+        if (!desc || spoilt) return desc;
+        spoilt = true;
+        return { type: desc.type, sdp: desc.sdp.replace(/^o=.*$/m, 'o=- 1 2 IN IP4 198.51.100.23 extra') };
+      },
+    });
+  });
+  await page.goto(invite('mom'));
+  await h.siteText(page);
+  await h.logged(name, /stream from/);
+  assert.deepEqual(addressesIn(name, site), []);
 });
 
 test('the pill says the Site is coming over the Relay when the Direct Path fails', async ({ browser, relay }) => {

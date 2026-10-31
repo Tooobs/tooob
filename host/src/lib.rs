@@ -12,11 +12,12 @@ pub mod log;
 mod shared_folder;
 pub mod upgrade;
 pub mod visit;
+mod visits;
 mod wire;
 
 pub use wire::PROTOCOL_VERSION;
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use iroh::{Endpoint, RelayMode, RelayUrl, SecretKey, endpoint::presets};
 use std::{
     fs, io,
@@ -67,4 +68,32 @@ pub(crate) fn save_privately(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// Where `save_privately` writes before the rename; a crash can leave it behind.
 pub(crate) fn temp_path(path: &Path) -> PathBuf {
     path.with_extension("tmp")
+}
+
+/// "90s", "30m", "1h", "7d" → seconds.
+pub fn seconds(text: &str) -> Result<u64> {
+    let (number, unit) = text.split_at(text.len().saturating_sub(1));
+    let n: u64 = number
+        .parse()
+        .with_context(|| format!("bad duration {text:?} (try 1h or 7d)"))?;
+    let unit = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 3600,
+        "d" => 86400,
+        _ => bail!("bad duration {text:?} (try 1h or 7d)"),
+    };
+    n.checked_mul(unit)
+        .with_context(|| format!("bad duration {text:?} (too long)"))
+}
+
+/// A duration in words: "7 days", "10 minutes".
+pub fn lasting(duration: std::time::Duration) -> String {
+    let (n, unit) = match duration.as_secs() {
+        s if s % 86_400 == 0 => (s / 86_400, "day"),
+        s if s % 3600 == 0 => (s / 3600, "hour"),
+        s if s % 60 == 0 => (s / 60, "minute"),
+        s => (s, "second"),
+    };
+    format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
 }

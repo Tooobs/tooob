@@ -562,7 +562,8 @@ pub fn keep_checking_releases(state: &Path, every: Duration) -> ReleaseChecks {
                 && newest > ReleaseNumber::this()
                 && said.as_ref() != Some(&newest)
             {
-                crate::log::line(&is_out(&newest));
+                let fields = crate::fields! {"release" => newest.to_string()};
+                crate::log::event("release_out", fields, &is_out(&newest));
                 said = Some(newest);
             }
             tokio::time::sleep(nap).await;

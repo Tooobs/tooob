@@ -1,7 +1,11 @@
 //! The Owner's operations on a running Host (ADR 0010). The CLI reaches them over a local socket,
 //! Owner Devices over tooob; both end up here.
-use crate::access::{Access, ChangeError, Invite, InviteInfo, InviteOptions, VisitorInfo};
+use crate::access::{
+    Access, ChangeError, INVITE_LIFETIME_SECS, Invite, InviteInfo, InviteOptions,
+    PAIRING_LIFETIME_SECS, VisitorInfo,
+};
 use crate::bootstrap::Found;
+use crate::fields;
 use crate::wire;
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -28,6 +32,30 @@ pub struct Control {
     pub(crate) stop: Arc<tokio::sync::Notify>,
     /// What whoever runs the Host last found its Relay's Bootstrap to be (ADR 0020).
     pub(crate) bootstrap: Arc<Mutex<Found>>,
+    /// A stopped Host's log, which its Owner's commands write themselves; None for a running
+    /// Host, whose log is this process's (ADR 0025).
+    pub(crate) log: Option<Arc<crate::log::Log>>,
+}
+
+/// Where an Owner's change came from, as the log says (ADR 0025).
+#[derive(Clone, Copy)]
+pub(crate) enum Source {
+    /// The `tooob` command, on the home box: the local socket, or a stopped Host's state.
+    Cli,
+}
+
+impl Source {
+    fn fields(self) -> &'static str {
+        match self {
+            Source::Cli => "cli",
+        }
+    }
+
+    fn said(self) -> &'static str {
+        match self {
+            Source::Cli => "from the CLI",
+        }
+    }
 }
 
 impl Control {
@@ -40,7 +68,31 @@ impl Control {
             jars: Arc::new(crate::jars::Jars::open(data_dir.join("jars"))?),
             stop: Default::default(),
             bootstrap: Default::default(),
+            log: Some(Arc::new(crate::log::Log::open(
+                data_dir,
+                &data_dir.file_name().unwrap_or_default().to_string_lossy(),
+                false,
+            ))),
         })
+    }
+
+    /// Log the Owner's change, `event`, from `from`: `text` · where it came from.
+    fn changed(&self, event: &str, mut fields: crate::log::Fields, text: &str, from: Source) {
+        fields.insert("from".into(), from.fields().into());
+        let text = format!("{text} · {}", from.said());
+        match &self.log {
+            Some(log) => log.event(event, fields, &text),
+            None => crate::log::event(event, fields, &text),
+        }
+    }
+
+    /// `dave (3f2a91c0)`: a Visitor as the log names them.
+    fn named(&self, visitor_key: &str) -> (String, String) {
+        let label = self.access.lock().unwrap().label(visitor_key);
+        (
+            label.unwrap_or_default(),
+            crate::visits::short(visitor_key).to_string(),
+        )
     }
 
     pub fn invite(&self, label: &str, options: InviteOptions) -> io::Result<Invite> {
@@ -58,7 +110,7 @@ impl Control {
 
     /// Kill an Invite Link before anyone uses it.
     pub fn revoke(&self, invite_id: &str) -> Result<(), ChangeError> {
-        self.access.lock().unwrap().revoke(invite_id)
+        self.access.lock().unwrap().revoke(invite_id).map(drop)
     }
 
     /// Let in a Visitor awaiting approval (First-Visit Approval, or becoming an Owner Device).
@@ -183,8 +235,9 @@ async fn answer(mut stream: UnixStream, control: &Control) -> Result<()> {
 }
 
 /// The answer to one of the Owner's requests on this box, from the socket or straight to a stopped
-/// Host's state.
+/// Host's state. Each change is logged, as from the CLI.
 fn reply(control: &Control, request: &Value) -> Value {
+    let from = Source::Cli;
     match request["op"].as_str() {
         Some("invite") => {
             // Missing options mean defaults; malformed ones are an error reply, never a hangup.
@@ -192,10 +245,21 @@ fn reply(control: &Control, request: &Value) -> Value {
                 Value::Null => Ok(InviteOptions::default()),
                 given => serde_json::from_value::<InviteOptions>(given.clone()),
             };
+            let label = request["label"].as_str().unwrap_or_default();
             match options {
                 Ok(options) => {
-                    match control.invite(request["label"].as_str().unwrap_or_default(), options) {
-                        Ok(invite) => json!({"ok": invite}),
+                    let made = Made {
+                        label,
+                        first_visit_approval: options.first_visit_approval,
+                        owner_invite: options.owner_invite,
+                        pairing: false,
+                        expires_in: options.expires_in.unwrap_or(INVITE_LIFETIME_SECS),
+                    };
+                    match control.invite(label, options) {
+                        Ok(invite) => {
+                            made.log(control, &invite.id, from);
+                            json!({"ok": invite})
+                        }
                         Err(e) => json!({"error": e.to_string()}),
                     }
                 }
@@ -206,13 +270,23 @@ fn reply(control: &Control, request: &Value) -> Value {
         // (ADR 0010). They're deliberately not on Control, which Owner Devices will reach over tooob.
         Some("pair") => {
             let label = request["label"].as_str().unwrap_or_default();
-            match control
+            let paired = control
                 .access
                 .lock()
                 .unwrap()
-                .pairing_invite(label, None, now())
-            {
-                Ok(invite) => json!({"ok": invite}),
+                .pairing_invite(label, None, now());
+            match paired {
+                Ok(invite) => {
+                    let made = Made {
+                        label,
+                        first_visit_approval: false,
+                        owner_invite: true,
+                        pairing: true,
+                        expires_in: PAIRING_LIFETIME_SECS,
+                    };
+                    made.log(control, &invite.id, from);
+                    json!({"ok": invite})
+                }
                 Err(e) => json!({"error": e.to_string()}),
             }
         }
@@ -223,18 +297,85 @@ fn reply(control: &Control, request: &Value) -> Value {
         Some("visitors") => json!({"ok": control.visitors()}),
         Some("bootstrap") => json!({"ok": control.bootstrap_found()}),
         Some("invites") => json!({"ok": control.invites()}),
-        Some("revoke") => outcome(control.revoke(request["id"].as_str().unwrap_or_default())),
+        Some("revoke") => {
+            let id = request["id"].as_str().unwrap_or_default();
+            let revoked = control.access.lock().unwrap().revoke(id);
+            if let Ok(label) = &revoked {
+                let fields = fields! {"invite" => id, "label" => label};
+                let text = format!("revoked Invite {id} for {label}");
+                control.changed("invite_revoked", fields, &text, from);
+            }
+            outcome(revoked.map(drop))
+        }
         Some(op @ ("block" | "approve" | "unblock")) => {
             match resolve(control, request["key"].as_str().unwrap_or_default()) {
-                Ok(key) => outcome(match op {
-                    "block" => control.block(&key),
-                    "approve" => control.approve(&key),
-                    _ => control.unblock(&key),
-                }),
+                Ok(key) => {
+                    let owner_device = |control: &Control| {
+                        control
+                            .visitors()
+                            .into_iter()
+                            .any(|v| v.key == key && v.owner_device)
+                    };
+                    let was_owner_device = owner_device(control);
+                    let (done, event) = match op {
+                        "block" => (control.block(&key), "blocked"),
+                        "approve" => (control.approve(&key), "approved"),
+                        _ => (control.unblock(&key), "unblocked"),
+                    };
+                    if done.is_ok() {
+                        let (label, short) = control.named(&key);
+                        let mut fields = fields! {"label" => label, "key" => short};
+                        let mut text = format!("{event} {label} ({short})");
+                        if op == "approve" && !was_owner_device && owner_device(control) {
+                            fields.insert("owner_device".into(), true.into());
+                            text += " as an Owner Device";
+                        }
+                        control.changed(event, fields, &text, from);
+                    }
+                    outcome(done)
+                }
                 Err(e) => json!({"error": e}),
             }
         }
         _ => json!({"error": "unknown operation"}),
+    }
+}
+
+/// An Invite made, as the log says it.
+struct Made<'a> {
+    label: &'a str,
+    first_visit_approval: bool,
+    owner_invite: bool,
+    pairing: bool,
+    expires_in: u64,
+}
+
+impl Made<'_> {
+    /// `made Invite a1b2c3d4 for gran · approve first · works for 2 hours`, as `id`.
+    fn log(&self, control: &Control, id: &str, from: Source) {
+        let fields = fields! {
+            "invite" => id,
+            "label" => self.label,
+            "first_visit_approval" => self.first_visit_approval,
+            "owner_invite" => self.owner_invite,
+            "pairing" => self.pairing,
+            "expires_in" => self.expires_in,
+        };
+        let kind = if self.pairing {
+            "Pairing Invite"
+        } else {
+            "Invite"
+        };
+        let mut text = format!("made {kind} {id} for {}", self.label);
+        if self.first_visit_approval {
+            text += " · approve first";
+        }
+        if self.owner_invite && !self.pairing {
+            text += " · Owner Invite";
+        }
+        let lasts = crate::lasting(Duration::from_secs(self.expires_in));
+        text += &format!(" · works for {lasts}");
+        control.changed("invite_made", fields, &text, from);
     }
 }
 

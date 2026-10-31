@@ -5,7 +5,6 @@
 use anyhow::{Context, Result, bail};
 use std::{collections::HashMap, io::IsTerminal, path::Path, time::Duration};
 use tokio::signal::unix::{SignalKind, signal};
-use tooob::Network;
 use tooob::access::InviteOptions;
 use tooob::autostart;
 use tooob::awake::Awake;
@@ -18,6 +17,7 @@ use tooob::hosts::{
 };
 use tooob::log::{self, Log, Logged};
 use tooob::upgrade::{self, Relays, ReleaseNumber, Releases};
+use tooob::{Network, lasting, seconds};
 
 // musl's own allocator costs ~22% more CPU per byte served than glibc's (measured in #59), so
 // Linux Releases, which are static musl builds, use mimalloc.
@@ -661,17 +661,6 @@ fn lasts(options: &InviteOptions) -> String {
     )
 }
 
-/// A duration in words: "7 days", "10 minutes".
-fn lasting(duration: Duration) -> String {
-    let (n, unit) = match duration.as_secs() {
-        s if s % 86_400 == 0 => (s / 86_400, "day"),
-        s if s % 3600 == 0 => (s / 3600, "hour"),
-        s if s % 60 == 0 => (s / 60, "minute"),
-        s => (s, "second"),
-    };
-    format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
-}
-
 /// `tooob run`: serve a Host here, holding the lock on its state, with its settings as its file
 /// says now. One process per Host: a second is refused, with the first one's pid.
 /// `state` is its Home's state folder, where the box's release checks are kept.
@@ -694,9 +683,11 @@ async fn serve(host: &Entry, state: &Path, invitees: Vec<Invitee>) -> Result<()>
         !autostart::started_by_its_entry(host),
     ));
     if let Err(e) = log::keep_output_off_the_log(&host.state_dir) {
-        log.write(&format!(
-            "warning: couldn't keep what it prints out of its log: {e}"
-        ));
+        log.event(
+            "warning",
+            Default::default(),
+            &format!("warning: couldn't keep what it prints out of its log: {e}"),
+        );
     }
     log.take_dying_words();
     match serve_locked(host, state, invitees).await {
@@ -795,13 +786,15 @@ async fn serve_here(
         Some(Ok(version)) => format!(", Bootstrap {version}"),
         Some(Err(_)) => ", Bootstrap unknown".to_string(),
     };
-    log::line(&format!(
-        "starting {}{beside}",
-        release_and_protocol_version()
-    ));
+    let fields = tooob::fields! {
+        "release" => env!("CARGO_PKG_VERSION"),
+        "protocol_version" => tooob::PROTOCOL_VERSION,
+    };
+    let starting = format!("starting {}{beside}", release_and_protocol_version());
+    log::event("starting", fields, &starting);
     if let Some(Err(problem)) = &bootstrap {
-        log::line(&format!(
-            "warning: {}; it's checked again every {}",
+        log::warning(&format!(
+            "{}; it's checked again every {}",
             problem.at(&host.settings.relay),
             lasting(check_every)
         ));
@@ -827,9 +820,7 @@ async fn serve_here(
     let online = async {
         let wait = Duration::from_secs(15);
         if !local && tokio::time::timeout(wait, running.online()).await.is_err() {
-            log::line(
-                "warning: not on its Relay yet, so Visitors' browsers can't reach it for now",
-            );
+            log::warning("not on its Relay yet, so Visitors' browsers can't reach it for now");
         }
     };
     let stopped_early = tokio::select! {
@@ -838,7 +829,7 @@ async fn serve_here(
         _ = running.stop_requested() => true,
     };
     if !stopped_early {
-        log::line(&format!("serving {serving}"));
+        log::event("serving", Default::default(), &format!("serving {serving}"));
         // While it serves, and no longer: a Host started by hand behaves as one started by
         // itself (ADR 0014).
         let awake = Awake::hold(&format!("tooob: {name} is serving"));
@@ -862,9 +853,9 @@ async fn serve_here(
         .await
         .is_err()
     {
-        log::line("warning: didn't stop cleanly within 5 s");
+        log::warning("didn't stop cleanly within 5 s");
     }
-    log::line("stopped");
+    log::event("stopped", Default::default(), "stopped");
     Ok(())
 }
 
@@ -1168,21 +1159,4 @@ fn parse(args: impl Iterator<Item = String>) -> Result<(Vec<String>, Flags, Vec<
         }
     }
     Ok((words, flags, invitees))
-}
-
-/// "90s", "30m", "1h", "7d" → seconds.
-pub(crate) fn seconds(text: &str) -> Result<u64> {
-    let (number, unit) = text.split_at(text.len().saturating_sub(1));
-    let n: u64 = number
-        .parse()
-        .with_context(|| format!("bad duration {text:?} (try 1h or 7d)"))?;
-    let unit = match unit {
-        "s" => 1,
-        "m" => 60,
-        "h" => 3600,
-        "d" => 86400,
-        _ => bail!("bad duration {text:?} (try 1h or 7d)"),
-    };
-    n.checked_mul(unit)
-        .with_context(|| format!("bad duration {text:?} (too long)"))
 }

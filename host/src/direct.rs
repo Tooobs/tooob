@@ -15,6 +15,7 @@
 //! A browser asks for it in its offer (`"credit": true`); the answer gives the window
 //! (`"credit": WINDOW`). A browser that doesn't ask has the channel held up as before.
 use crate::host::Admission;
+use crate::visits::{Kind, Presence};
 use crate::wire;
 use anyhow::{Context, Result};
 use bytes::{Bytes, BytesMut};
@@ -36,7 +37,7 @@ use webrtc::data_channel::{DataChannel, DataChannelEvent};
 use webrtc::peer_connection::{
     PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCConfigurationBuilder,
     RTCIceCandidateInit, RTCIceServer, RTCPeerConnectionIceEvent, RTCPeerConnectionState,
-    RTCSessionDescription,
+    RTCSessionDescription, RTCStatsReportEntry, StatsSelector,
 };
 
 // ponytail: Google's public STUN server; run our own next to the Relay before launch.
@@ -81,12 +82,16 @@ pub(crate) async fn open(
     recv: impl AsyncRead + Unpin + Send,
     admission: Admission,
     visitor: String,
+    presence: Presence,
     ended: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
     let (candidates, ours) = mpsc::unbounded_channel();
     let handler = Arc::new(Handler {
         admission,
         visitor,
+        id: presence.direct_path(),
+        presence,
+        pc: std::sync::OnceLock::new(),
         credit,
         candidates,
         up: AtomicBool::new(false),
@@ -109,6 +114,7 @@ pub(crate) async fn open(
             .build()
             .await?,
     );
+    let _ = handler.pc.set(Arc::downgrade(&pc));
     let sdp = match answer(&*pc, offer).await {
         Ok(sdp) => sdp,
         Err(e) => {
@@ -157,6 +163,7 @@ pub(crate) async fn open(
             _ = never_connected => {}
         }
         let _ = pc.close().await;
+        handler.presence.direct_down(handler.id);
         // Gone for good: a restart now gets "no_direct_path", and the browser starts a new one.
         let mut held = slot.0.lock().await;
         if held.as_ref().is_some_and(|d| Arc::ptr_eq(d, &direct)) {
@@ -233,6 +240,13 @@ async fn signal(
 struct Handler {
     admission: Admission,
     visitor: String,
+    /// Its connection's part in its Visitor's Visit, which hears when this Direct Path is up or
+    /// down (ADR 0025).
+    presence: Presence,
+    /// This Direct Path's id there.
+    id: u64,
+    /// Its peer connection, to read which kind of Direct Path it is once it's up.
+    pc: std::sync::OnceLock<std::sync::Weak<dyn PeerConnection>>,
     /// The browser takes credit: see the module docs.
     credit: bool,
     candidates: mpsc::UnboundedSender<RTCIceCandidateInit>,
@@ -251,8 +265,22 @@ impl PeerConnectionEventHandler for Handler {
 
     async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
         match state {
-            RTCPeerConnectionState::Connected => self.up.store(true, Ordering::Relaxed),
-            RTCPeerConnectionState::Closed => self.closed.notify_one(),
+            RTCPeerConnectionState::Connected => {
+                self.up.store(true, Ordering::Relaxed);
+                let pc = self.pc.get().and_then(std::sync::Weak::upgrade);
+                let kind = match pc {
+                    Some(pc) => kind_of(&*pc).await,
+                    None => Kind::Unknown,
+                };
+                self.presence.direct_up(self.id, kind);
+            }
+            RTCPeerConnectionState::Closed => {
+                self.presence.direct_down(self.id);
+                self.closed.notify_one();
+            }
+            RTCPeerConnectionState::Disconnected | RTCPeerConnectionState::Failed => {
+                self.presence.direct_down(self.id)
+            }
             _ => {}
         }
     }
@@ -262,9 +290,60 @@ impl PeerConnectionEventHandler for Handler {
             (self.admission.clone(), self.visitor.clone(), self.credit);
         tokio::spawn(async move {
             if let Err(e) = mux(dc, admission, visitor, credit).await {
-                crate::log::line(&format!("direct path: {e:#}"));
+                crate::log::about_a_visitor(&format!("direct path: {e:#}"));
             }
         });
+    }
+}
+
+/// What kind of Direct Path `pc` is: on the home network (LAN), or punched through NAT. Judged as
+/// the browser judges it, by the address of the other end of the selected candidate pair: here,
+/// the browser's. The address itself goes nowhere: only the kind is logged (ADR 0025).
+async fn kind_of(pc: &dyn PeerConnection) -> Kind {
+    let report = pc
+        .get_stats(std::time::Instant::now(), StatsSelector::None)
+        .await;
+    let selected = report
+        .transport()
+        .map(|t| t.selected_candidate_pair_id.clone());
+    let pair = report
+        .candidate_pairs()
+        .find(|p| selected.as_deref() == Some(p.stats.id.as_str()))
+        .or_else(|| report.candidate_pairs().find(|p| p.nominated));
+    // The pair names its candidates by their own ids; their entries' ids have a prefix of the
+    // entry's type (`RTCRemoteIceCandidate_…`).
+    let browser = pair.and_then(|pair| {
+        let id = &pair.remote_candidate_id;
+        report.iter().find_map(|entry| match entry {
+            RTCStatsReportEntry::RemoteCandidate(c)
+                if c.stats.id == *id || c.stats.id.ends_with(&format!("_{id}")) =>
+            {
+                c.address.clone()
+            }
+            _ => None,
+        })
+    });
+    match browser {
+        Some(address) if on_the_home_network(&address) => Kind::Lan,
+        Some(_) => Kind::NatPunched,
+        None => Kind::Unknown,
+    }
+}
+
+/// Whether `address`, an ICE candidate's, is on a home network: a private or link-local address,
+/// this box, or a browser's mDNS name for its own (`….local`, which only resolves nearby).
+// ponytail: as the shell's: judged by the address alone, so a home network on global IPv6 says
+// "NAT punched", and so does Tailscale's 100.64/10.
+fn on_the_home_network(address: &str) -> bool {
+    if address.ends_with(".local") {
+        return true;
+    }
+    match address.trim_matches(['[', ']']).parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(ip)) => ip.is_private() || ip.is_link_local() || ip.is_loopback(),
+        Ok(std::net::IpAddr::V6(ip)) => {
+            ip.is_loopback() || ip.is_unicast_link_local() || ip.is_unique_local()
+        }
+        Err(_) => false,
     }
 }
 
@@ -403,7 +482,7 @@ fn serve(
     let (recv, send) = tokio::io::split(host_side);
     let serving = tokio::spawn(async move {
         if let Err(e) = admission.stream(send, recv, &visitor).await {
-            crate::log::line(&format!("direct stream from {}: {e:#}", &visitor[..8]));
+            crate::log::about_a_visitor(&format!("direct stream from {}: {e:#}", &visitor[..8]));
         }
     });
     let (input, mut queue) = mpsc::unbounded_channel::<Bytes>();

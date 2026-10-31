@@ -188,8 +188,15 @@ pub fn keep_checking(mut watch: Watch, control: Control, every: Duration) -> Che
     Checking(tokio::spawn(async move {
         loop {
             tokio::time::sleep(every).await;
-            if let Some(said) = watch.update(check(&watch.relay).await) {
-                crate::log::line(&said);
+            let now = check(&watch.relay).await;
+            let (event, fields) = match &now {
+                Ok(version) => ("bootstrap", version.fields()),
+                Err(Problem::Mismatch(version)) => ("bootstrap_mismatch", version.fields()),
+                Err(Problem::NoBootstrap) => ("bootstrap_mismatch", Default::default()),
+                Err(Problem::Unreachable(_)) => ("warning", Default::default()),
+            };
+            if let Some(said) = watch.update(now) {
+                crate::log::event(event, fields, &said);
             }
             control.found_bootstrap(watch.found());
         }
@@ -202,6 +209,13 @@ pub struct Checking(tokio::task::JoinHandle<()>);
 impl Drop for Checking {
     fn drop(&mut self) {
         self.0.abort();
+    }
+}
+
+impl BootstrapVersion {
+    /// Its Release and Protocol Version, for `tooob logs --json`.
+    fn fields(&self) -> crate::log::Fields {
+        crate::fields! {"release" => self.release, "protocol_version" => self.protocol_version}
     }
 }
 
