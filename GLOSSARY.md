@@ -12,6 +12,10 @@ _Avoid_: admin, operator, user, host (for the person)
 One browser on one device that has used an Invite for a Host (a person's, or an Agent's headless one), identified by its Visitor Key: allowed in, awaiting approval, or blocked. A person with a phone and a laptop is two Visitors; so are two Agents' browser profiles on one box.
 _Avoid_: guest, friend, user, client
 
+**Visit**:
+A Visitor's time on a Site, from their first connection until a minute after their last; reloads, more tabs and network switches in between are the same Visit.
+_Avoid_: session, connection (as what the Owner sees)
+
 **Standing**:
 Where a browser stands with a Host: allowed in, awaiting approval, or denied (never invited, or blocked). The Host tells a browser its Standing without saying which kind of denied.
 _Avoid_: status, state, access level
