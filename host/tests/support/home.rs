@@ -163,14 +163,37 @@ async fn answer(
 /// z-base-32's alphabet: how a Host Key is written, short enough to be a hostname's label.
 pub const Z_BASE_32: &str = "ybndrfg8ejkmcpqxot1uwisza345h769";
 
-/// A `TOOOB_HOME` of its own, so tests never touch the Owner's real settings or Hosts.
-pub struct Home(pub tempfile::TempDir);
+/// A `TOOOB_HOME` of its own, so tests never touch the Owner's real settings or Hosts. Its `tooob`
+/// never reaches GitHub: it looks for a newer Release only at a stand-in (`Home::releases_at`),
+/// and otherwise not at all.
+pub struct Home(pub tempfile::TempDir, Mutex<Option<String>>);
+
+/// Where a test's `tooob` finds Releases when none is set: nothing listens there.
+const NO_RELEASES: &str = "http://127.0.0.1:9/";
 
 impl Home {
     pub fn new() -> Home {
-        let home = Home(tempfile::tempdir().unwrap());
+        let home = Home(tempfile::tempdir().unwrap(), Default::default());
         std::fs::create_dir(home.stand_ins()).unwrap();
         home
+    }
+
+    /// From now on, its `tooob` finds GitHub's Releases at `url` (a stand-in), and its running
+    /// Hosts look for a newer one there.
+    pub fn releases_at(&self, url: &str) {
+        *self.1.lock().unwrap() = Some(url.to_string());
+    }
+
+    /// What its `tooob` has in its environment about Releases: a stand-in GitHub, or none, with
+    /// the daily lookup off.
+    pub fn releases_env(&self) -> Vec<(&'static str, String)> {
+        match self.1.lock().unwrap().clone() {
+            Some(url) => vec![("TOOOB_RELEASES_URL", url)],
+            None => vec![
+                ("TOOOB_RELEASES_URL", NO_RELEASES.to_string()),
+                ("TOOOB_NO_UPDATE_CHECK", "1".to_string()),
+            ],
+        }
     }
 
     fn command(&self, args: &[&str]) -> Command {
@@ -183,6 +206,9 @@ impl Home {
             .env_remove("XDG_CONFIG_HOME")
             .env_remove("XDG_STATE_HOME")
             .env_remove("TOOOB_AUTOSTART")
+            .env_remove("TOOOB_NO_UPDATE_CHECK")
+            .env_remove("TOOOB_IN_CONTAINER")
+            .envs(self.releases_env())
             .stdin(Stdio::null());
         cmd
     }
@@ -231,8 +257,14 @@ impl Home {
     /// Run `tooob`, as a script would. It must return within 30 s: a command that stays in the
     /// foreground fails the test instead of hanging it.
     pub fn tooob(&self, args: &[&str]) -> Output {
+        self.tooob_with(args, &[])
+    }
+
+    /// Run `tooob` with `env` set too, as a script would.
+    pub fn tooob_with(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
         let mut child = self
             .command(args)
+            .envs(env.iter().copied())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()

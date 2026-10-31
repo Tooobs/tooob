@@ -1,5 +1,6 @@
 //! A stand-in Site: a real HTTP server on 127.0.0.1 that counts requests and echoes what reached it.
 #![allow(dead_code)] // shared by several test files; each uses part of it
+pub mod github;
 pub mod home;
 use axum::{
     Router,

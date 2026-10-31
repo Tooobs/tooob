@@ -169,6 +169,12 @@ impl Home {
         })
     }
 
+    /// The folder its Hosts' state folders are in, where tooob also keeps what's true of the
+    /// whole box (the newest Release last looked up).
+    pub fn state_dir(&self) -> &Path {
+        &self.state
+    }
+
     fn settings_file(&self, name: &str) -> PathBuf {
         self.config.join("hosts").join(format!("{name}.toml"))
     }

@@ -1,10 +1,12 @@
 //! The `tooob` command with a person at the keyboard, in a real (pseudo) terminal: it asks nothing
 //! there either (ADR 0022). Each command finishes, serves, or fails with what's missing, and none
-//! waits for input. Everything else is in tests/hosts.rs, run as a script would.
+//! waits for input, except `tooob upgrade`, which asks before it installs a Release (ADR 0024).
+//! Everything else is in tests/hosts.rs and tests/upgrade.rs, run as a script would.
 mod support;
 
 use expectrl::{Expect, Session, process::unix::WaitStatus, session::OsSession};
 use std::{process::Command, time::Duration};
+use support::github::TestGitHub;
 use support::home::{Home, RELAY, TestRelay, a_folder, name_of};
 
 /// `program ARGS` in a terminal of its own, under the test's TOOOB_HOME.
@@ -13,7 +15,8 @@ fn spawn_in_terminal(home: &Home, program: &str, args: &[&str]) -> OsSession {
     cmd.args(args)
         .env("TOOOB_HOME", home.0.path())
         .env("HOME", home.0.path())
-        .env("TERM", "xterm-256color");
+        .env("TERM", "xterm-256color")
+        .envs(home.releases_env());
     let mut session = Session::spawn(cmd).unwrap();
     session.set_expect_timeout(Some(Duration::from_secs(30)));
     session
@@ -168,4 +171,54 @@ fn closing_the_terminal_while_sharing_stops_the_host() {
     unsafe { libc::kill(pid, libc::SIGHUP) }; // what a closing terminal sends
     t.expect(format!("{name}: stopped")).unwrap();
     assert!(home.row(&name).contains("stopped"));
+}
+
+#[test]
+fn upgrade_asks_before_it_installs_and_only_y_installs() {
+    let this = env!("CARGO_PKG_VERSION");
+    let mut parts = this.split('.');
+    let major = parts.next().unwrap();
+    let minor: u32 = parts.next().unwrap().parse().unwrap();
+    let newer = format!("{major}.{}.0", minor + 1);
+    for (answer, installs) in [("y", true), ("Y", true), ("n", false), ("", false)] {
+        let home = Home::new();
+        let github = TestGitHub::start();
+        github.publish(this, Some(tooob::PROTOCOL_VERSION));
+        github.publish(&newer, Some(tooob::PROTOCOL_VERSION));
+        home.releases_at(&github.url);
+        home.install_tooob();
+        let mut t = in_terminal(&home, &["upgrade"]);
+
+        let said = t.expect(format!("Install {newer}? [y/N] ")).unwrap();
+        let said = String::from_utf8_lossy(said.before()).into_owned();
+        assert!(
+            said.contains(&format!(
+                "tooob {newer} is out (this is {this}): \
+                 https://github.com/Tooobs/tooob/releases/tag/v{newer}"
+            )),
+            "{said}"
+        );
+        t.send_line(answer).unwrap();
+        let said = t.expect(expectrl::Eof).unwrap();
+        let said = String::from_utf8_lossy(said.get(0).unwrap()).into_owned();
+        assert!(
+            matches!(t.get_process().wait().unwrap(), WaitStatus::Exited(_, 0)),
+            "{answer:?}: {said}"
+        );
+        let installed =
+            std::fs::read_to_string(home.0.path().join("installed")).unwrap_or_default();
+        match installs {
+            true => {
+                assert_eq!(installed.trim(), newer, "{answer:?}");
+                assert!(
+                    said.contains(&format!("tooob {newer} is installed")),
+                    "{said}"
+                );
+            }
+            false => {
+                assert_eq!(installed, "", "{answer:?}");
+                assert!(said.contains("nothing installed"), "{answer:?}: {said}");
+            }
+        }
+    }
 }

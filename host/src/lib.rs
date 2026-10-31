@@ -9,6 +9,7 @@ pub mod host;
 pub mod hosts;
 mod jars;
 mod shared_folder;
+pub mod upgrade;
 pub mod visit;
 mod wire;
 

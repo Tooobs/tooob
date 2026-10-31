@@ -16,6 +16,7 @@ use tooob::hosts::{
     Entry, Home, NO_RELAY, RUN_YOUR_OWN, check_relay, name_char, no_invite_links, no_key_address,
     quote,
 };
+use tooob::upgrade::{self, Relays, Releases, Version};
 
 // musl's own allocator costs ~22% more CPU per byte served than glibc's (measured in #59), so
 // Linux Releases, which are static musl builds, use mimalloc.
@@ -47,13 +48,25 @@ const USAGE: &str = "usage:
   tooob visitors NAME [--json] | invites NAME [--json]
   tooob block NAME KEY | approve NAME KEY | unblock NAME KEY   KEY: a unique prefix is enough
   tooob revoke NAME INVITE-ID
+  tooob upgrade [VERSION] [--check] [--yes] [--anyway]
+                                                  install the newest Release, or VERSION (older
+                                                  ones too), asking first: --check only looks,
+                                                  --yes doesn't ask, --anyway even when a Host's
+                                                  Relay isn't ready for it; enabled Hosts restart
+                                                  on it
   tooob --version                                 the Release and Protocol Version
 NAME is a Host Name, what the Host serves, or a Host Key prefix. Owner commands work whether the
 Host is running or not. There's no default Relay: deploy/ shows how to run your own. Nothing is
-ever asked: what's missing is an error that shows the command to type.";
+asked but upgrade's one question: what's missing is an error that shows the command to type.
+Running Hosts look for a newer Release once a day, and say when one is out.";
 
 const VALUE_FLAGS: &[&str] = &["relay", "expires", "name"];
-const BARE_FLAGS: &[&str] = &["local", "json", "approve", "owner", "follow"];
+const BARE_FLAGS: &[&str] = &[
+    "local", "json", "approve", "owner", "follow", "yes", "check", "anyway",
+];
+
+/// Where an Owner learns to deploy a Relay.
+const RUN_YOUR_OWN_RELAY: &str = "deploy/ shows how";
 
 /// Commands for one Host, named first: `tooob VERB NAME …`. They work whether it's running or not
 /// (ADR 0014).
@@ -161,6 +174,10 @@ async fn run() -> Result<()> {
                 );
             }
             host.remove()?;
+        }
+        Some("upgrade") => {
+            exactly(2, &["yes", "check", "anyway"])?;
+            upgrade(&home, &typed, words.get(1), &flags).await?;
         }
         Some(command) if OWNER.contains(&command) => {
             owner_command(&home, &typed, command, &words, &flags, &invitees).await?
@@ -420,6 +437,9 @@ async fn ls(home: &Home, json: bool) -> Result<()> {
             state(r),
             r.serves
         );
+    }
+    if let Some(newer) = upgrade::newer_known(home.state_dir()) {
+        println!("\n{}", upgrade::is_out(&newer));
     }
     Ok(())
 }
@@ -689,12 +709,23 @@ async fn serve(host: &Entry, invitees: Vec<Invitee>) -> Result<()> {
 /// How often a running Host checks its Relay's Bootstrap again: every 10 minutes, or as
 /// `TOOOB_BOOTSTRAP_CHECK_EVERY` says (`1s`, `30m`), which tests use.
 fn check_every() -> Result<Duration> {
-    let Some(every) = std::env::var_os("TOOOB_BOOTSTRAP_CHECK_EVERY") else {
-        return Ok(Duration::from_secs(10 * 60));
+    every("TOOOB_BOOTSTRAP_CHECK_EVERY", Duration::from_secs(10 * 60))
+}
+
+/// How often a running Host looks for a newer Release: once a day for the whole box, or as
+/// `TOOOB_UPDATE_CHECK_EVERY` says (`1s`), which tests use.
+fn update_check_every() -> Result<Duration> {
+    every("TOOOB_UPDATE_CHECK_EVERY", Duration::from_secs(86_400))
+}
+
+/// The duration the environment variable `var` says (`1s`, `30m`), or `default`.
+fn every(var: &str, default: Duration) -> Result<Duration> {
+    let Some(every) = std::env::var_os(var) else {
+        return Ok(default);
     };
     let every = every.to_string_lossy();
-    match seconds(&every).context("in TOOOB_BOOTSTRAP_CHECK_EVERY")? {
-        0 => bail!("TOOOB_BOOTSTRAP_CHECK_EVERY can't be 0"),
+    match seconds(&every).with_context(|| format!("in {var}"))? {
+        0 => bail!("{var} can't be 0"),
         secs => Ok(Duration::from_secs(secs)),
     }
 }
@@ -710,6 +741,7 @@ async fn serve_here(
     invitees: Vec<Invitee>,
 ) -> Result<()> {
     let check_every = check_every()?;
+    let update_check_every = update_check_every()?;
     // Listening from before the Host starts, so a stop while it's still coming up is clean too.
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;
@@ -761,6 +793,11 @@ async fn serve_here(
         let watch = Watch::new(&host.settings.relay, &first);
         bootstrap::keep_checking(name, watch, running.control(), check_every)
     });
+    // A Host's state folder is in its Home's, where the box's newest Release is kept.
+    let _looking = match (upgrade::lookups_off(), host.state_dir.parent()) {
+        (false, Some(state)) => Some(upgrade::keep_looking(name, state, update_check_every)),
+        _ => None,
+    };
     // Browsers reach a Host only through its Relay, so until it's there, its links lead nowhere.
     let online = async {
         let wait = Duration::from_secs(15);
@@ -877,6 +914,150 @@ async fn logs(host: &Entry, follow: bool) -> Result<()> {
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+}
+
+/// `tooob upgrade [VERSION]`: replace this box's `tooob` with the newest final Release, or the one
+/// VERSION names, through that Release's own installer, only when the Owner says so (ADR 0024).
+async fn upgrade(home: &Home, typed: &Typed, wanted: Option<&String>, flags: &Flags) -> Result<()> {
+    let releases = Releases::from_env()?;
+    let this = Version::this();
+    let target = match wanted {
+        None => {
+            let newest = releases.newest().await?;
+            if newest.version <= this {
+                println!("tooob {this} is the newest Release");
+                return Ok(());
+            }
+            println!(
+                "tooob {} is out (this is {this}): {}",
+                newest.version, newest.notes
+            );
+            newest
+        }
+        Some(wanted) => {
+            let Some(version) = Version::parse(wanted) else {
+                bail!("{wanted:?} isn't a Release: say one like 0.2.0");
+            };
+            if version == this {
+                println!("this is tooob {this} already");
+                return Ok(());
+            }
+            let Some(release) = releases.exact(&version).await? else {
+                bail!(
+                    "there's no Release {version}: https://github.com/Tooobs/tooob/releases lists \
+                     them"
+                );
+            };
+            println!("tooob {version} (this is {this}): {}", release.notes);
+            release
+        }
+    };
+    if flags.contains_key("check") {
+        return Ok(());
+    }
+    upgrade::replaceable(&releases, &target)?;
+    let version = &target.version;
+    let checked = match flags.contains_key("anyway") {
+        true => Relays::Fine {
+            warnings: Vec::new(),
+        },
+        false => upgrade::check_relays(home, &target).await,
+    };
+    let warnings = match checked {
+        Relays::Fine { warnings } => warnings,
+        Relays::Mismatch {
+            speaks,
+            stranded,
+            warnings,
+        } => {
+            for warning in warnings {
+                eprintln!("tooob: warning: {warning}");
+            }
+            return Err(typed.missing(
+                &format!(
+                    "tooob {version} speaks {speaks}, and these Hosts' Relays serve a Bootstrap \
+                     that speaks another Protocol Version, so they'd be left on a Bootstrap \
+                     Mismatch:\n  {}\nDeploy each Relay with tooob {version} first ({RUN_YOUR_OWN_RELAY}), \
+                     or upgrade regardless",
+                    stranded.join("\n  ")
+                ),
+                "--anyway",
+            ));
+        }
+        Relays::CantTell => {
+            return Err(typed.missing(
+                &format!(
+                    "tooob {version}'s notes don't say which Protocol Version it speaks, so \
+                     whether your Hosts' Relays serve a Bootstrap it works with can't be checked; \
+                     upgrade regardless"
+                ),
+                "--anyway",
+            ));
+        }
+    };
+    for warning in warnings {
+        eprintln!("tooob: warning: {warning}");
+    }
+    if !flags.contains_key("yes") && !asked_yes(typed, &target.version)? {
+        eprintln!("tooob: nothing installed");
+        return Ok(());
+    }
+    upgrade::install(&releases, &target).await?;
+    eprintln!("tooob: tooob {version} is installed");
+    restart_after_upgrade(home, version);
+    Ok(())
+}
+
+/// After an upgrade to `version`: restart each running Host that starts by itself, through its
+/// service manager, so it runs `version`, and name the Hosts run by hand, which keep the Release
+/// they started with until they're restarted.
+fn restart_after_upgrade(home: &Home, version: &Version) {
+    let (mut restarted, mut by_hand) = (Vec::new(), Vec::new());
+    for host in home.hosts() {
+        let Some(pid) = host.running() else { continue };
+        if !autostart::is_on(&host) {
+            by_hand.push(host.name);
+            continue;
+        }
+        match autostart::restart(&host, pid) {
+            Ok(()) => restarted.push(host.name),
+            Err(e) => eprintln!(
+                "tooob: warning: {0} wasn't restarted ({e:#}): `tooob logs {0}` says what it \
+                 did, and `tooob enable {0}` starts it afresh",
+                host.name
+            ),
+        }
+    }
+    if !restarted.is_empty() {
+        eprintln!(
+            "tooob: restarted on tooob {version}: {}",
+            restarted.join(", ")
+        );
+    }
+    if !by_hand.is_empty() {
+        eprintln!(
+            "tooob: still on {} until restarted: {}",
+            Version::this(),
+            by_hand.join(", ")
+        );
+    }
+}
+
+/// Ask the Owner whether to install `version`: `Install 0.2.0? [y/N]`, the one question tooob asks
+/// (ADR 0022). Without a terminal to ask in, it's refused, showing the command with `--yes`.
+fn asked_yes(typed: &Typed, version: &Version) -> Result<bool> {
+    use std::io::{BufRead, IsTerminal, Write};
+    if !std::io::stdin().is_terminal() {
+        return Err(typed.missing(
+            &format!("there's no terminal here to ask in, so say --yes to install tooob {version}"),
+            "--yes",
+        ));
+    }
+    eprint!("Install {version}? [y/N] ");
+    std::io::stderr().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().lock().read_line(&mut answer)?;
+    Ok(matches!(answer.trim().to_lowercase().as_str(), "y" | "yes"))
 }
 
 /// Turn a control-socket error into a message that says what to do.

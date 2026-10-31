@@ -230,6 +230,30 @@ pub fn stop(host: &Entry) -> Result<()> {
     host.until_stopped()
 }
 
+/// Restart `host`, whose Autostart is on and which runs as `pid`, through its service manager, so
+/// it runs the Release now installed; and wait, up to 10 s, until it's running again. launchd is
+/// asked to stop it cleanly (it isn't started again after a clean exit) and then to start it.
+pub fn restart(host: &Entry, pid: u32) -> Result<()> {
+    let service = launchd_service(&host.name);
+    match ServiceManager::here() {
+        Some(ServiceManager::Launchd) => {
+            call("launchctl", &["kill", "SIGTERM", &service])?;
+            host.until_stopped()?;
+            call("launchctl", &["kickstart", &service])?;
+        }
+        Some(ServiceManager::Systemd) => systemctl(&["restart", &unit(&host.name)])?,
+        None => bail!("no service manager runs {}", host.name),
+    }
+    let started = std::time::Instant::now();
+    while host.running().is_none_or(|now| now == pid) {
+        if started.elapsed() > std::time::Duration::from_secs(10) {
+            bail!("{} didn't start again within 10 s", host.name);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    Ok(())
+}
+
 /// Whether this process is `host`'s entry's own `tooob run`: its service manager's.
 pub fn started_by_its_entry(host: &Entry) -> bool {
     std::env::var(AUTOSTART).is_ok_and(|name| name == host.name)
@@ -274,9 +298,13 @@ fn systemctl(args: &[&str]) -> Result<()> {
 }
 
 /// What the entry sets in the Host's environment: that it's the entry's own `tooob run` (which
-/// `run` allows for an enabled Host), and where its Hosts are, when that isn't the default.
+/// `run` allows for an enabled Host), where its Hosts are, when that isn't the default, and that
+/// it looks for no newer Release, when `TOOOB_NO_UPDATE_CHECK` says so as it's enabled.
 fn environment(host: &Entry) -> Result<Vec<(&'static str, String)>> {
     let mut env = vec![(AUTOSTART, host.name.clone())];
+    if crate::upgrade::lookups_off() {
+        env.push(("TOOOB_NO_UPDATE_CHECK", "1".to_string()));
+    }
     if let Some(dir) = std::env::var_os("TOOOB_HOME") {
         let dir = std::path::absolute(dir)?;
         env.push(("TOOOB_HOME", path(&dir)?.to_string()));

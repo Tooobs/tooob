@@ -205,9 +205,10 @@ export async function startSite() {
   return site;
 }
 
-// Every Host made here lives under a TOOOB_HOME of its own, never the Owner's real one.
+// Every Host made here lives under a TOOOB_HOME of its own, never the Owner's real one, and never
+// looks up GitHub for a newer Release.
 const HOME = mkdtempSync(join(tmpdir(), 'tooob-home-'));
-const ENV = { ...process.env, TOOOB_HOME: HOME };
+const ENV = { ...process.env, TOOOB_HOME: HOME, TOOOB_NO_UPDATE_CHECK: '1' };
 let hosts = 0;
 
 /** A Host for a Site's web app, through a Relay, running; `name` runs one made earlier again. */
