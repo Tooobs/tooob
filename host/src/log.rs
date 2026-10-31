@@ -229,10 +229,14 @@ fn last_of(crashes: &mut File) -> io::Result<Vec<String>> {
     Ok(lines[lines.len().saturating_sub(50)..].to_vec())
 }
 
-/// `said`, a Host's dying words, as lines of its log at `time`: `heading`, then each, indented.
+/// `said`, a Host's dying words, as lines of its log at `time`: `heading`, then each, indented,
+/// with any address taken out (a panic may say what a Visitor sent).
 fn dying_words(host: &str, time: Option<String>, said: &[String], heading: &str) -> Vec<Line> {
     std::iter::once(heading.to_string())
-        .chain(said.iter().map(|line| format!("  {line}")))
+        .chain(
+            said.iter()
+                .map(|line| format!("  {}", without_addresses(line))),
+        )
         .map(|text| Line::new(time.clone(), host, &text))
         .collect()
 }
@@ -399,15 +403,22 @@ pub fn event(event: &str, fields: Fields, text: &str) {
     }
 }
 
-/// Log `text`, a line about a Visitor's connection that may carry what it or its browser sent (an
-/// error from WebRTC, iroh or a bad request), with any address in it taken out: where Visitors
-/// are is never logged (ADR 0025).
-pub fn about_a_visitor(text: &str) {
-    line(&without_addresses(text));
+/// Log `text`, an error on the connection of the device whose Visitor Key is `visitor` (None
+/// before its hello proves one), as a `visitor_error` event. It may carry what the device or its
+/// browser sent (an error from WebRTC, iroh, a bad offer), so any address in it is taken out:
+/// where Visitors are is never logged (ADR 0025).
+pub fn about_a_visitor(visitor: Option<&str>, text: &str) {
+    let mut fields = Fields::new();
+    if let Some(key) = visitor {
+        fields.insert("key".into(), key.get(..8).unwrap_or(key).into());
+    }
+    event("visitor_error", fields, &without_addresses(text));
 }
 
-/// `text` with each IP address in it (with a port or not, IPv6 in brackets or not) and each mDNS
-/// name a browser gives its own (`….local`) said as `an address`.
+/// `text` with each IP address in it (with a port or not, IPv6 in brackets or not, with a zone
+/// or not) and each mDNS name a browser gives its own (`….local`, with a port or not) said as
+/// `an address`. An IPv6 address with no digit in it (`dead::beef`) is left, as prose that only
+/// looks like one is (`add::dad`): a small risk, since a real one nearly always has a digit.
 pub fn without_addresses(text: &str) -> String {
     let part =
         |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | ':' | '[' | ']' | '%' | '-');
@@ -423,29 +434,49 @@ pub fn without_addresses(text: &str) -> String {
         let bare = word.trim_end_matches(['.', ':', '-']);
         if is_an_address(bare) {
             said.push_str("an address");
-            said.push_str(&word[bare.len()..]);
         } else {
-            said.push_str(word);
+            // One joined to other words by dashes: `from-192.0.2.1`.
+            let pieces: Vec<&str> = bare.split('-').collect();
+            let pieces: Vec<&str> = pieces
+                .iter()
+                .map(|piece| {
+                    if is_an_address(piece) {
+                        "an address"
+                    } else {
+                        piece
+                    }
+                })
+                .collect();
+            said.push_str(&pieces.join("-"));
         }
+        said.push_str(&word[bare.len()..]);
         rest = &rest[start + len..];
     }
     said.push_str(rest);
     said
 }
 
+/// Whether `word` is an address: an IP address or an mDNS name, with a port or not.
 fn is_an_address(word: &str) -> bool {
-    use std::net::{IpAddr, SocketAddr};
-    let unzoned = |w: &str| w.split('%').next().unwrap_or(w).to_string();
-    let plain = unzoned(word.trim_matches(['[', ']']));
-    word.parse::<SocketAddr>().is_ok()
-        || plain.parse::<IpAddr>().is_ok()
-        || word.rsplit_once(':').is_some_and(|(ip, port)| {
-            port.parse::<u16>().is_ok()
-                && unzoned(ip.trim_matches(['[', ']']))
-                    .parse::<IpAddr>()
-                    .is_ok()
+    let word = word.to_ascii_lowercase();
+    let without_port = word
+        .rsplit_once(':')
+        .filter(|(_, port)| !port.is_empty() && port.parse::<u16>().is_ok())
+        .map(|(host, _)| host.to_string());
+    std::iter::once(word.clone())
+        .chain(without_port)
+        .any(|host| {
+            if host.len() > ".local".len() && host.ends_with(".local") {
+                return true;
+            }
+            let host = host.trim_start_matches('[').trim_end_matches(']');
+            let host = host.split('%').next().unwrap_or(host);
+            match host.parse::<std::net::IpAddr>() {
+                Ok(std::net::IpAddr::V4(_)) => true,
+                Ok(std::net::IpAddr::V6(_)) => host.chars().any(|c| c.is_ascii_digit()),
+                Err(_) => false,
+            }
         })
-        || (word.len() > ".local".len() && word.ends_with(".local"))
 }
 
 /// Log `warning: text` in this process's Host's log, as a `warning` event.
@@ -574,7 +605,10 @@ impl Reader {
             true => dying_words(host, time, &said, NOT_TAKEN),
             false => said
                 .iter()
-                .map(|line| Line::new(time.clone(), host, &format!("  {line}")))
+                .map(|line| {
+                    let line = format!("  {}", without_addresses(line));
+                    Line::new(time.clone(), host, &line)
+                })
                 .collect(),
         })
     }
@@ -586,4 +620,51 @@ fn split(text: &[u8]) -> Vec<String> {
         .lines()
         .map(String::from)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::without_addresses;
+
+    #[test]
+    fn every_kind_of_address_is_taken_out_and_prose_is_left_alone() {
+        for (said, logged) in [
+            ("to 198.51.100.23 failed", "to an address failed"),
+            ("udp host 198.51.100.23:54321.", "udp host an address."),
+            ("from 2001:db8::7 now", "from an address now"),
+            ("2001:DB8::7", "an address"),
+            ("::ffff:192.0.2.1", "an address"),
+            ("[2001:db8::7]:443 down", "an address down"),
+            (
+                "fe80::1%en0 and [fe80::1%en0]:9",
+                "an address and an address",
+            ),
+            ("::1", "an address"),
+            (
+                "udp host 1cadc2c3-edaf-474a-a683-93b28a04b3bb.local:54321",
+                "udp host an address",
+            ),
+            ("1CADC2C3-EDAF-474A-A683-93B28A04B3BB.LOCAL", "an address"),
+            ("abc.local, then", "an address, then"),
+            ("from-192.0.2.1-on", "from-an address-on"),
+            ("(198.51.100.23)", "(an address)"),
+            (
+                "SdpInvalidSyntax: `o=- 1 2 IN IP4 198.51.100.23 extra`",
+                "SdpInvalidSyntax: `o=- 1 2 IN IP4 an address extra`",
+            ),
+        ] {
+            assert_eq!(without_addresses(said), logged, "{said:?}");
+        }
+        for prose in [
+            "add::dad",
+            "tokio::io::Error: broken pipe",
+            "stream from 3f2a91c0: ErrUnknownCandidateType (nonsense)",
+            "tooob 0.2.0 (tooob/0) at 15:04:24",
+            "a::b and ::",
+            "well-known .local",
+            "direct path: 10 s",
+        ] {
+            assert_eq!(without_addresses(prose), prose);
+        }
+    }
 }

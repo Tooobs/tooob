@@ -693,7 +693,7 @@ async fn serve(host: &Entry, state: &Path, invitees: Vec<Invitee>) -> Result<()>
     match serve_locked(host, state, invitees).await {
         Ok(()) => Ok(()),
         Err(e) => {
-            log.write(&format!("{e:#}"));
+            log.event("error", Default::default(), &format!("{e:#}"));
             Err(Logged.into())
         }
     }
@@ -781,6 +781,10 @@ async fn serve_here(
         Network::Relay(url) => format!("Relay {url}"),
         Network::Default => "n0's Relays".to_string(),
     };
+    let relay = match &network {
+        Network::Relay(url) => Some(url.to_string()),
+        _ => None,
+    };
     let beside = match &bootstrap {
         None => String::new(),
         Some(Ok(version)) => format!(", Bootstrap {version}"),
@@ -805,10 +809,9 @@ async fn serve_here(
         network,
     })
     .await?;
-    log::line(&format!(
-        "Host {}, through {through}",
-        running.address().id.to_z32()
-    ));
+    let key = running.address().id.to_z32();
+    let fields = tooob::fields! {"host_key" => key, "relay" => relay, "local" => local};
+    log::event("host", fields, &format!("Host {key}, through {through}"));
     // Until this returns: the Host stops, and its checks with it.
     let _checking = bootstrap.map(|first| {
         let watch = Watch::new(&host.settings.relay, &first);
@@ -834,7 +837,9 @@ async fn serve_here(
         // itself (ADR 0014).
         let awake = Awake::hold(&format!("tooob: {name} is serving"));
         if awake.is_some() {
-            log::line(
+            log::event(
+                "awake",
+                Default::default(),
                 "this Mac won't idle-sleep while it serves (closing its lid still sleeps it)",
             );
         }

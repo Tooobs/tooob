@@ -340,3 +340,51 @@ async fn the_owners_changes_are_logged_with_where_they_came_from_running_or_stop
     assert_eq!(photos.events("approved")[0]["fields"]["key"], gran);
     assert_eq!(photos.events("unblocked")[0]["fields"]["from"], "cli");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_visitor_kept_by_tooob_0_2_0_comes_back_as_a_return() {
+    let home = Home::new();
+    let folder = a_folder();
+    let relay = TestRelay::start();
+    let path = folder.path().to_str().unwrap();
+    home.ok(&["add", "photos", path, "--relay", &relay.url]);
+    let dave = new_key();
+    let visitor = iroh::SecretKey::from_bytes(&dave).public().to_string();
+    // The Allowlist as 0.2.0 kept it: nothing says whether a Visitor has been in.
+    let access = serde_json::json!({
+        "invites": {},
+        "visitors": {visitor: {
+            "label": "dave", "blocked": false, "approved": true, "owner_device": false
+        }}
+    });
+    let state = home.shown("photos", "state folder");
+    std::fs::write(format!("{state}/access.json"), access.to_string()).unwrap();
+    let running = home.start_with("photos", &QUICK);
+    let photos = Photos {
+        home,
+        relay,
+        running,
+        _folder: folder,
+    };
+    let tab = photos.connect(dave).await;
+    tab.get("/notes.txt").await.unwrap();
+    photos.until_logged(&format!("dave ({}) got in · return · relay", short(&dave)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn past_so_many_refused_devices_the_rest_are_counted_in_one_line() {
+    let photos = Photos::start_with(&[
+        ("TOOOB_VISIT_GRACE", "5s"),
+        ("TOOOB_DIRECT_WAIT", "1s"),
+        ("TOOOB_REFUSED_CAP", "2"),
+    ]);
+    for _ in 0..4 {
+        let tab = photos.connect(new_key()).await;
+        assert_eq!(tab.get("/").await, Err(VisitError::Denied));
+        assert_eq!(tab.get("/").await, Err(VisitError::Denied));
+    }
+    photos
+        .until_logged("refused 4 more times in the last 5 seconds, too many devices to name each");
+    assert_eq!(photos.events("refused").len(), 2, "{:#?}", photos.said());
+    assert_eq!(photos.events("refused_more")[0]["fields"]["count"], 4);
+}

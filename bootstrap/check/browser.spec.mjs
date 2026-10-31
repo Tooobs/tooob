@@ -642,6 +642,18 @@ test("the Host's log says when a Visitor moves from the Relay onto the Direct Pa
   await h.logged(name, /^mom \([0-9a-f]{8}\) moved to direct · LAN$/);
 });
 
+test("the Host's log never says a Visitor who closed their tab moved to the Relay", async ({ browser, relay }) => {
+  // A grace longer than the wait for a path to settle, so a move logged as the tab went would show.
+  const { name, invite } = await hostWithSite(relay, { TOOOB_VISIT_GRACE: '5s', TOOOB_DIRECT_WAIT: '1s' });
+  const page = await h.newVisitor(browser);
+  await page.goto(invite('mom'));
+  await h.siteText(page);
+  await h.logged(name, /^mom \([0-9a-f]{8}\) got in · first visit · direct · LAN$/);
+  await page.context().close(); // its Direct Path goes at once; its iroh connection only at iroh's idle timeout
+  await h.logged(name, /^mom .* left after/, 70000);
+  assert.deepEqual(h.logOf(name).filter((l) => / moved to /.test(l)), []);
+});
+
 test("a Visitor's address never reaches the Host's log, even in an error it logs", async ({ browser, relay }) => {
   const { name, invite, site } = await hostWithSite(relay);
   const page = await h.newVisitor(browser);

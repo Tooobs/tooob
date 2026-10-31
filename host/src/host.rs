@@ -3,7 +3,7 @@ use crate::Network;
 use crate::access::{Access, Decision, RedeemError, Redeemed};
 use crate::control::{Control, now};
 use crate::jars::{Jars, SiteClient};
-use crate::visits::{Presence, Refusal, Visits};
+use crate::visit_log::{Presence, Refusal, Visits};
 use crate::wire::{self, ALPN};
 use anyhow::{Context, Result, bail};
 use futures::{SinkExt, StreamExt};
@@ -92,7 +92,7 @@ impl Host {
         let access = Arc::new(Mutex::new(access));
         let changes = Arc::new(watch::Sender::new(()));
         let jars = Arc::new(Jars::open(config.data_dir.join("jars"))?);
-        let visits = Visits::new()?;
+        let visits = Visits::new(access.clone())?;
         let admission = Admission {
             host_key: endpoint.id(),
             access: access.clone(),
@@ -302,7 +302,7 @@ impl ProtocolHandler for Admission {
         let visitor = match tokio::time::timeout(wait, hello).await {
             Ok(Ok(visitor)) => visitor,
             Ok(Err(e)) => {
-                crate::log::about_a_visitor(&format!("refused a hello: {e:#}"));
+                crate::log::about_a_visitor(None, &format!("refused a hello: {e:#}"));
                 conn.close(1u32.into(), b"bad hello");
                 return Ok(());
             }
@@ -314,12 +314,16 @@ impl ProtocolHandler for Admission {
         let direct = crate::direct::Slot::default();
         let presence = self.visits.connection(&visitor);
         while let Ok((send, recv)) = conn.accept_bi().await {
+            presence.heard();
             let (this, visitor, conn) = (self.clone(), visitor.clone(), conn.clone());
             let (direct, presence) = (direct.clone(), presence.clone());
             tokio::spawn(async move {
                 let served = this.iroh_stream(send, recv, &visitor, conn, &direct, &presence);
                 if let Err(e) = served.await {
-                    crate::log::about_a_visitor(&format!("stream from {}: {e:#}", &visitor[..8]));
+                    crate::log::about_a_visitor(
+                        Some(&visitor),
+                        &format!("stream from {}: {e:#}", &visitor[..8]),
+                    );
                 }
             });
         }
@@ -428,9 +432,7 @@ impl Admission {
     /// refused, and why.
     fn heard(&self, presence: &Presence, visitor: &str, decision: &Decision) {
         match decision {
-            Decision::Allowed { label, .. } => {
-                presence.let_in(label, || self.access.lock().unwrap().first_visit(visitor))
-            }
+            Decision::Allowed { label, .. } => presence.let_in(label),
             Decision::AwaitingApproval { label } => {
                 presence.refused(Refusal::AwaitingApproval(label.clone()))
             }

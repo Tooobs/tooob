@@ -284,7 +284,8 @@ fn crashed(home: &Home, said: &str) -> String {
     crashes
 }
 
-const PANIC: &str = "thread 'main' panicked at src/main.rs:1:1:\nsomething broke\n";
+const PANIC: &str =
+    "thread 'main' panicked at src/main.rs:1:1:\nsomething broke on 198.51.100.23:54321\n";
 
 #[test]
 fn a_hosts_dying_words_are_moved_into_its_log_when_it_next_starts() {
@@ -306,7 +307,7 @@ fn a_hosts_dying_words_are_moved_into_its_log_when_it_next_starts() {
             "2026-10-30 09:00:00  photos: an older line",
             "2026-10-30 09:01:30  photos: before it stopped last time, it said:",
             "2026-10-30 09:01:30  photos:   thread 'main' panicked at src/main.rs:1:1:",
-            "2026-10-30 09:01:30  photos:   something broke",
+            "2026-10-30 09:01:30  photos:   something broke on an address",
         ],
         "{lines:#?}"
     );
@@ -337,7 +338,7 @@ fn logs_shows_what_a_host_said_as_it_stopped_that_isnt_in_its_log_yet() {
             + "2026-10-30 09:01:30  photos: "
             + not_yet
             + "\n2026-10-30 09:01:30  photos:   thread 'main' panicked at src/main.rs:1:1:\n\
-               2026-10-30 09:01:30  photos:   something broke\n"
+               2026-10-30 09:01:30  photos:   something broke on an address\n"
     );
     let objects: Vec<Value> = logs(&["--json"])
         .lines()
@@ -349,7 +350,7 @@ fn logs_shows_what_a_host_said_as_it_stopped_that_isnt_in_its_log_yet() {
     );
 
     let following = home.spawn_with(&["logs", "photos", "-f"], &[TZ]);
-    following.until_it_says("  something broke\n");
+    following.until_it_says("  something broke on an address\n");
     {
         use std::io::Write;
         let mut file = std::fs::OpenOptions::new()

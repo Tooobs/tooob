@@ -15,7 +15,7 @@
 //! A browser asks for it in its offer (`"credit": true`); the answer gives the window
 //! (`"credit": WINDOW`). A browser that doesn't ask has the channel held up as before.
 use crate::host::Admission;
-use crate::visits::{Kind, Presence};
+use crate::visit_log::{Kind, Presence};
 use crate::wire;
 use anyhow::{Context, Result};
 use bytes::{Bytes, BytesMut};
@@ -289,8 +289,8 @@ impl PeerConnectionEventHandler for Handler {
         let (admission, visitor, credit) =
             (self.admission.clone(), self.visitor.clone(), self.credit);
         tokio::spawn(async move {
-            if let Err(e) = mux(dc, admission, visitor, credit).await {
-                crate::log::about_a_visitor(&format!("direct path: {e:#}"));
+            if let Err(e) = mux(dc, admission, visitor.clone(), credit).await {
+                crate::log::about_a_visitor(Some(&visitor), &format!("direct path: {e:#}"));
             }
         });
     }
@@ -419,10 +419,13 @@ async fn mux(
                     // Never waits: a browser that takes credit stays within it.
                     match room.try_acquire_many_owned(n) {
                         Err(TryAcquireError::NoPermits) => {
-                            crate::log::line(&format!(
-                                "direct stream from {}: sent past its credit",
-                                &visitor[..8]
-                            ));
+                            crate::log::about_a_visitor(
+                                Some(&visitor),
+                                &format!(
+                                    "direct stream from {}: sent past its credit",
+                                    &visitor[..8]
+                                ),
+                            );
                             if let Some(stream) = streams.remove(&id) {
                                 stream.reset().await;
                             }
@@ -482,7 +485,10 @@ fn serve(
     let (recv, send) = tokio::io::split(host_side);
     let serving = tokio::spawn(async move {
         if let Err(e) = admission.stream(send, recv, &visitor).await {
-            crate::log::about_a_visitor(&format!("direct stream from {}: {e:#}", &visitor[..8]));
+            crate::log::about_a_visitor(
+                Some(&visitor),
+                &format!("direct stream from {}: {e:#}", &visitor[..8]),
+            );
         }
     });
     let (input, mut queue) = mpsc::unbounded_channel::<Bytes>();

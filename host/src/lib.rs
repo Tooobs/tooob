@@ -12,7 +12,7 @@ pub mod log;
 mod shared_folder;
 pub mod upgrade;
 pub mod visit;
-mod visits;
+mod visit_log;
 mod wire;
 
 pub use wire::PROTOCOL_VERSION;

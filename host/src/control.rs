@@ -91,7 +91,7 @@ impl Control {
         let label = self.access.lock().unwrap().label(visitor_key);
         (
             label.unwrap_or_default(),
-            crate::visits::short(visitor_key).to_string(),
+            crate::visit_log::short(visitor_key).to_string(),
         )
     }
 
@@ -207,7 +207,11 @@ pub(crate) fn listen(data_dir: &Path, control: Control) -> Result<Listening> {
             let control = control.clone();
             tokio::spawn(async move {
                 if let Err(e) = answer(stream, &control).await {
-                    crate::log::line(&format!("control request: {e:#}"));
+                    crate::log::event(
+                        "control_error",
+                        Default::default(),
+                        &format!("control request: {e:#}"),
+                    );
                 }
             });
         }

@@ -1,5 +1,6 @@
 //! A Visitor's side of the tooob protocol, natively: what the browser shell does in JavaScript.
-//! Used by tests and, later, the native visitor app.
+//! Used by tests and, later, the native visitor app. (`visit_log` is the Host's side: what its log
+//! says of each Visit.)
 use crate::Network;
 use crate::access::Redeemed;
 use crate::wire::{self, ALPN};
