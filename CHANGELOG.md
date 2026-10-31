@@ -7,6 +7,10 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
 
 ## Unreleased
 
+## 0.2.0 — 2026-10-31
+
+Protocol Version: `tooob/0`. Tested with iroh-relay 1.3.0.
+
 ### Added
 - **Autostart:** `tooob enable NAME` hands a Host to launchd (macOS) or systemd (Linux), which
   starts it now, at login and after a crash; `tooob disable NAME` removes the entry, `tooob logs
