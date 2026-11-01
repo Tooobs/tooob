@@ -186,9 +186,11 @@ async fn refusals_are_logged_once_a_device_with_why() {
     let not_invited = format!("refused a device ({}) · not invited", short(&stranger));
     photos.until_logged(&not_invited);
 
-    // An Invite past its time, and one used already by another device.
-    let late = photos.invite("eve", &["--expires", "1s"]);
+    // An Invite past its time, and one used already by another device. Frank's is made first:
+    // making an Invite forgets expired ones, so one made after Eve's had expired (a slow machine)
+    // would forget hers, and her link would read as unknown, not expired (#103).
     let used = photos.invite("frank", &[]);
+    let late = photos.invite("eve", &["--expires", "1s"]);
     let frank = photos.connect(new_key()).await;
     assert_eq!(frank.redeem(&used).await, Ok(Redeemed::Admitted));
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
