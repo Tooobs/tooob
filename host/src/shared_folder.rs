@@ -61,7 +61,12 @@ pub(crate) async fn serve(
                 },
             }
         }
-        Some(file) => reply(send, ServeFile::new(file).oneshot(req).await?).await,
+        Some(file) => {
+            let name = percent_decode_str(path.rsplit('/').next().unwrap_or_default())
+                .decode_utf8_lossy()
+                .into_owned();
+            serve_file(&file, &name, req, send).await
+        }
         None => status(send, 404).await,
     }
 }
@@ -87,8 +92,60 @@ async fn single_file(
     if percent_decode_str(path).decode_utf8().ok().as_deref() != Some(&format!("/{name}")) {
         return status(send, 404).await;
     }
-    reply(send, ServeFile::new(file).oneshot(req).await?).await
+    serve_file(file, &name, req, send).await
 }
+
+/// A file, shown in the browser, or saved as `name` when asked for with `?download`: what a
+/// listing's Download link and the shell's Download button ask for (#99).
+async fn serve_file(
+    file: &Path,
+    name: &str,
+    req: http::Request<()>,
+    send: &mut (impl AsyncWrite + Unpin + Send),
+) -> Result<()> {
+    let download = req.uri().query().is_some_and(|q| {
+        q.split('&')
+            .any(|p| p == "download" || p.starts_with("download="))
+    });
+    let mut resp = ServeFile::new(file).oneshot(req).await?;
+    if download {
+        let value = http::HeaderValue::from_str(&attachment(name))?;
+        resp.headers_mut()
+            .insert(http::header::CONTENT_DISPOSITION, value);
+    }
+    reply(send, resp).await
+}
+
+/// A Content-Disposition that saves the file as `name`: the real name (RFC 6266's `filename*`),
+/// and a stand-in of plain ASCII for a browser that only reads `filename`.
+fn attachment(name: &str) -> String {
+    let plain: String = name
+        .chars()
+        .map(|c| match c {
+            ' '..='~' if c != '"' && c != '\\' => c,
+            _ => '_',
+        })
+        .collect();
+    format!(
+        "attachment; filename=\"{plain}\"; filename*=UTF-8''{}",
+        utf8_percent_encode(name, ATTR_CHAR)
+    )
+}
+
+/// RFC 8187's attr-char: everything else in a `filename*` is percent-encoded.
+const ATTR_CHAR: &AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'!')
+    .remove(b'#')
+    .remove(b'$')
+    .remove(b'&')
+    .remove(b'+')
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'^')
+    .remove(b'_')
+    .remove(b'`')
+    .remove(b'|')
+    .remove(b'~');
 
 /// The file or folder a request path names, percent-decoded, or None when it doesn't exist or
 /// lies outside the Shared Folder (`..` in any spelling, or a symlink that leads out).
@@ -187,19 +244,23 @@ fn listing(root: &Path, folder: &Path, path: &str) -> Result<http::Response<Full
     );
     let mut rows = String::new();
     if path != "/" {
-        rows.push_str("<tr><td><a href=\"../\">../</a></td><td></td><td></td></tr>\n");
+        rows.push_str("<tr><td><a href=\"../\">../</a></td><td></td><td></td><td></td></tr>\n");
     }
     for e in &entries {
+        let link = utf8_percent_encode(&e.name, SEGMENT);
         let slash = if e.folder { "/" } else { "" };
+        // A file's own link shows it; its Download link saves it under its name, through the page,
+        // whatever it is: the browser's "Save link as" can't reach the Host (#99). Not a `download`
+        // link: Chromium fetches those around the service worker, as it does "Save link as".
+        let (bytes, download) = if e.folder {
+            (String::new(), String::new())
+        } else {
+            let download = format!("<a href=\"{link}?download\">⬇ Download</a>");
+            (size(e.size), download)
+        };
         rows.push_str(&format!(
-            "<tr><td><a href=\"{}{slash}\">{}{slash}</a></td><td class=n>{}</td><td>{}</td></tr>\n",
-            utf8_percent_encode(&e.name, SEGMENT),
+            "<tr><td><a href=\"{link}{slash}\">{}{slash}</a></td><td class=n>{bytes}</td><td>{}</td><td>{download}</td></tr>\n",
             escape(&e.name),
-            if e.folder {
-                String::new()
-            } else {
-                size(e.size)
-            },
             e.modified.map(date).unwrap_or_default(),
         ));
     }
@@ -224,7 +285,7 @@ a {{ color: #0a58ca; text-decoration: none }}
 </style>
 <h1>{title}</h1>
 <table>
-<tr><th>Name</th><th>Size</th><th>Modified (UTC)</th></tr>
+<tr><th>Name</th><th>Size</th><th>Modified (UTC)</th><th></th></tr>
 {rows}</table>
 "
     );

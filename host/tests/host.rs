@@ -602,6 +602,11 @@ async fn a_visitor_can_ask_where_it_stands_without_touching_the_site() {
         .await
         .unwrap();
     assert_eq!(visit.standing().await.unwrap(), Standing::Denied);
+    assert_eq!(
+        visit.site_kind().await.unwrap(),
+        None,
+        "nobody learns what the Site is before they're in"
+    );
 
     let options = InviteOptions {
         first_visit_approval: true,
@@ -612,6 +617,7 @@ async fn a_visitor_can_ask_where_it_stands_without_touching_the_site() {
         .await
         .unwrap();
     assert_eq!(visit.standing().await.unwrap(), Standing::AwaitingApproval);
+    assert_eq!(visit.site_kind().await.unwrap(), None);
     let mom = host
         .control()
         .visitors()
@@ -620,6 +626,7 @@ async fn a_visitor_can_ask_where_it_stands_without_touching_the_site() {
         .unwrap();
     host.control().approve(&mom.key).unwrap();
     assert_eq!(visit.standing().await.unwrap(), Standing::Allowed);
+    assert_eq!(visit.site_kind().await.unwrap().as_deref(), Some("web_app"));
     assert_eq!(
         site.requests(),
         0,

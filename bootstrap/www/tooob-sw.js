@@ -133,8 +133,10 @@ async function tunnel(req, shellId) {
   const headers = new Headers(head.headers);
   const nullBody = NULL_BODY.includes(head.status) || req.method === 'HEAD';
   let respBody = nullBody ? null : stream;
-  // Inject the WebSocket shim into HTML documents loaded in the iframe.
-  if (!nullBody && req.destination === 'iframe' && (headers.get('content-type') || '').includes('text/html')) {
+  // Inject the WebSocket shim into HTML documents loaded in the iframe; never into one that's saved
+  // instead (an attachment), which must be the Site's bytes alone (#99).
+  const saved = /^\s*attachment/i.test(headers.get('content-disposition') || '');
+  if (!nullBody && !saved && req.destination === 'iframe' && (headers.get('content-type') || '').includes('text/html')) {
     const html = await new Response(stream).text();
     respBody = injectShim(html);
     headers.delete('content-length');

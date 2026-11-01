@@ -491,6 +491,28 @@ test("the Relay serves the shell at any page's path, and a missing Bundle file i
   }
 });
 
+test('"Save link as" of a page\'s address gets an explanation, and a page visit still gets the shell', async ({ irohRelay }) => {
+  // In step with the Relay image's front.caddy (#99): Chromium saves a link with Dest empty and Mode
+  // navigate, Firefox with Mode no-cors. Saved outside the page, it can't reach the Host.
+  const front = await h.startRelayFront(irohRelay);
+  const shell = readFileSync(new URL('../www/index.html', import.meta.url), 'utf8');
+  const fix = "tooob can only fetch it from inside the page:\nopen the link in your browser";
+  for (const mode of ['navigate', 'no-cors']) {
+    const saved = await askFront(front, '/Trip/d%C3%ADa%20uno.md', { 'sec-fetch-dest': 'empty', 'sec-fetch-mode': mode });
+    assert.equal(saved.statusCode, 200, mode);
+    assert.match(saved.headers['content-type'], /^text\/plain; charset=utf-8/, mode);
+    assert.equal(saved.headers['cache-control'], 'no-store', mode);
+    assert.equal(saved.body, `This isn't día uno.md. ${fix} and use ⬇ Download next to the file.`, mode);
+    const folder = await askFront(front, '/Trip/', { 'sec-fetch-dest': 'empty', 'sec-fetch-mode': mode });
+    assert.equal(folder.body, `This isn't /Trip/. ${fix}.`, mode);
+  }
+  const visit = await askFront(front, '/Trip/notes.md', { 'sec-fetch-dest': 'document', 'sec-fetch-mode': 'navigate', 'sec-fetch-user': '?1' });
+  assert.equal(visit.body, shell);
+  assert.equal(visit.headers.vary, 'Sec-Fetch-Dest, Sec-Fetch-Mode');
+  const bundle = await askFront(front, '/__tooob/version.json', { 'sec-fetch-dest': 'empty', 'sec-fetch-mode': 'no-cors' });
+  assert.match(bundle.headers['content-type'], /^application\/json/, "a Bundle file is never a Site's page");
+});
+
 test('two tabs on two different Sites each get their own Site', async ({ browser, relay }) => {
   const x = await hostWithSite(relay);
   const y = await hostWithSite(relay);
@@ -1059,6 +1081,8 @@ function aFolder() {
   writeFileSync(join(root, 'Holiday photos', 'beach.png'), Buffer.from(png, 'base64'));
   writeFileSync(join(root, 'Trip photos.zip'), 'PK zip bytes');
   writeFileSync(join(root, 'notes.txt'), 'hello friends');
+  writeFileSync(join(root, 'notes.md'), '# Packing\n\n- hats\n');
+  writeFileSync(join(root, 'page.html'), '<!doctype html><title>A page</title><p>saved, not shown</p>\n');
   return root;
 }
 
@@ -1271,4 +1295,53 @@ test('a single shared zip downloads under its own name', async ({ browser, relay
   const { name, bytes } = await downloads.next();
   assert.equal(name, 'Trip photos.zip');
   assert.equal(bytes.toString(), 'PK zip bytes');
+});
+
+test("a listing's Download link saves a file, web page or not, under its own name", async ({ browser, relay }) => {
+  const root = aFolder();
+  const { frame, downloads } = await visitSharedFolder(root, { browser, relay });
+  for (const name of ['notes.md', 'page.html']) {
+    await frame.waitForSelector(`a[href="${name}?download"]`, { timeout: 20000 });
+    const download = downloads.next();
+    await frame.click(`a[href="${name}?download"]`);
+    const saved = await download;
+    assert.equal(saved.name, name);
+    assert.deepEqual(saved.bytes, readFileSync(join(root, name)), name);
+  }
+  assert.match(await frame.evaluate(() => document.title), /^Index of/, 'the listing stays');
+});
+
+test("a Shared Folder file that isn't a web page shows a Download button by the pill, which saves it", async ({ browser, relay }) => {
+  const root = aFolder();
+  const { page, frame, downloads } = await visitSharedFolder(root, { browser, relay });
+  await frame.waitForSelector('a[href="notes.md"]', { timeout: 20000 });
+  assert.equal(await page.isVisible('#download'), false, 'not on a listing');
+  await Promise.all([frame.waitForNavigation(), frame.click('a[href="notes.md"]')]);
+  await page.waitForSelector('#download', { state: 'visible', timeout: 5000 });
+  assert.equal(await page.textContent('#download'), '⬇ Download');
+  const download = downloads.next();
+  await page.click('#download');
+  const saved = await download;
+  assert.equal(saved.name, 'notes.md');
+  assert.deepEqual(saved.bytes, readFileSync(join(root, 'notes.md')));
+  await Promise.all([frame.waitForNavigation(), frame.evaluate(() => history.back())]);
+  await frame.waitForSelector('a[href="notes.md"]');
+  await page.waitForSelector('#download', { state: 'hidden', timeout: 5000 });
+});
+
+test('Cmd-S or Ctrl-S on a Shared Folder file that is showing saves the file, not the shell', async ({ browser, relay }) => {
+  const root = aFolder();
+  const { page, frame, downloads } = await visitSharedFolder(root, { browser, relay });
+  await frame.waitForSelector('a[href="notes.md"]', { timeout: 20000 });
+  await Promise.all([frame.waitForNavigation(), frame.click('a[href="notes.md"]')]);
+  await page.waitForSelector('#download', { state: 'visible', timeout: 5000 });
+  for (const [keys, where] of [['Meta+s', 'body'], ['Control+s', '#corner']]) {
+    // Wherever the focus is: in the file shown, or on the shell around it.
+    await (where === 'body' ? frame.click('body') : page.click('#status'));
+    const download = downloads.next();
+    await page.keyboard.press(keys);
+    const saved = await download;
+    assert.equal(saved.name, 'notes.md', keys);
+    assert.deepEqual(saved.bytes, readFileSync(join(root, 'notes.md')), keys);
+  }
 });

@@ -115,6 +115,16 @@ impl Visit {
             .map_err(|_| VisitError::Connection(format!("unexpected standing reply: {head}")))
     }
 
+    /// What kind of Site the Host serves (`shared_folder`, `web_app`), as its standing reply says
+    /// to a Visitor who's in; None to anyone else.
+    pub async fn site_kind(&self) -> Result<Option<String>, VisitError> {
+        let (mut send, mut recv) = self.conn.open_bi().await?;
+        wire::write_line(&mut send, &json!({"t": "standing"})).await?;
+        send.finish()?;
+        let (head, _) = wire::read_line(&mut recv).await?;
+        Ok(head["site"].as_str().map(str::to_string))
+    }
+
     /// Offer the Host a Direct Path with `sdp`, as the browser shell does, and signal no more:
     /// the status of its answer.
     pub async fn offer_direct_path(&self, sdp: &str) -> Result<u16, VisitError> {

@@ -294,13 +294,17 @@ try {
 stats.visitor = visitor.public;
 stats.connectMs = ms(t);
 
+let sharedFolder = false; // the Host serves a Shared Folder, whose files it saves with ?download (#99)
 // Where this device stands; wait (checking every 3 s) while the Owner hasn't approved it yet. The
 // wait can be long, so a dropped connection (Host restarted, relay hiccup) or a reply without a
 // Standing means reconnect and ask again, never a guess.
 for (;;) {
   const reply = await Promise.race([ask({ t: 'standing' }), sleep(5000)]).catch(() => undefined);
   const standing = reply?.standing;
-  if (standing === 'allowed') break;
+  if (standing === 'allowed') {
+    sharedFolder = reply.site === 'shared_folder';
+    break;
+  }
   if (standing === 'denied') {
     show(refusal ?? "You're not invited to this site. Ask its owner for an Invite Link.");
     throw new Error('not invited');
@@ -764,7 +768,32 @@ frameEl.onload = () => {
   stats.totalMs ??= Math.round(performance.now()); // from navigation start: everything the visitor waits for
   pill();
   followSite(frameEl.contentWindow);
+  downloadEl.hidden = !shownFile();
 };
+
+// Saving the file a Shared Folder shows (#99). The browser's own Save and "Save link as" would save
+// the shell, or fetch from the Relay, which can't reach the Host: only this page can. So, while a
+// file that isn't a web page shows (a text, a photo, a PDF), a Download button by the pill and
+// Cmd-S / Ctrl-S save it, through the page, under its own name. File → Save Page As can't be caught.
+const downloadEl = document.getElementById('download');
+const WEB_PAGES = ['text/html', 'application/xhtml+xml'];
+/** The Shared Folder file the iframe shows, if it isn't a web page: its address. */
+function shownFile() {
+  const at = sharedFolder && sitePageOf(frameEl.contentWindow);
+  return at && !WEB_PAGES.includes(frameEl.contentDocument?.contentType) ? at : null;
+}
+/** Save the file shown: the Host answers ?download as an attachment, so the iframe stays on it. */
+function saveShown() {
+  const at = shownFile();
+  if (at) frameEl.contentWindow.location.href = onKeyAddress(at.pathname + '?download');
+}
+downloadEl.onclick = saveShown;
+function saveKey(e) {
+  if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== 's' || !shownFile()) return;
+  e.preventDefault();
+  saveShown();
+}
+addEventListener('keydown', saveKey);
 loadingSite();
 frameEl.src = onKeyAddress(sitePage);
 
@@ -841,6 +870,7 @@ function followSite(win) {
   }
   win.addEventListener('hashchange', followFrame);
   win.addEventListener('popstate', followFrame);
+  win.addEventListener('keydown', saveKey); // the key goes to the iframe once it has the focus
   // A title changed in place (an unread count): the page's <title> set, added, replaced or removed,
   // or its text changed. A document.open() makes a new <head>. ponytail: a <title> outside <head>
   // is read only at the next move.

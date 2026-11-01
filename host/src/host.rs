@@ -484,8 +484,16 @@ impl Admission {
             // Where this Visitor stands, without touching the Site: the browser decides what to show.
             let decision = self.access.lock().unwrap().admits(visitor);
             heard(&decision);
-            let standing = standing(&decision);
-            wire::write_line(&mut send, &json!({"status": 200, "standing": standing})).await?;
+            let mut reply = json!({"status": 200, "standing": standing(&decision)});
+            // Only to a Visitor who's in: what the Site is, so the shell offers to save a Shared
+            // Folder's files (#99).
+            if matches!(decision, Decision::Allowed { .. }) {
+                reply["site"] = json!(match self.site {
+                    Site::SharedFolder(_) => "shared_folder",
+                    Site::WebApp(_) => "web_app",
+                });
+            }
+            wire::write_line(&mut send, &reply).await?;
         } else if head["t"] == "redeem" {
             let token = head["token"].as_str().unwrap_or_default();
             let redeemed = self.access.lock().unwrap().redeem(token, visitor, now());

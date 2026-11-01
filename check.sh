@@ -1,9 +1,10 @@
 #!/bin/sh
 # The fast checks, run before every push (.githooks/pre-push) and by release.sh: formatting,
-# clippy, the Host's tests, the Bootstrap's build, its Bundle's manifest tests, release.sh's tests
-# and deploy/bundle.sh's. Stops at the first that fails and says which. The browser suite isn't
-# here: it starts a browser and real Hosts, and runs at the end of each issue and before a Release.
-# Nor is the Relay image: a Relay is checked live, on its own domain, after each deploy.
+# clippy, the Host's tests, the Bootstrap's build, its Bundle's manifest tests, release.sh's tests,
+# deploy/bundle.sh's, and the Relay image's front.caddy, read as config. Stops at the first that
+# fails and says which. The browser suite isn't here: it starts a browser and real Hosts, and runs
+# at the end of each issue and before a Release. Nor is the Relay image run: a Relay is checked
+# live, on its own domain, after each deploy.
 set -u
 cd "$(dirname "$0")" || exit 1
 
@@ -27,4 +28,5 @@ step "bootstrap/build.sh" bootstrap ./build.sh
 step "manifest tests" bootstrap/check node --test manifest.test.mjs
 step "release.sh tests" test node --test release.test.mjs
 step "deploy/bundle.sh tests" deploy/check node --test bundle.test.mjs
+step "front.caddy tests" deploy/check node --test front.test.mjs
 echo "check.sh: all passed"

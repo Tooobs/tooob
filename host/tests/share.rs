@@ -69,12 +69,20 @@ async fn a_visitor_downloads_a_file_from_a_shared_folder() {
     );
 }
 
-/// The links on a listing page, in order.
-fn links(page: &Response) -> Vec<String> {
+/// Every link on a listing page, in order.
+fn hrefs(page: &Response) -> Vec<String> {
     String::from_utf8_lossy(&page.body)
         .split("href=\"")
         .skip(1)
         .map(|s| s[..s.find('"').unwrap()].to_string())
+        .collect()
+}
+
+/// The links on a listing page that open what they name, in order.
+fn links(page: &Response) -> Vec<String> {
+    hrefs(page)
+        .into_iter()
+        .filter(|l| !l.ends_with("?download"))
         .collect()
 }
 
@@ -338,4 +346,88 @@ async fn an_unreadable_folder_gets_an_answer_not_a_dropped_stream() {
     let page = shared.visit.get("/locked/").await;
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
     assert_eq!(page.unwrap().status, 404);
+}
+
+#[tokio::test]
+async fn a_file_asked_for_with_download_is_an_attachment_under_its_own_name() {
+    let folder = tempfile::tempdir().unwrap();
+    write(folder.path().join("notes.md"), "# hello\n");
+    write(folder.path().join("Trip/día uno.html"), "<p>day one</p>");
+    let shared = share(folder.path()).await;
+
+    let notes = shared.visit.get("/notes.md?download").await.unwrap();
+    assert_eq!(notes.status, 200);
+    assert_eq!(notes.body, b"# hello\n");
+    assert_eq!(
+        header(&notes, "content-disposition"),
+        Some("attachment; filename=\"notes.md\"; filename*=UTF-8''notes.md")
+    );
+    let page = shared
+        .visit
+        .get("/Trip/d%C3%ADa%20uno.html?download")
+        .await
+        .unwrap();
+    assert_eq!(page.body, b"<p>day one</p>");
+    assert_eq!(
+        header(&page, "content-disposition"),
+        Some("attachment; filename=\"d_a uno.html\"; filename*=UTF-8''d%C3%ADa%20uno.html"),
+        "an ASCII stand-in for old browsers, the real name for the rest"
+    );
+    let shown = shared.visit.get("/notes.md").await.unwrap();
+    assert_eq!(
+        header(&shown, "content-disposition"),
+        None,
+        "shown, not saved"
+    );
+}
+
+#[tokio::test]
+async fn a_single_shared_file_asked_for_with_download_is_an_attachment() {
+    let folder = tempfile::tempdir().unwrap();
+    write(folder.path().join("notes.md"), "# hello\n");
+    let shared = share(&folder.path().join("notes.md")).await;
+
+    let notes = shared.visit.get("/notes.md?download").await.unwrap();
+    assert_eq!(notes.body, b"# hello\n");
+    assert_eq!(
+        header(&notes, "content-disposition"),
+        Some("attachment; filename=\"notes.md\"; filename*=UTF-8''notes.md")
+    );
+}
+
+#[tokio::test]
+async fn a_listing_has_a_download_link_for_each_file_but_not_for_folders() {
+    let folder = tempfile::tempdir().unwrap();
+    write(folder.path().join("notes.md"), "# hello\n");
+    write(folder.path().join("page.html"), "<p>hi</p>");
+    write(folder.path().join("Holiday photos/beach.png"), "png");
+    let shared = share(folder.path()).await;
+
+    let page = shared.visit.get("/").await.unwrap();
+    assert_eq!(
+        hrefs(&page),
+        [
+            "Holiday%20photos/",
+            "notes.md",
+            "notes.md?download",
+            "page.html",
+            "page.html?download"
+        ]
+    );
+    let html = String::from_utf8_lossy(&page.body);
+    assert!(
+        html.contains("<a href=\"notes.md?download\">⬇ Download</a>"),
+        "{html}"
+    );
+}
+
+#[tokio::test]
+async fn a_visitor_who_is_in_is_told_the_site_is_a_shared_folder() {
+    let folder = tempfile::tempdir().unwrap();
+    let shared = share(folder.path()).await;
+    // So the shell offers to save a file it shows (#99): a web app's addresses have no ?download.
+    assert_eq!(
+        shared.visit.site_kind().await.unwrap().as_deref(),
+        Some("shared_folder")
+    );
 }

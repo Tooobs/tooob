@@ -108,6 +108,17 @@ export async function startRelayFront(relayUrl, domain = 'localhost') {
       return req.pipe(upstream);
     }
     asked.push(path);
+    // A page's address saved outside the page ("Save link as": Dest empty, Mode navigate in
+    // Chromium, no-cors in Firefox) can't reach the Host: the saved file says so (#99).
+    const saved = req.headers['sec-fetch-dest'] === 'empty' && ['navigate', 'no-cors'].includes(req.headers['sec-fetch-mode']);
+    if (saved && !isBundlePath(path)) {
+      const fix = 'tooob can only fetch it from inside the page:\nopen the link in your browser';
+      const decoded = (s) => { try { return decodeURIComponent(s); } catch { return s; } };
+      const file = decoded(path.slice(path.lastIndexOf('/') + 1));
+      res.setHeader('content-type', 'text/plain; charset=utf-8');
+      res.setHeader('cache-control', 'no-store');
+      return res.end(file ? `This isn't ${file}. ${fix} and use ⬇ Download next to the file.` : `This isn't ${decoded(path)}. ${fix}.`);
+    }
     // Any other path is a page of the Site's, opened before the service worker is installed: the
     // shell, which opens it (ADR 0023). A missing Bundle file is still missing.
     const file = path.endsWith('/') ? join(path, 'index.html') : path;
@@ -118,6 +129,7 @@ export async function startRelayFront(relayUrl, domain = 'localhost') {
       res.setHeader('cache-control', 'no-store');
       res.setHeader('origin-agent-cluster', '?1');
       res.setHeader('cross-origin-opener-policy', 'same-origin-allow-popups');
+      if (page !== file) res.setHeader('vary', 'Sec-Fetch-Dest, Sec-Fetch-Mode'); // the shell at a page's address
       res.end(body);
     } catch {
       res.statusCode = 404;
