@@ -28,3 +28,8 @@ bundle-hash = { contents = "write" }
 [[dist.extra-artifacts]]
 artifacts = ["target/bootstrap/tooob-bootstrap.tar.xz", "target/bootstrap/tooob-bootstrap.tar.xz.sha256"]
 build = ["bootstrap/package.sh"]
+
+# GitHub retires its macOS 14 runners on 2026-11-02 (actions/runner-images#13518); its brownouts
+# cancelled 0.3.0's and 0.3.1's macOS builds before a step ran.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
