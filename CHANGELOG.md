@@ -7,6 +7,13 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
 
 ## Unreleased
 
+**0.3.1 is the first published 0.3 Release.** 0.3.0 was tagged, but its Linux builds failed in CI and it was
+never published, so everything listed under 0.3.0 below arrives with 0.3.1.
+
+### Fixed
+- The Linux builds' terminal tests (#106): they assumed macOS's bash, and now pass on Linux as on macOS.
+  tooob itself was unchanged.
+
 ## 0.3.0 — 2026-11-01
 
 Protocol Version: `tooob/0`. Tested with iroh-relay 1.3.0.

@@ -1,0 +1,4 @@
+# Linux (musl, like the Linux Releases) for the Host's cargo tests on a Mac, through podman:
+# test/linux/run.sh. The Rust version is rust-toolchain.toml's; keep the two together.
+FROM docker.io/library/rust:1.97.1-alpine
+RUN apk add --no-cache bash build-base perl git && adduser -D -u 1000 tester
