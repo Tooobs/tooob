@@ -15,6 +15,9 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
 - **How much each Visitor uses:** a Visit's "left" line gives the bytes sent and received, and
   `tooob visitors` shows LAST SEEN, SENT and RECEIVED since each Visitor first got in, kept across
   restarts.
+- **`tooob start NAME`** starts a Host that `tooob stop` kept stopped, kept running again; with no
+  NAME it lists them. `tooob ls` shows such a Host's AUTOSTART as `stopped` (`kept_stopped` in
+  `--json`).
 
 ### Changed
 - **`run -d` and `share -d` replace `enable`,** and `stop` keeps a Host stopped, across logins and

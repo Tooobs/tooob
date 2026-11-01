@@ -35,7 +35,7 @@ A home box serving a Site to invited Visitors in ordinary browsers, for technica
 - ✅ `tooob add`, `run`, `ls`, `show` and `rm`; Owner commands name the Host first and work with it stopped ([#47](https://github.com/Tooobs/tooob/issues/47), [#48](https://github.com/Tooobs/tooob/issues/48), [#49](https://github.com/Tooobs/tooob/issues/49))
 - 🟡 `tooob` works like a unix tool ([#33](https://github.com/Tooobs/tooob/issues/33)); the docs describe it all ([#34](https://github.com/Tooobs/tooob/issues/34))
 - ✅ `enable`, `disable`, `stop` and `logs`: the service manager keeps a Host running across logins, crashes and idle sleep ([#27](https://github.com/Tooobs/tooob/issues/27))
-- ✅ `run -d` and `share -d` keep a Host running; `stop` keeps it stopped until it's started again; `enable` and `disable` are gone ([#96](https://github.com/Tooobs/tooob/issues/96)); `tooob start` is next ([#100](https://github.com/Tooobs/tooob/issues/100))
+- ✅ `run -d` and `share -d` keep a Host running; `stop` keeps it stopped until it's started again; `enable` and `disable` are gone ([#96](https://github.com/Tooobs/tooob/issues/96)); `tooob start` starts it again, and `tooob ls` shows it as `stopped` ([#100](https://github.com/Tooobs/tooob/issues/100))
 - 🟡 `tooob share PATH` is add, invite and run in one ([#22](https://github.com/Tooobs/tooob/issues/22))
 - ✅ `tooob` asks nothing, and shows the command to type instead; `share` warns about what a folder holds ([#79](https://github.com/Tooobs/tooob/issues/79))
 
