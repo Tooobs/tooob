@@ -17,6 +17,10 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
   restarts.
 
 ### Changed
+- **`run -d` and `share -d` replace `enable`,** and `stop` keeps a Host stopped, across logins and
+  reboots, until it's started again; `rm` stops and removes a running or kept-running Host. `enable`
+  and `disable` are removed: each says what to type instead (`tooob run NAME -d`, `tooob stop NAME`).
+  Hosts enabled with 0.2.0 keep working (ADR 0014, amended).
 - **A Host keeps its own log** in its state folder, readable only by the Owner, with a timestamp on
   every line, rolling over at about 1 MB into one older file. `tooob logs NAME` reads it for any
   Host (`-n N|all`, `-f`, `--json`); an enabled Host's crash output is shown and folded in at its
