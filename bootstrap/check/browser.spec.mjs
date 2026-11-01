@@ -213,7 +213,43 @@ test('reopening a used Invite Link in another browser says so and never reaches 
   const second = await h.newVisitor(browser);
   await second.goto(link);
   await h.pillSays(second, /already been used/, 20000);
+  assert.equal(await h.statusText(second), 'This invite has already been used, maybe in another browser. Each invite opens the site in one browser: ask for a new one for this browser.');
   assert.equal(site.requests, requestsBefore, 'the second browser reached the Site');
+});
+
+test('a cut-short Invite Link says so, and its Invite never reaches the Host', async ({ browser, relay }) => {
+  const { site, name, invite } = await hostWithSite(relay);
+  const cut = invite('mom').slice(0, -1); // a chat app or a terminal's wrap lost the last character
+  const page = await h.newVisitor(browser);
+  await page.goto(cut);
+  await h.pillSays(page, /cut short/, 20000);
+  assert.equal(await h.statusText(page), 'This invite link is cut short or damaged. Copy the whole link again, or ask for a new one.');
+  assert.equal(site.requests, 0);
+  await h.logged(name, /^refused a device \(\w+\) · not invited$/); // a stranger, not an unknown Invite
+  assert.deepEqual(h.logOf(name).filter((l) => /unknown Invite/.test(l)), []);
+});
+
+test('a device already in still gets in from a cut-short copy of its Invite Link', async ({ browser, relay }) => {
+  const { invite } = await hostWithSite(relay);
+  const link = invite('mom');
+  const page = await h.newVisitor(browser);
+  await page.goto(link);
+  await h.siteText(page);
+  await page.goto('about:blank');
+  await page.goto(link.slice(0, -1));
+  assert.match(await h.siteText(page), /label=mom/);
+  assert.ok(!page.url().includes('invite='), `token still in ${page.url()}`);
+});
+
+test("a whole Invite Link whose Invite was revoked still says it isn't valid", async ({ browser, relay }) => {
+  const { name, invite } = await hostWithSite(relay);
+  const link = invite('mom');
+  const [{ id }] = JSON.parse(h.tooob(['invites', name, '--json']));
+  h.tooob(['revoke', name, id]);
+  const page = await h.newVisitor(browser);
+  await page.goto(link);
+  await h.pillSays(page, /isn't valid/, 20000);
+  assert.equal(await h.statusText(page), "This invite isn't valid (it may have been revoked). Ask for a new one.");
 });
 
 test('an approve-first Invite waits, then opens by itself once the owner approves', async ({ browser, relay }) => {

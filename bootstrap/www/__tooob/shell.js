@@ -258,11 +258,14 @@ stats.sent = { relay: 0, direct: 0 }; // request bodies
 
 // What the Host says when it refuses an Invite, in words for the person holding the link.
 const REFUSED = {
-  already_used: 'This invite has already been used. Ask for a new one.',
+  already_used: 'This invite has already been used, maybe in another browser. Each invite opens the site in one browser: ask for a new one for this browser.',
   expired: 'This invite has expired. Ask for a new one.',
   unknown_invite: "This invite isn't valid (it may have been revoked). Ask for a new one.",
   blocked: "This device doesn't have access.",
 };
+// An Invite is always 32 hex characters: anything else is a link a chat app or a terminal's wrap cut
+// short or mangled, and no Host would know it, so it isn't sent to one.
+const CUT_SHORT = 'This invite link is cut short or damaged. Copy the whole link again, or ask for a new one.';
 
 // Use the Invite (once), then drop the token from the address bar: the used link shouldn't linger in
 // history or bookmarks, and the plain link keeps working for this device (its Visitor Key is kept).
@@ -272,11 +275,15 @@ const REFUSED = {
 let refusal;
 try {
   tooob = await connect();
-  if (invite) {
-    show('opening your invite…');
-    const reply = await ask({ t: 'redeem', token: invite });
-    if (!reply.redeemed && reply.error !== 'already_admitted') {
-      refusal = REFUSED[reply.error] ?? "This invite can't be used right now. Try again later.";
+  if (invite !== null) {
+    if (!/^[0-9a-f]{32}$/i.test(invite)) {
+      refusal = CUT_SHORT;
+    } else {
+      show('opening your invite…');
+      const reply = await ask({ t: 'redeem', token: invite });
+      if (!reply.redeemed && reply.error !== 'already_admitted') {
+        refusal = REFUSED[reply.error] ?? "This invite can't be used right now. Try again later.";
+      }
     }
     history.replaceState(null, '', onKeyAddress(location.pathname + location.search));
   }
