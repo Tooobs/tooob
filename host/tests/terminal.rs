@@ -53,17 +53,27 @@ fn shown(said: &[u8]) -> String {
 /// The hint a Host run in a terminal shows when it first reads keys.
 const KEYS: &str = "(q) quit · (d) detach: keep it running in the background";
 
-/// The terminal `session` runs in, as its programs see it: to look at how it's set, and at what's
-/// typed there and not read yet.
-fn tty_of(session: &OsSession) -> std::fs::File {
+/// The terminal a session runs in, as its programs see it, by name: to look at how it's set, and
+/// at what's typed there and not read yet. It's opened only while it's looked at: a terminal held
+/// open here would never end on Linux, which ends it only once nothing has it open, not once its
+/// programs have all exited.
+struct Tty(std::path::PathBuf);
+
+fn tty_of(session: &OsSession) -> Tty {
     use std::os::fd::AsRawFd;
     // SAFETY: ptsname reads the pty's name into libc's own buffer, copied out at once.
     let name = unsafe { std::ffi::CStr::from_ptr(libc::ptsname(session.as_raw_fd())) };
-    std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOCTTY | libc::O_NONBLOCK)
-        .open(name.to_str().unwrap())
-        .unwrap()
+    Tty(name.to_str().unwrap().into())
+}
+
+impl Tty {
+    fn open(&self) -> std::fs::File {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOCTTY | libc::O_NONBLOCK)
+            .open(&self.0)
+            .unwrap()
+    }
 }
 
 use std::os::unix::fs::OpenOptionsExt;
@@ -78,8 +88,9 @@ fn until(what: &str, check: impl Fn() -> bool) {
 }
 
 /// Wait until the terminal takes keys singly, without echoing them: a Host is reading keys.
-fn until_keys_are_read(tty: &std::fs::File) {
+fn until_keys_are_read(tty: &Tty) {
     use std::os::fd::AsRawFd;
+    let tty = tty.open();
     until("read keys singly without echo", || {
         // SAFETY: a termios is plain data, filled in by tcgetattr, which writes only `now`.
         let now = unsafe {
@@ -91,21 +102,43 @@ fn until_keys_are_read(tty: &std::fs::File) {
     });
 }
 
-/// Wait until everything typed in the terminal has been read.
-fn until_read(tty: &std::fs::File) {
+/// Wait until everything typed in the terminal has been read: so what's typed next is read on its
+/// own, not with it.
+fn until_read(tty: &Tty) {
     use std::os::fd::AsRawFd;
+    let tty = tty.open();
     until("read what was typed", || {
+        // On Linux, what's typed reaches the terminal's programs a moment later, and until then
+        // it isn't counted as waiting to be read; polling for it has it reach them first.
+        let mut ready = libc::pollfd {
+            fd: tty.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
         let mut waiting: libc::c_int = 0;
-        // SAFETY: FIONREAD writes how many bytes wait to be read into `waiting`, ours.
-        unsafe { libc::ioctl(tty.as_raw_fd(), libc::FIONREAD, &mut waiting) };
+        // SAFETY: poll reads and writes only `ready`, one pollfd, ours, and waits for nothing.
+        // FIONREAD writes how many bytes wait to be read into `waiting`, ours.
+        unsafe {
+            libc::poll(&mut ready, 1, 0);
+            libc::ioctl(tty.as_raw_fd(), libc::FIONREAD, &mut waiting);
+        }
         waiting == 0
     });
 }
 
-/// An interactive bash in a terminal of its own, its prompt `$ `.
+/// A key a Host doesn't read, typed while it reads keys: nothing happens, and if it were echoed,
+/// it would show. Not a letter or a digit, so no path a shell prints back (a temporary folder's,
+/// the build's) has it.
+const NOT_A_KEY: &str = "%";
+
+/// An interactive bash in a terminal of its own, its prompt `$ `, saying nothing else of its own
+/// accord: not bash 5's bracketed-paste codes, `ESC[?2004h` before each prompt and `ESC[?2004l`
+/// after each line, which macOS's bash 3.2 has no idea of (`bind` lets it pass).
 fn bash(home: &Home) -> OsSession {
     let mut sh = spawn_in_terminal(home, "/bin/bash", &["--norc", "--noprofile", "-i"]);
-    sh.send_line("PS1='$ '; stty echo").unwrap();
+    sh.send_line("bind 'set enable-bracketed-paste off'; PS1='$ '; stty echo; echo REA''DY")
+        .unwrap();
+    sh.expect("READY\r\n").unwrap(); // not its echo of the line, which has a `$ ` too
     sh.expect("$ ").unwrap();
     sh
 }
@@ -223,14 +256,14 @@ fn q_stops_a_host_run_in_the_terminal_cleanly_and_gives_the_terminal_back_as_it_
     assert!(shown(said.before()).contains("photos: serving"));
     let tty = tty_of(&sh);
     until_keys_are_read(&tty);
-    sh.send("x").unwrap(); // not a key it reads: nothing happens
+    sh.send(NOT_A_KEY).unwrap(); // nothing happens
     until_read(&tty);
     assert!(home.row("photos").contains("running"));
     sh.send("q").unwrap();
     let said = sh.expect("$ ").unwrap();
     let said = shown(said.before());
     assert!(said.contains("photos: stopped"), "{said}");
-    assert!(!said.contains('x'), "x was echoed: {said}");
+    assert!(!said.contains(NOT_A_KEY), "{NOT_A_KEY} was echoed: {said}");
     assert!(home.row("photos").contains("stopped"));
     sh.send_line("echo status $?").unwrap();
     sh.expect("status 0").unwrap();
@@ -256,12 +289,12 @@ fn a_host_suspended_with_ctrl_z_or_stopped_with_ctrl_c_leaves_the_terminal_as_it
     sh.send_line("fg").unwrap();
     let tty = tty_of(&sh);
     until_keys_are_read(&tty); // again
-    sh.send("x").unwrap(); // read as a key again, not echoed
+    sh.send(NOT_A_KEY).unwrap(); // read as a key again, not echoed
     until_read(&tty);
     sh.send("\x03").unwrap(); // Ctrl-C
     let said = shown(sh.expect("$ ").unwrap().before());
     assert!(said.contains("photos: stopped"), "{said}");
-    assert!(!said.contains('x'), "x was echoed: {said}");
+    assert!(!said.contains(NOT_A_KEY), "{NOT_A_KEY} was echoed: {said}");
     assert_eq!(line_editing(&mut sh), before, "stopped");
     assert!(home.row("photos").contains("stopped"));
     sh.send_line("exit").unwrap();

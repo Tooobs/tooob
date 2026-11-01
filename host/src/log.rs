@@ -343,7 +343,10 @@ fn open_private(path: &Path) -> io::Result<File> {
 /// `at` in local time, to the second, with its offset from UTC: `2026-10-31T14:02:11-07:00`. In
 /// UTC (`+00:00`) if the local time can't be told.
 pub fn local_time(at: SystemTime) -> String {
-    let secs = at.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()) as libc::time_t;
+    // libc's time_t, inferred, not named: musl's is deprecated, as it's to change size (64-bit
+    // already on every target tooob is built for).
+    let secs = at.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let secs = secs.try_into().unwrap_or(0);
     // SAFETY: tzset reads TZ and the zone files into libc's own state, which a setenv at the same
     // time could change under it: tooob never calls setenv. localtime_r and gmtime_r write only
     // the tm they're given, which is ours and big enough.
