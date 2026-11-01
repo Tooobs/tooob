@@ -232,6 +232,7 @@ test('a cut-short Invite Link says so, and its Invite never reaches the Host', a
 });
 
 test('a device already in still gets in from a cut-short copy of its Invite Link', async ({ browser, relay }) => {
+  test.skip(h.olderThan('0.3.0'), 'tests #32, from 0.3.0; the Release swapped in is older');
   const { invite } = await hostWithSite(relay);
   const link = invite('mom');
   const page = await h.newVisitor(browser);
@@ -244,6 +245,7 @@ test('a device already in still gets in from a cut-short copy of its Invite Link
 });
 
 test("a whole Invite Link whose Invite was revoked still says it isn't valid", async ({ browser, relay }) => {
+  test.skip(h.olderThan('0.3.0'), 'tests #32, from 0.3.0; the Release swapped in is older');
   const { name, invite } = await hostWithSite(relay);
   const link = invite('mom');
   const [{ id }] = JSON.parse(h.tooob(['invites', name, '--json']));
@@ -682,6 +684,7 @@ const ADDRESS = /\b\d{1,3}(\.\d{1,3}){3}\b|\b[0-9a-f]{0,4}(:[0-9a-f]{0,4}){2,7}\
 const addressesIn = (name, site) => h.logOf(name).filter((l) => ADDRESS.test(l.replaceAll(site.addr, 'SITE')));
 
 test("the Host's log says a Visitor got in on the Direct Path, of which kind, and when they left", async ({ browser, relay }) => {
+  test.skip(h.olderThan('0.3.0'), 'tests #23, from 0.3.0; the Release swapped in is older');
   const { name, invite, site } = await hostWithSite(relay, { TOOOB_VISIT_GRACE: '1s' });
   const page = await h.newVisitor(browser);
   await page.goto(invite('mom'));
@@ -695,6 +698,7 @@ test("the Host's log says a Visitor got in on the Direct Path, of which kind, an
 });
 
 test("the Host's log says when a Visitor moves from the Relay onto the Direct Path", async ({ browser, relay }) => {
+  test.skip(h.olderThan('0.3.0'), 'tests #23, from 0.3.0; the Release swapped in is older');
   // The Visit's path settles in 1 s, well before the browser tries the Direct Path again.
   const { name, invite } = await hostWithSite(relay, { TOOOB_DIRECT_WAIT: '1s' });
   const page = await h.newVisitor(browser);
@@ -707,6 +711,7 @@ test("the Host's log says when a Visitor moves from the Relay onto the Direct Pa
 });
 
 test('the Host counts what each Visitor downloads and uploads, on the Direct Path and over the Relay', async ({ browser, relay }) => {
+  test.skip(h.olderThan('0.3.0'), 'tests #4, from 0.3.0; the Release swapped in is older');
   const { name, invite } = await hostWithSite(relay, { TOOOB_VISIT_GRACE: '1s' });
   const direct = await h.newVisitor(browser);
   const relayed = await h.newVisitor(browser);
@@ -751,6 +756,7 @@ test('the Host counts what each Visitor downloads and uploads, on the Direct Pat
 });
 
 test("the Host's log never says a Visitor who closed their tab moved to the Relay", async ({ browser, relay }) => {
+  test.skip(h.olderThan('0.3.0'), 'tests #23, from 0.3.0; the Release swapped in is older');
   // A grace longer than the wait for a path to settle, so a move logged as the tab went would show.
   const { name, invite } = await hostWithSite(relay, { TOOOB_VISIT_GRACE: '5s', TOOOB_DIRECT_WAIT: '1s' });
   const page = await h.newVisitor(browser);
@@ -763,6 +769,7 @@ test("the Host's log never says a Visitor who closed their tab moved to the Rela
 });
 
 test("a Visitor's address never reaches the Host's log, even in an error it logs", async ({ browser, relay }) => {
+  test.skip(h.olderThan('0.3.0'), 'tests #23, from 0.3.0; the Release swapped in is older');
   const { name, invite, site } = await hostWithSite(relay);
   const page = await h.newVisitor(browser);
   // The browser's first offer has an origin line the Host can't parse, with an address in it:
