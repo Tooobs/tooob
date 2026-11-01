@@ -7,6 +7,10 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
 
 ## Unreleased
 
+## 0.3.0 — 2026-11-01
+
+Protocol Version: `tooob/0`. Tested with iroh-relay 1.3.0.
+
 ### Added
 - **Saving Shared Folder files:** a `⬇ Download` link on each file in a listing, a `⬇ Download`
   button and Cmd-S / Ctrl-S while a file is open, all saving the file itself. A Relay answers the
