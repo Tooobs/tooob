@@ -134,6 +134,14 @@ pub fn require_keeping_running(name: &str) -> Result<Keeper> {
 }
 
 impl Keeper {
+    /// The service manager that keeps it running: `launchd` or `systemd`.
+    pub fn service_manager(&self) -> &'static str {
+        match self.manager {
+            ServiceManager::Launchd => "launchd",
+            ServiceManager::Systemd => "systemd",
+        }
+    }
+
     /// `-d`: keep `host` running, now and after logins, reboots and crashes, by writing its entry
     /// and starting it through its service manager, from scratch if it had one already. tooob
     /// never backgrounds it itself (ADR 0014). Refused while it runs by hand. Nothing is left

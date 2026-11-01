@@ -15,7 +15,7 @@ use tooob::hosts::{
     Entry, Home, NO_RELAY, RUN_YOUR_OWN, check_relay, name_char, no_invite_links, no_key_address,
     quote,
 };
-use tooob::keys::{self, Key, Keys};
+use tooob::keys::{Key, Keys};
 use tooob::log::{self, Log, Logged};
 use tooob::upgrade::{self, Relays, ReleaseNumber, Releases};
 use tooob::{Network, amount, lasting, seconds};
@@ -825,16 +825,24 @@ fn lasts(options: &InviteOptions) -> String {
 /// `d` in its terminal hands it to its service manager, as `run -d` does, once it has stopped
 /// serving here: its lock is let go first, for the service manager's to take. Should the service
 /// manager refuse it then, it serves here again rather than not at all, saying why.
-async fn serve(host: &Entry, state: &Path, invitees: Vec<Invitee>) -> Result<()> {
-    let mut invitees = invitees;
+async fn serve(host: &Entry, state: &Path, mut invitees: Vec<Invitee>) -> Result<()> {
     loop {
         let Some(keeper) = serve_once(host, state, std::mem::take(&mut invitees)).await? else {
             return Ok(());
         };
+        // What `run -d` would say besides is said in one line, its log's.
         match keeper.keep_running(host) {
-            // Its first line says it's kept running, and how to follow and stop it: enough here.
-            Ok(said) => {
-                say(&said[..1]);
+            Ok(_) => {
+                let name = &host.name;
+                let manager = keeper.service_manager();
+                log::event(
+                    "detached",
+                    tooob::fields! {"service_manager" => manager},
+                    &format!(
+                        "detached: {manager} keeps it running now, and after logins, reboots and \
+                         crashes: `tooob logs {name} -f` follows it, and `tooob stop {name}` stops it"
+                    ),
+                );
                 return Ok(());
             }
             Err(e) => log::warning(&format!(
@@ -1045,11 +1053,15 @@ async fn serve_here(
     {
         log::warning("didn't stop cleanly within 5 s");
     }
-    log::event("stopped", Default::default(), "stopped");
+    // Detached, it isn't stopped: it says so once its service manager runs it (`serve`).
+    if detach.is_none() {
+        log::event("stopped", Default::default(), "stopped");
+    }
     Ok(detach)
 }
 
-/// What a Host run in a terminal shows under what it printed as it started, when it reads keys.
+/// What a Host run in a terminal shows when it first reads keys: under what it printed as it
+/// started, or once it's brought to the foreground.
 const KEYS: &str = "(q) quit · (d) detach: keep it running in the background";
 
 /// Serve until the Host is told to stop: by a signal, the Owner (`tooob stop`), or in its
@@ -1063,11 +1075,8 @@ async fn until_stopped(
 ) -> Option<Keeper> {
     let mut keys = match autostart::started_by_its_entry(host) {
         true => None,
-        false => Keys::read(),
+        false => Keys::read(KEYS),
     };
-    if keys.is_some() && keys::in_the_foreground() {
-        eprintln!("{KEYS}");
-    }
     let stop = running.stop_requested();
     tokio::pin!(stop);
     loop {
@@ -1096,27 +1105,24 @@ async fn until_stopped(
 /// Make the Invites `share` was given, then print them in a block of their own, a blank line
 /// before and after: who each is for and for how long, then its link on a line of its own, alone
 /// on stdout so a script can take it. Nothing when there are none.
-async fn invite_given(host: &Entry, client: &Client, who: &[Invitee]) -> Result<()> {
+async fn invite_given(host: &Entry, client: &Client, invitees: &[Invitee]) -> Result<()> {
     let mut made = Vec::new();
-    for who in who {
+    for invitee in invitees {
         let options = InviteOptions {
-            first_visit_approval: who.approve,
-            expires_in: Some(who.expires_in),
+            first_visit_approval: invitee.approve,
+            expires_in: Some(invitee.expires_in),
             ..Default::default()
         };
-        let lasts = lasts(&options);
-        made.push((
-            &who.label,
-            lasts,
-            invite_link(host, client, &who.label, options).await?,
-        ));
+        let works_for = lasts(&options);
+        let link = invite_link(host, client, &invitee.label, options).await?;
+        made.push((&invitee.label, works_for, link));
     }
     if made.is_empty() {
         return Ok(());
     }
     eprintln!("\n  Invites · each opens in one browser");
-    for (label, lasts, link) in made {
-        eprintln!("\n    {label} · {lasts}");
+    for (label, works_for, link) in made {
+        eprintln!("\n    {label} · {works_for}");
         eprint!("    ");
         println!("{link}");
     }

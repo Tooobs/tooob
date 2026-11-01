@@ -50,8 +50,57 @@ fn shown(said: &[u8]) -> String {
     String::from_utf8_lossy(said).replace("\r\n", "\n")
 }
 
-/// The hint a Host run in a terminal shows under what it printed as it started.
+/// The hint a Host run in a terminal shows when it first reads keys.
 const KEYS: &str = "(q) quit · (d) detach: keep it running in the background";
+
+/// The terminal `session` runs in, as its programs see it: to look at how it's set, and at what's
+/// typed there and not read yet.
+fn tty_of(session: &OsSession) -> std::fs::File {
+    use std::os::fd::AsRawFd;
+    // SAFETY: ptsname reads the pty's name into libc's own buffer, copied out at once.
+    let name = unsafe { std::ffi::CStr::from_ptr(libc::ptsname(session.as_raw_fd())) };
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOCTTY | libc::O_NONBLOCK)
+        .open(name.to_str().unwrap())
+        .unwrap()
+}
+
+use std::os::unix::fs::OpenOptionsExt;
+
+/// Wait, up to 10 s, until `check` is true.
+fn until(what: &str, check: impl Fn() -> bool) {
+    let started = std::time::Instant::now();
+    while !check() {
+        assert!(started.elapsed() < Duration::from_secs(10), "never {what}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Wait until the terminal takes keys singly, without echoing them: a Host is reading keys.
+fn until_keys_are_read(tty: &std::fs::File) {
+    use std::os::fd::AsRawFd;
+    until("read keys singly without echo", || {
+        // SAFETY: a termios is plain data, filled in by tcgetattr, which writes only `now`.
+        let now = unsafe {
+            let mut now: libc::termios = std::mem::zeroed();
+            libc::tcgetattr(tty.as_raw_fd(), &mut now);
+            now
+        };
+        now.c_lflag & (libc::ICANON | libc::ECHO) == 0
+    });
+}
+
+/// Wait until everything typed in the terminal has been read.
+fn until_read(tty: &std::fs::File) {
+    use std::os::fd::AsRawFd;
+    until("read what was typed", || {
+        let mut waiting: libc::c_int = 0;
+        // SAFETY: FIONREAD writes how many bytes wait to be read into `waiting`, ours.
+        unsafe { libc::ioctl(tty.as_raw_fd(), libc::FIONREAD, &mut waiting) };
+        waiting == 0
+    });
+}
 
 /// An interactive bash in a terminal of its own, its prompt `$ `.
 fn bash(home: &Home) -> OsSession {
@@ -172,9 +221,10 @@ fn q_stops_a_host_run_in_the_terminal_cleanly_and_gives_the_terminal_back_as_it_
     sh.send_line(tooob_line(&home, "run photos")).unwrap();
     let said = sh.expect(KEYS).unwrap();
     assert!(shown(said.before()).contains("photos: serving"));
-    assert!(home.row("photos").contains("running"));
+    let tty = tty_of(&sh);
+    until_keys_are_read(&tty);
     sh.send("x").unwrap(); // not a key it reads: nothing happens
-    std::thread::sleep(Duration::from_millis(500));
+    until_read(&tty);
     assert!(home.row("photos").contains("running"));
     sh.send("q").unwrap();
     let said = sh.expect("$ ").unwrap();
@@ -204,9 +254,10 @@ fn a_host_suspended_with_ctrl_z_or_stopped_with_ctrl_c_leaves_the_terminal_as_it
     sh.expect("$ ").unwrap();
     assert_eq!(line_editing(&mut sh), before, "suspended");
     sh.send_line("fg").unwrap();
-    std::thread::sleep(Duration::from_secs(1));
+    let tty = tty_of(&sh);
+    until_keys_are_read(&tty); // again
     sh.send("x").unwrap(); // read as a key again, not echoed
-    std::thread::sleep(Duration::from_millis(300));
+    until_read(&tty);
     sh.send("\x03").unwrap(); // Ctrl-C
     let said = shown(sh.expect("$ ").unwrap().before());
     assert!(said.contains("photos: stopped"), "{said}");
@@ -233,7 +284,8 @@ fn share_started_with_an_ampersand_prints_the_link_reads_no_keys_and_keeps_servi
     );
     sh.send_line(tooob_line(&home, &share)).unwrap();
     sh.expect("/#invite=").unwrap();
-    // A job that read the terminal from the background would be stopped by the shell.
+    // A job that read the terminal from the background would be stopped by the shell: given a
+    // moment to, it's still running. (Nothing to wait on for what doesn't happen.)
     sh.send_line("sleep 1; jobs -l").unwrap();
     let said = sh.expect("Running").unwrap();
     assert!(home.row(&name).contains("running"));
@@ -251,9 +303,10 @@ fn share_started_with_an_ampersand_prints_the_link_reads_no_keys_and_keeps_servi
     let (icanon, echo) = line_editing(&mut sh);
     assert_eq!((icanon.as_str(), echo.as_str()), ("icanon", "echo"));
 
-    // Brought to the foreground, it reads them: q stops it.
+    // Brought to the foreground, it reads them, showing which: q stops it.
     sh.send_line("fg").unwrap();
-    std::thread::sleep(Duration::from_secs(1));
+    sh.expect(KEYS).unwrap();
+    until_keys_are_read(&tty_of(&sh));
     sh.send("q").unwrap();
     sh.expect(format!("{name}: stopped")).unwrap();
     sh.expect("$ ").unwrap();
@@ -298,13 +351,17 @@ fn d_hands_a_host_run_in_the_terminal_to_its_service_manager_says_so_in_a_line_a
     sh.send_line(tooob_line(&home, "run photos")).unwrap();
     sh.expect(KEYS).unwrap();
 
+    until_keys_are_read(&tty_of(&sh));
     sh.send("d").unwrap();
     let said = shown(sh.expect("$ ").unwrap().before());
-    let after_stopped = &said[said.find("photos: stopped\n").expect(&said)..];
-    assert_eq!(
-        after_stopped,
-        "photos: stopped\ntooob: photos is kept running now, and after logins, reboots and \
-         crashes: `tooob logs photos -f` follows it, and `tooob stop photos` stops it.\n"
+    let said: Vec<&str> = said.lines().filter(|l| !l.is_empty()).collect();
+    assert_eq!(said.len(), 1, "one line: {said:#?}");
+    assert!(
+        said[0].ends_with(
+            "  photos: detached: launchd keeps it running now, and after logins, reboots and \
+             crashes: `tooob logs photos -f` follows it, and `tooob stop photos` stops it"
+        ),
+        "{said:#?}"
     );
     sh.send_line("echo status $?").unwrap();
     sh.expect("status 0").unwrap();
@@ -351,11 +408,11 @@ fn d_where_the_host_cant_be_kept_running_says_what_to_do_and_keeps_serving() {
         }
         let mut t = in_terminal(&home, &["run", "photos"]);
         t.expect(KEYS).unwrap();
+        until_keys_are_read(&tty_of(&t));
         t.send("d").unwrap();
         let said = t.expect(says.replace('\n', "\r\n").as_str()).unwrap();
         let said = shown(said.before());
         assert!(!said.contains("stopped"), "{said}");
-        std::thread::sleep(Duration::from_millis(500));
         assert!(home.row("photos").contains("running"), "{says}");
         assert!(home.calls("launchctl").is_empty());
         assert!(!launch_agent(&home).exists());
@@ -380,10 +437,11 @@ fn d_whose_service_manager_then_refuses_serves_here_again_saying_why() {
     );
     let mut t = in_terminal(&home, &["run", "photos"]);
     t.expect(KEYS).unwrap();
+    until_keys_are_read(&tty_of(&t));
 
     t.send("d").unwrap();
-    t.expect("photos: stopped").unwrap();
     let said = shown(t.expect(KEYS).unwrap().before());
+    assert!(!said.contains("stopped"), "{said}");
     let lines: Vec<&str> = said.lines().filter(|l| !l.is_empty()).collect();
     assert!(
         lines[0].contains("photos: warning: it wasn't kept running ("),
@@ -409,6 +467,45 @@ fn d_whose_service_manager_then_refuses_serves_here_again_saying_why() {
         t.get_process().wait().unwrap(),
         WaitStatus::Exited(_, 0)
     ));
+}
+
+#[test]
+fn only_q_or_d_pressed_on_its_own_is_a_key_not_a_capital_an_arrow_key_or_pasted_text() {
+    let home = Home::new();
+    let folder = a_folder();
+    home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
+    // With no service manager, d says so, and serves on: a sign it was read as d.
+    let d_said = "tooob: keeping photos running needs systemd or launchd";
+    let mut t = in_terminal(&home, &["run", "photos"]);
+    t.expect(KEYS).unwrap();
+    let tty = tty_of(&t);
+    until_keys_are_read(&tty);
+
+    for typed in ["D", "Q", "dq", "\x1b[D"] {
+        t.send(typed).unwrap(); // the left arrow is ESC [ D
+        until_read(&tty);
+    }
+    assert!(home.row("photos").contains("running"));
+    // d on its own: read as d, once it's not taken for the end of the arrow key.
+    t.set_expect_timeout(Some(Duration::from_secs(1)));
+    let said = (0..10)
+        .find_map(|_| {
+            t.send("d").unwrap();
+            until_read(&tty);
+            t.expect(d_said).ok()
+        })
+        .expect("d on its own was never read");
+    let said = shown(said.before());
+    assert!(
+        !said.contains(d_said) && !said.contains("stopped"),
+        "{said}"
+    );
+    t.set_expect_timeout(Some(Duration::from_secs(30)));
+
+    t.send("q").unwrap();
+    let said = shown(t.expect("photos: stopped").unwrap().before());
+    assert!(!said.contains(d_said), "only the one d: {said}");
+    t.expect(expectrl::Eof).unwrap();
 }
 
 #[test]
