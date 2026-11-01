@@ -284,6 +284,24 @@ export function tooob(args) {
   return execFileSync(TOOOB, args, { encoding: 'utf8', env: ENV }).trim();
 }
 
+/**
+ * Whether the Release swapped in for a cross-Release check (release.sh: TOOOB_BIN's tooob or
+ * TOOOB_WWW's Bootstrap Bundle) is older than VERSION. A test of something VERSION brought skips
+ * itself then (`test.skip(h.olderThan('0.3.0'), …)`): the older half was never meant to do it.
+ */
+export function olderThan(version) {
+  const swapped = process.env.TOOOB_WWW
+    ? JSON.parse(readFileSync(join(process.env.TOOOB_WWW, '__tooob/version.json'), 'utf8')).release
+    : process.env.TOOOB_BIN
+      ? execFileSync(process.env.TOOOB_BIN, ['--version'], { encoding: 'utf8' }).split(' ')[1]
+      : null;
+  if (!swapped) return false;
+  const parts = (v) => v.split('-')[0].split('.').map(Number);
+  const [a, b] = [parts(swapped), parts(version)];
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] < b[i];
+  return false;
+}
+
 /** The Visitor Key of NAME's first Visitor, from `tooob visitors --json`: its table has a header row. */
 export function visitorKey(name) {
   return JSON.parse(tooob(['visitors', name, '--json']))[0].key;

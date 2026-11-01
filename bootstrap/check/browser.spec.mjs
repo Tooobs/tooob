@@ -203,6 +203,7 @@ test("the Site's pushState still works when the browser refuses to move the addr
 });
 
 test('reopening a used Invite Link in another browser says so and never reaches the Site', async ({ browser, relay }) => {
+  test.skip(h.olderThan('0.3.0'), "tests #32's wording, from 0.3.0; the Release swapped in is older");
   const { site, invite } = await hostWithSite(relay);
   const link = invite('mom');
   const first = await h.newVisitor(browser);
@@ -218,6 +219,7 @@ test('reopening a used Invite Link in another browser says so and never reaches 
 });
 
 test('a cut-short Invite Link says so, and its Invite never reaches the Host', async ({ browser, relay }) => {
+  test.skip(h.olderThan('0.3.0'), 'tests #32, from 0.3.0; the Release swapped in is older');
   const { site, name, invite } = await hostWithSite(relay);
   const cut = invite('mom').slice(0, -1); // a chat app or a terminal's wrap lost the last character
   const page = await h.newVisitor(browser);
@@ -476,6 +478,7 @@ test('the Relay serves the Bundle for process isolation, and passes no Cookie on
 });
 
 test("the Relay serves the shell at any page's path, and a missing Bundle file is still a 404", async ({ irohRelay }) => {
+  test.skip(h.olderThan('0.3.0'), "tests #99's shell, from 0.3.0; the Release swapped in is older");
   // In step with the Relay image's front.caddy (ADR 0023): for a first visit, before the service
   // worker is installed.
   const front = await h.startRelayFront(irohRelay);
@@ -492,6 +495,7 @@ test("the Relay serves the shell at any page's path, and a missing Bundle file i
 });
 
 test('"Save link as" of a page\'s address gets an explanation, and a page visit still gets the shell', async ({ irohRelay }) => {
+  test.skip(h.olderThan('0.3.0'), 'tests #99, from 0.3.0; the Release swapped in is older');
   // In step with the Relay image's front.caddy (#99): Chromium saves a link with Dest empty and Mode
   // navigate, Firefox with Mode no-cors. Saved outside the page, it can't reach the Host.
   const front = await h.startRelayFront(irohRelay);
@@ -1300,6 +1304,7 @@ test('a single shared zip downloads under its own name', async ({ browser, relay
 });
 
 test("a listing's Download link saves a file, web page or not, under its own name", async ({ browser, relay }) => {
+  test.skip(h.olderThan('0.3.0'), 'tests #99, from 0.3.0; the Release swapped in is older');
   const root = aFolder();
   const { frame, downloads } = await visitSharedFolder(root, { browser, relay });
   for (const name of ['notes.md', 'page.html']) {
@@ -1314,6 +1319,7 @@ test("a listing's Download link saves a file, web page or not, under its own nam
 });
 
 test("a Shared Folder file that isn't a web page shows a Download button by the pill, which saves it", async ({ browser, relay }) => {
+  test.skip(h.olderThan('0.3.0'), 'tests #99, from 0.3.0; the Release swapped in is older');
   const root = aFolder();
   const { page, frame, downloads } = await visitSharedFolder(root, { browser, relay });
   await frame.waitForSelector('a[href="notes.md"]', { timeout: 20000 });
@@ -1332,6 +1338,7 @@ test("a Shared Folder file that isn't a web page shows a Download button by the 
 });
 
 test('Cmd-S or Ctrl-S on a Shared Folder file that is showing saves the file, not the shell', async ({ browser, relay }) => {
+  test.skip(h.olderThan('0.3.0'), 'tests #99, from 0.3.0; the Release swapped in is older');
   const root = aFolder();
   const { page, frame, downloads } = await visitSharedFolder(root, { browser, relay });
   await frame.waitForSelector('a[href="notes.md"]', { timeout: 20000 });
