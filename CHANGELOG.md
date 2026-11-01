@@ -8,6 +8,10 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
 ## Unreleased
 
 ### Added
+- **Saving Shared Folder files:** a `⬇ Download` link on each file in a listing, a `⬇ Download`
+  button and Cmd-S / Ctrl-S while a file is open, all saving the file itself. A Relay answers the
+  browser's "Save link as" (which can't reach the Host) with a short note instead of an empty page
+  (ADR 0023, amended).
 - **The Host's log says who visits:** a Visitor getting in (first visit or return, and on which
   path) and leaving, moves between the Relay and the Direct Path, refused devices, the Owner's
   Invites, Blocks and approvals, and the Host's own starts and stops, each with an `event` and
