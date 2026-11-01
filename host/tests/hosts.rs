@@ -1286,7 +1286,7 @@ fn run_as_its_entry(home: &Home) -> support::home::Running {
 }
 
 #[test]
-fn stop_on_a_host_kept_running_stops_it_and_keeps_it_stopped_until_run_d() {
+fn stop_on_a_host_kept_running_stops_it_and_keeps_it_stopped_until_start() {
     for (tool, stops, calls) in [
         (
             "launchctl",
@@ -1326,8 +1326,8 @@ fn stop_on_a_host_kept_running_stops_it_and_keeps_it_stopped_until_run_d() {
         assert_eq!(String::from_utf8_lossy(&out.stdout), "", "{tool}");
         assert_eq!(
             stderr(&out),
-            "tooob: photos is stopped, and stays stopped across logins and reboots: `tooob run \
-             photos -d` keeps it running again\n",
+            "tooob: photos is stopped, and stays stopped across logins and reboots: `tooob \
+             start photos` starts it again\n",
             "{tool}"
         );
         assert_eq!(home.calls(tool)[kept..], calls, "{tool}");
@@ -1340,7 +1340,7 @@ fn stop_on_a_host_kept_running_stops_it_and_keeps_it_stopped_until_run_d() {
         );
         assert_eq!(
             home.shown("photos", "Autostart"),
-            "no, stopped: `tooob run photos -d` keeps it running again",
+            "no, kept stopped: `tooob start photos` starts it again",
             "{tool}"
         );
         home.until_logged("photos", "photos: stopped");
@@ -1352,6 +1352,257 @@ fn stop_on_a_host_kept_running_stops_it_and_keeps_it_stopped_until_run_d() {
         );
         assert_eq!(entries(&home).len(), 1, "{tool}: kept running again");
         assert!(home.row("photos").contains(" yes "), "{tool}");
+    }
+}
+
+#[test]
+fn start_after_stop_runs_it_again_the_way_it_ran_through_its_service_manager_and_keeps_it_running()
+{
+    for (tool, calls) in [
+        (
+            "launchctl",
+            vec![format!(
+                "bootstrap gui/{} {}/Library/LaunchAgents/net.tooobs.photos.plist",
+                uid(),
+                "HOME"
+            )],
+        ),
+        (
+            "systemctl",
+            vec![
+                "is-system-running".to_string(),
+                "--user daemon-reload".to_string(),
+                "--user enable tooob@photos.service".to_string(),
+                "--user restart tooob@photos.service".to_string(),
+            ],
+        ),
+    ] {
+        let home = Home::new();
+        let calls: Vec<String> = calls
+            .iter()
+            .map(|c| c.replace("HOME", home.0.path().to_str().unwrap()))
+            .collect();
+        let folder = a_folder();
+        home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
+        home.install_tooob();
+        home.stand_in(tool, "");
+        // Kept running with the release check off: `start` brings it back as it ran, not as a
+        // `-d` typed now would write it.
+        let out = home.tooob_with(&["run", "photos", "-d"], &[("TOOOB_NO_UPDATE_CHECK", "1")]);
+        assert!(out.status.success(), "{tool}: {}", stderr(&out));
+        let entry = entries(&home)[0].clone();
+        let written = std::fs::read_to_string(&entry).unwrap();
+        home.ok(&["stop", "photos"]);
+        assert!(entries(&home).is_empty(), "{tool}");
+        let before = home.calls(tool).len();
+
+        let out = home.tooob(&["start", "photos"]);
+        assert!(out.status.success(), "{tool}: {}", stderr(&out));
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "", "{tool}");
+        assert_eq!(
+            stderr(&out),
+            "tooob: photos is kept running now, and after logins, reboots and crashes: `tooob \
+             logs photos -f` follows it, and `tooob stop photos` stops it.\n",
+            "{tool}"
+        );
+        assert_eq!(home.calls(tool)[before..], calls, "{tool}");
+        assert_eq!(entries(&home), std::slice::from_ref(&entry), "{tool}");
+        assert_eq!(std::fs::read_to_string(&entry).unwrap(), written, "{tool}");
+        assert!(home.row("photos").contains(" yes "), "{tool}");
+        assert!(
+            home.shown("photos", "Autostart").starts_with("yes, "),
+            "{tool}"
+        );
+
+        // And `stop` keeps it stopped again, as many times as it's asked.
+        home.ok(&["stop", "photos"]);
+        assert!(entries(&home).is_empty(), "{tool}");
+        home.ok(&["start", "photos"]);
+        assert_eq!(entries(&home), std::slice::from_ref(&entry), "{tool}");
+    }
+}
+
+#[test]
+fn start_on_a_host_only_ever_run_in_a_terminal_says_what_to_type_and_starts_nothing() {
+    for tool in ["launchctl", "systemctl", "neither"] {
+        let home = Home::new();
+        let folder = a_folder();
+        home.ok(&["add", "blog", folder.path().to_str().unwrap(), "--local"]);
+        home.install_tooob();
+        home.stand_in(tool, "");
+        // Run in a terminal once, and stopped there.
+        home.start("blog").stop();
+
+        let out = home.tooob(&["start", "blog"]);
+        assert!(!out.status.success(), "{tool}");
+        assert_eq!(
+            stderr(&out),
+            "tooob: blog doesn't start by itself; serve it here with `tooob run blog`, or keep \
+             it running with `tooob run blog -d`\n",
+            "{tool}"
+        );
+        assert!(
+            home.calls(tool).is_empty(),
+            "{tool}: {:?}",
+            home.calls(tool)
+        );
+        assert!(entries(&home).is_empty(), "{tool}: {:?}", entries(&home));
+        let row = home.row("blog");
+        assert!(row.contains("stopped") && row.contains(" no "), "{tool}");
+    }
+}
+
+#[test]
+fn start_with_no_host_name_lists_the_hosts_kept_stopped() {
+    let home = Home::new();
+    let fails = |args: &[&str]| {
+        let out = home.tooob(args);
+        assert!(!out.status.success(), "{args:?}");
+        stderr(&out)
+    };
+    home.install_tooob();
+    home.stand_in("launchctl", "");
+    let folder = a_folder();
+    for name in ["blog", "films", "photos", "notes"] {
+        let path = folder.path().join(name);
+        std::fs::create_dir(&path).unwrap();
+        home.ok(&["add", name, path.to_str().unwrap(), "--local"]);
+    }
+    assert_eq!(
+        fails(&["start"]),
+        "tooob: say which Host to start (none is kept stopped):\n  tooob start NAME\n"
+    );
+    // blog is only ever run in a terminal; films and photos are kept stopped; notes is kept
+    // running, and running.
+    for name in ["films", "photos", "notes"] {
+        home.ok(&["run", name, "-d"]);
+    }
+    home.ok(&["stop", "films"]);
+    home.ok(&["stop", "photos"]);
+    let notes = entry_env(&home);
+    let notes: Vec<(&str, &str)> = notes
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    let _notes = home.spawn_with(&["run", "notes"], &notes);
+    home.until_logged("notes", "notes: serving ");
+    assert_eq!(
+        fails(&["start"]),
+        "tooob: say which Host to start (kept stopped: films, photos):\n  tooob start NAME\n"
+    );
+}
+
+#[test]
+fn start_on_a_running_host_leaves_it_as_it_is_and_says_so() {
+    let home = Home::new();
+    let folder = a_folder();
+    home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
+    home.install_tooob();
+    home.stand_in("launchctl", "");
+
+    // In a terminal.
+    let running = home.start("photos");
+    let out = home.tooob(&["start", "photos"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stderr(&out),
+        format!(
+            "tooob: photos is already running here (pid {}), started by hand: Ctrl-C where it \
+             runs, or `tooob stop photos`, stops it\n",
+            running.child.id()
+        )
+    );
+    running.stop();
+
+    // Kept running.
+    home.ok(&["run", "photos", "-d"]);
+    let before = home.calls("launchctl");
+    let _running = run_as_its_entry(&home);
+    let out = home.tooob(&["start", "photos"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stderr(&out),
+        "tooob: photos is already running in the background: `tooob logs photos -f` follows \
+         it, and `tooob stop photos` stops it\n"
+    );
+    assert_eq!(home.calls("launchctl"), before, "nothing restarted");
+    assert!(home.row("photos").contains("running"));
+    drop(_running);
+
+    // Kept stopped, but run in a terminal since.
+    home.ok(&["stop", "photos"]);
+    let _running = home.start("photos");
+    let before = home.calls("launchctl");
+    let out = home.tooob(&["start", "photos"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(
+        stderr(&out),
+        "tooob: photos is already running, but it's kept stopped: `tooob stop photos` stops \
+         it, then `tooob start photos` keeps it running\n"
+    );
+    assert_eq!(home.calls("launchctl"), before, "nothing started");
+    assert!(entries(&home).is_empty(), "{:?}", entries(&home));
+}
+
+#[test]
+fn start_on_a_host_kept_running_that_isnt_running_now_starts_it_afresh_from_its_entry() {
+    // Its service manager gave up on it after its crashes, say.
+    let home = Home::new();
+    let folder = a_folder();
+    home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
+    home.install_tooob();
+    home.stand_in("launchctl", "");
+    home.ok(&["run", "photos", "-d"]);
+    let agent = entries(&home)[0].clone();
+    let written = std::fs::read_to_string(&agent).unwrap();
+    let before = home.calls("launchctl").len();
+
+    let out = home.tooob(&["start", "photos"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("is kept running now"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(
+        home.calls("launchctl")[before..],
+        [
+            format!("bootout gui/{}/net.tooobs.photos", uid()),
+            format!("bootstrap gui/{} {}", uid(), agent.display()),
+        ]
+    );
+    assert_eq!(std::fs::read_to_string(&agent).unwrap(), written);
+}
+
+#[test]
+fn a_start_its_service_manager_refuses_leaves_the_host_kept_stopped_and_says_so() {
+    for (tool, refuses) in [("launchctl", "bootstrap"), ("systemctl", "restart")] {
+        let home = Home::new();
+        let folder = a_folder();
+        home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
+        home.install_tooob();
+        home.stand_in(tool, "");
+        home.ok(&["run", "photos", "-d"]);
+        home.ok(&["stop", "photos"]);
+        home.stand_in(
+            tool,
+            &format!("case \"$*\" in *{refuses}*) echo 'no session' >&2; exit 5;; esac"),
+        );
+
+        let out = home.tooob(&["start", "photos"]);
+        assert!(!out.status.success(), "{tool}");
+        let said = stderr(&out);
+        assert!(
+            said.contains("photos is still stopped") && said.contains("no session"),
+            "{tool}: {said}"
+        );
+        assert!(entries(&home).is_empty(), "{tool}: {:?}", entries(&home));
+        assert!(home.row("photos").contains(" no "), "{tool}");
+
+        // It can still be started once its service manager will.
+        home.stand_in(tool, "");
+        home.ok(&["start", "photos"]);
+        assert_eq!(entries(&home).len(), 1, "{tool}");
     }
 }
 

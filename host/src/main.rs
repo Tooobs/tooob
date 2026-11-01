@@ -40,7 +40,10 @@ const USAGE: &str = "usage:
   tooob ls [--json]                               every Host on this box, running or stopped
   tooob show NAME                                 its settings, Host Key and files
   tooob stop NAME                                 stop it; one kept running stays stopped, across
-                                                  logins and reboots, until run -d
+                                                  logins and reboots, until start
+  tooob start NAME                                start one stop keeps stopped, the way it ran:
+                                                  launchd or systemd runs it again, and keeps it
+                                                  running
   tooob rm NAME                                   stop it and delete it, Host Key and all
   tooob logs NAME [-n N|all] [-f] [--json]       its log, the last 50 lines, N, or all of it;
                                                   -f follows it, --json gives an object a line
@@ -150,6 +153,10 @@ async fn run() -> Result<()> {
                 }
                 false => serve(&host, home.state_dir(), Vec::new()).await?,
             }
+        }
+        Some("start") => {
+            exactly(2, &[])?;
+            start(&named(&home, &typed, "start", words.get(1))?)?;
         }
         Some("share") => share(&home, &typed, &words, &flags, &invitees).await?,
         Some("ls") => {
@@ -525,12 +532,12 @@ async fn show_host(host: &Entry) {
 }
 
 /// Whether a Host starts by itself, and where its entry is when it does; and when `tooob stop`
-/// keeps it stopped, how to keep it running again.
+/// keeps it stopped, how to start it again.
 fn autostart_shown(host: &Entry) -> String {
     match autostart::entry_file(host).filter(|file| file.exists()) {
         Some(file) => format!("yes, {}", file.display()),
         None if autostart::is_kept_stopped(host) => format!(
-            "no, stopped: `tooob run {} -d` keeps it running again",
+            "no, kept stopped: `tooob start {}` starts it again",
             host.name
         ),
         None => "no".into(),
@@ -692,19 +699,25 @@ fn ago(secs: u64) -> String {
 
 /// The Host a command names, by its name, what it serves or a Host Key prefix. Never a
 /// guess, and never asked for: without one, it says which Hosts there are (the running ones, to
-/// stop one) and the command to type (ADR 0022).
+/// stop one, and those `stop` keeps stopped, to start one) and the command to type (ADR 0022).
 fn named(home: &Home, typed: &Typed, command: &str, wanted: Option<&String>) -> Result<Entry> {
     if let Some(wanted) = wanted {
         return home.find(wanted);
     }
     let mut hosts = home.hosts();
-    if command == "stop" {
-        hosts.retain(|h| h.running().is_some());
+    match command {
+        "stop" => hosts.retain(|h| h.running().is_some()),
+        "start" => hosts.retain(|h| {
+            h.running().is_none() && !autostart::is_on(h) && autostart::is_kept_stopped(h)
+        }),
+        _ => {}
     }
     let names: Vec<String> = hosts.into_iter().map(|h| h.name).collect();
     let which = match (command, names.as_slice()) {
         ("stop", []) => "none is running".to_string(),
         ("stop", names) => format!("running: {}", names.join(", ")),
+        ("start", []) => "none is kept stopped".to_string(),
+        ("start", names) => format!("kept stopped: {}", names.join(", ")),
         (_, []) => "none yet: `tooob add NAME TARGET` makes one".to_string(),
         (_, names) => format!("Hosts here: {}", names.join(", ")),
     };
@@ -712,6 +725,7 @@ fn named(home: &Home, typed: &Typed, command: &str, wanted: Option<&String>) -> 
         "invite" => "say which Host the Invite is for",
         "pair" => "say which Host the Pairing Invite is for",
         "stop" => "say which Host to stop",
+        "start" => "say which Host to start",
         "logs" => "say which Host's log",
         _ => "say which Host",
     };
@@ -1004,8 +1018,8 @@ fn say(lines: &[String]) {
 async fn stop(host: &Entry) -> Result<()> {
     if autostart::stop(host)? {
         eprintln!(
-            "tooob: {0} is stopped, and stays stopped across logins and reboots: `tooob run {0} \
-             -d` keeps it running again",
+            "tooob: {0} is stopped, and stays stopped across logins and reboots: `tooob start \
+             {0}` starts it again",
             host.name
         );
         return Ok(());
@@ -1013,6 +1027,37 @@ async fn stop(host: &Entry) -> Result<()> {
     let client = Client::new(&host.state_dir);
     client.stop().await.map_err(refused(host))?;
     host.until_stopped()
+}
+
+/// `tooob start`: start a Host `stop` keeps stopped, or one kept running that isn't running now,
+/// the way it ran before: through its service manager, which keeps it running again (ADR 0014).
+/// Never in the background by tooob itself: a Host only ever run in a terminal says what to type.
+fn start(host: &Entry) -> Result<()> {
+    let name = &host.name;
+    if let Some(pid) = host.running() {
+        eprintln!(
+            "tooob: {}",
+            match autostart::is_on(host) {
+                true => autostart::already_running(name),
+                // Run by hand since `stop`, or a `stop` of it cut short.
+                false if autostart::is_kept_stopped(host) => format!(
+                    "{name} is already running, but it's kept stopped: `tooob stop {name}` \
+                     stops it, then `tooob start {name}` keeps it running"
+                ),
+                false => format!(
+                    "{name} is already running here (pid {pid}), started by hand: Ctrl-C where \
+                     it runs, or `tooob stop {name}`, stops it"
+                ),
+            }
+        );
+        return Ok(());
+    }
+    if !autostart::is_on(host) && !autostart::is_kept_stopped(host) {
+        bail!("{}", autostart::doesnt_start_by_itself(name));
+    }
+    let keeper = autostart::require_keeping_running(name)?;
+    say(&keeper.start(host)?);
+    Ok(())
 }
 
 /// `tooob logs`: a Host's log, the last 50 lines of it or as many as `-n` says (`all`); and with

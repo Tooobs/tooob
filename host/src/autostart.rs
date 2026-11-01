@@ -152,44 +152,13 @@ impl Keeper {
                 host.name
             );
         }
-        if was_on && manager == ServiceManager::Launchd {
-            // launchd loads an agent once: unload it (stopping the Host) to load what's written
-            // now.
-            let _ = call("launchctl", &["bootout", &launchd_service(&host.name)]);
-            host.until_stopped()?;
-        }
         std::fs::create_dir_all(file.parent().unwrap())?;
         let text = match manager {
             ServiceManager::Launchd => plist(host, &self.tooob)?,
             ServiceManager::Systemd => systemd_unit(host, &self.tooob)?,
         };
         std::fs::write(&file, text)?;
-        crate::log::make_crash_file(&host.state_dir)?;
-        let started = match manager {
-            ServiceManager::Launchd => {
-                let load = || call("launchctl", &["bootstrap", &launchd_domain(), path(&file)?]);
-                // Just unloaded, launchd may still be letting go of it for a moment.
-                let mut loaded = load();
-                for _ in 0..5 {
-                    if loaded.is_ok() || !was_on {
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                    loaded = load();
-                }
-                loaded
-            }
-            ServiceManager::Systemd => {
-                let unit = unit(&host.name);
-                systemctl(&["daemon-reload"])
-                    .and_then(|()| systemctl(&["enable", &unit]))
-                    .and_then(|()| systemctl(&["restart", &unit]))
-                    .inspect_err(|_| {
-                        let _ = systemctl(&["disable", &unit]);
-                    })
-            }
-        };
-        if let Err(e) = started {
+        if let Err(e) = self.load(host, &file, was_on) {
             let _ = std::fs::remove_file(&file);
             if manager == ServiceManager::Systemd {
                 let _ = systemctl(&["daemon-reload"]);
@@ -212,6 +181,84 @@ impl Keeper {
         });
         Ok(said)
     }
+
+    /// Hand `host`'s entry, `file`, to its service manager, which starts it now: from scratch
+    /// when `was_on`, since one may be loaded already (launchd loads an agent once).
+    fn load(&self, host: &Entry, file: &Path, was_on: bool) -> Result<()> {
+        crate::log::make_crash_file(&host.state_dir)?;
+        match self.manager {
+            ServiceManager::Launchd => {
+                if was_on {
+                    // Unloading it stops the Host, so it's waited for.
+                    let _ = call("launchctl", &["bootout", &launchd_service(&host.name)]);
+                    host.until_stopped()?;
+                }
+                let load = || call("launchctl", &["bootstrap", &launchd_domain(), path(file)?]);
+                // Just unloaded, launchd may still be letting go of it for a moment.
+                let mut loaded = load();
+                for _ in 0..5 {
+                    if loaded.is_ok() || !was_on {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    loaded = load();
+                }
+                loaded
+            }
+            ServiceManager::Systemd => {
+                let unit = unit(&host.name);
+                systemctl(&["daemon-reload"])
+                    .and_then(|()| systemctl(&["enable", &unit]))
+                    .and_then(|()| systemctl(&["restart", &unit]))
+                    .inspect_err(|_| {
+                        let _ = systemctl(&["disable", &unit]);
+                    })
+            }
+        }
+    }
+
+    /// `tooob start`: start `host`, which isn't running, the way it ran before, through its
+    /// service manager, and keep it running again: from the entry `tooob stop` put by, as it was
+    /// written, or from its entry if it's still kept running (between crashes, say). Kept stopped
+    /// still when its service manager refuses. What to tell the Owner, a line each.
+    pub fn start(&self, host: &Entry) -> Result<Vec<String>> {
+        let file = entry_file(host).context("no entry")?;
+        if file.exists() {
+            self.load(host, &file, true)?;
+        } else {
+            let put = ["stopped", "stopping"]
+                .into_iter()
+                .filter_map(|state| put_by(host, state))
+                .find(|file| file.exists())
+                .with_context(|| doesnt_start_by_itself(&host.name))?;
+            std::fs::create_dir_all(file.parent().unwrap())?;
+            move_file(&put, &file)?;
+            if let Err(e) = self.load(host, &file, false) {
+                let back = move_file(&file, &put);
+                if self.manager == ServiceManager::Systemd {
+                    let _ = systemctl(&["daemon-reload"]);
+                }
+                return Err(match back {
+                    Ok(()) => e.context(format!("{} is still stopped", host.name)),
+                    Err(b) => e.context(format!(
+                        "{} didn't start, and its entry couldn't be put by again ({b:#}): \
+                         `tooob stop {}` keeps it stopped",
+                        host.name, host.name
+                    )),
+                });
+            }
+        }
+        forget_put_by(host);
+        Ok(vec![kept_running(&host.name)])
+    }
+}
+
+/// What `start` says of a Host only ever run in a terminal.
+pub fn doesnt_start_by_itself(name: &str) -> String {
+    format!(
+        "{name} doesn't start by itself; serve it here with `tooob run {name}`, or keep it \
+         running with `tooob run {name} -d`"
+    )
 }
 
 /// What `keep_running` says first: that `name` is kept running, and how to follow and stop it.
@@ -265,7 +312,7 @@ pub fn remove(host: &Entry) -> Result<()> {
 /// unit is disabled just before, which needs the file), so whatever happens next, no login or
 /// reboot brings the Host back; then it's stopped. If it won't stop, its entry is put back, and
 /// it's still kept running. The entry is put by as `.stopping` until the Host has stopped, then
-/// `.stopped`, where `start` (#100) finds it: the next `stop` finishes one cut short in between.
+/// `.stopped`, where `start` finds it: the next `stop` finishes one cut short in between.
 pub fn stop(host: &Entry) -> Result<bool> {
     let (Some(entry), Some(stopping), Some(stopped)) = (
         entry_file(host),
@@ -338,8 +385,8 @@ pub fn stop(host: &Entry) -> Result<bool> {
     Ok(true)
 }
 
-/// Whether `host` was kept running and `tooob stop` stopped it: its entry is put by, to start it
-/// again the way it ran (#100).
+/// Whether `host` was kept running and `tooob stop` stopped it: its entry is put by, for `tooob
+/// start` to start it again the way it ran.
 pub fn is_kept_stopped(host: &Entry) -> bool {
     ["stopped", "stopping"]
         .iter()
