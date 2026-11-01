@@ -18,6 +18,10 @@ COPY --from=caddy /usr/bin/caddy /usr/bin/caddy
 COPY --from=iroh-relay /iroh-relay /usr/bin/iroh-relay
 COPY iroh-relay.toml /etc/iroh-relay.toml
 COPY Caddyfile front.caddy /etc/caddy/
+# A config Caddy rejects fails the build, before it can replace a running Relay: loaded and
+# provisioned, never run, with stand-ins for what the Relay's environment sets.
+RUN RELAY_DOMAIN=relay.example.com DNS_API_TOKEN=stand-in ACME_EMAIL=relay@example.com \
+    caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 COPY --chmod=755 start.sh /usr/bin/start-relay
 COPY www /srv
 EXPOSE 80 443

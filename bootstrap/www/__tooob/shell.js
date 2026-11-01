@@ -294,10 +294,10 @@ try {
 stats.visitor = visitor.public;
 stats.connectMs = ms(t);
 
-let sharedFolder = false; // the Host serves a Shared Folder, whose files it saves with ?download (#99)
 // Where this device stands; wait (checking every 3 s) while the Owner hasn't approved it yet. The
 // wait can be long, so a dropped connection (Host restarted, relay hiccup) or a reply without a
 // Standing means reconnect and ask again, never a guess.
+let sharedFolder = false; // the Host serves a Shared Folder, whose files it saves with ?download (#99)
 for (;;) {
   const reply = await Promise.race([ask({ t: 'standing' }), sleep(5000)]).catch(() => undefined);
   const standing = reply?.standing;
@@ -791,7 +791,7 @@ downloadEl.onclick = saveShown;
 function saveKey(e) {
   if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== 's' || !shownFile()) return;
   e.preventDefault();
-  saveShown();
+  if (!e.repeat) saveShown(); // a held key saves once
 }
 addEventListener('keydown', saveKey);
 loadingSite();

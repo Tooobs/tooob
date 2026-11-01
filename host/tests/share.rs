@@ -373,6 +373,12 @@ async fn a_file_asked_for_with_download_is_an_attachment_under_its_own_name() {
         Some("attachment; filename=\"d_a uno.html\"; filename*=UTF-8''d%C3%ADa%20uno.html"),
         "an ASCII stand-in for old browsers, the real name for the rest"
     );
+    let slashed = shared.visit.get("/notes.md/?download").await.unwrap();
+    assert_eq!(
+        header(&slashed, "content-disposition"),
+        Some("attachment; filename=\"notes.md\"; filename*=UTF-8''notes.md"),
+        "a trailing slash never leaves it without a name"
+    );
     let shown = shared.visit.get("/notes.md").await.unwrap();
     assert_eq!(
         header(&shown, "content-disposition"),

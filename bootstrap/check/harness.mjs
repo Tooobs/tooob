@@ -76,6 +76,20 @@ export async function startRelay() {
 /** Whether `path` is the Bundle's alone, never a page of a Site's (ADR 0023): its own, or missing. */
 export const isBundlePath = (path) => path.startsWith('/__tooob/') || path === '/tooob-sw.js';
 
+/**
+ * What the Relay image's front.caddy answers a page's address saved outside the page with (#99): its
+ * texts for a folder's address and a file's, placeholders and all, read from it so the two never drift.
+ */
+const SAVED = (() => {
+  const caddy = readFileSync(join(ROOT, 'deploy/relay/image/front.caddy'), 'utf8');
+  const text = (respond) => {
+    const m = new RegExp(`${respond} <<TXT\\n([\\s\\S]*?)\\n(\\t*)TXT 200`).exec(caddy);
+    if (!m) throw new Error(`front.caddy has no "${respond} <<TXT"`);
+    return m[1].split('\n').map((l) => l.slice(m[2].length)).join('\n');
+  };
+  return { folder: text('respond @folder'), file: text('respond') };
+})();
+
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'application/wasm', '.json': 'application/json' };
 const IROH_PATHS = ['/relay', '/ping', '/generate_204', '/healthz'];
 
@@ -109,15 +123,15 @@ export async function startRelayFront(relayUrl, domain = 'localhost') {
     }
     asked.push(path);
     // A page's address saved outside the page ("Save link as": Dest empty, Mode navigate in
-    // Chromium, no-cors in Firefox) can't reach the Host: the saved file says so (#99).
+    // Chromium, no-cors in Firefox) can't reach the Host: the saved file says so (#99), in front.caddy's words.
     const saved = req.headers['sec-fetch-dest'] === 'empty' && ['navigate', 'no-cors'].includes(req.headers['sec-fetch-mode']);
     if (saved && !isBundlePath(path)) {
-      const fix = 'tooob can only fetch it from inside the page:\nopen the link in your browser';
       const decoded = (s) => { try { return decodeURIComponent(s); } catch { return s; } };
-      const file = decoded(path.slice(path.lastIndexOf('/') + 1));
       res.setHeader('content-type', 'text/plain; charset=utf-8');
       res.setHeader('cache-control', 'no-store');
-      return res.end(file ? `This isn't ${file}. ${fix} and use ⬇ Download next to the file.` : `This isn't ${decoded(path)}. ${fix}.`);
+      return res.end(path.endsWith('/')
+        ? SAVED.folder.replace('{http.request.uri.path}', decoded(path))
+        : SAVED.file.replace('{http.request.uri.path.file}', decoded(path.slice(path.lastIndexOf('/') + 1))));
     }
     // Any other path is a page of the Site's, opened before the service worker is installed: the
     // shell, which opens it (ADR 0023). A missing Bundle file is still missing.
@@ -129,7 +143,7 @@ export async function startRelayFront(relayUrl, domain = 'localhost') {
       res.setHeader('cache-control', 'no-store');
       res.setHeader('origin-agent-cluster', '?1');
       res.setHeader('cross-origin-opener-policy', 'same-origin-allow-popups');
-      if (page !== file) res.setHeader('vary', 'Sec-Fetch-Dest, Sec-Fetch-Mode'); // the shell at a page's address
+      res.setHeader('vary', 'Sec-Fetch-Dest, Sec-Fetch-Mode');
       res.end(body);
     } catch {
       res.statusCode = 404;

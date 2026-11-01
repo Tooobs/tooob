@@ -62,9 +62,13 @@ pub(crate) async fn serve(
             }
         }
         Some(file) => {
-            let name = percent_decode_str(path.rsplit('/').next().unwrap_or_default())
-                .decode_utf8_lossy()
-                .into_owned();
+            // The name it was asked for, which a symlink's target may not share.
+            let last = path
+                .trim_end_matches('/')
+                .rsplit('/')
+                .next()
+                .unwrap_or_default();
+            let name = percent_decode_str(last).decode_utf8_lossy().into_owned();
             serve_file(&file, &name, req, send).await
         }
         None => status(send, 404).await,

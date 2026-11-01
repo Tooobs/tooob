@@ -506,9 +506,11 @@ test('"Save link as" of a page\'s address gets an explanation, and a page visit 
     const folder = await askFront(front, '/Trip/', { 'sec-fetch-dest': 'empty', 'sec-fetch-mode': mode });
     assert.equal(folder.body, `This isn't /Trip/. ${fix}.`, mode);
   }
-  const visit = await askFront(front, '/Trip/notes.md', { 'sec-fetch-dest': 'document', 'sec-fetch-mode': 'navigate', 'sec-fetch-user': '?1' });
-  assert.equal(visit.body, shell);
-  assert.equal(visit.headers.vary, 'Sec-Fetch-Dest, Sec-Fetch-Mode');
+  for (const path of ['/Trip/notes.md', '/']) {
+    const visit = await askFront(front, path, { 'sec-fetch-dest': 'document', 'sec-fetch-mode': 'navigate', 'sec-fetch-user': '?1' });
+    assert.equal(visit.body, shell, path);
+    assert.equal(visit.headers.vary, 'Sec-Fetch-Dest, Sec-Fetch-Mode', path);
+  }
   const bundle = await askFront(front, '/__tooob/version.json', { 'sec-fetch-dest': 'empty', 'sec-fetch-mode': 'no-cors' });
   assert.match(bundle.headers['content-type'], /^application\/json/, "a Bundle file is never a Site's page");
 });

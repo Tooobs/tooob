@@ -107,10 +107,7 @@ impl Visit {
 
     /// Ask where this Visitor stands, without sending anything to the Site.
     pub async fn standing(&self) -> Result<Standing, VisitError> {
-        let (mut send, mut recv) = self.conn.open_bi().await?;
-        wire::write_line(&mut send, &json!({"t": "standing"})).await?;
-        send.finish()?;
-        let (head, _) = wire::read_line(&mut recv).await?;
+        let head = self.standing_reply().await?;
         serde_json::from_value(head["standing"].clone())
             .map_err(|_| VisitError::Connection(format!("unexpected standing reply: {head}")))
     }
@@ -118,11 +115,16 @@ impl Visit {
     /// What kind of Site the Host serves (`shared_folder`, `web_app`), as its standing reply says
     /// to a Visitor who's in; None to anyone else.
     pub async fn site_kind(&self) -> Result<Option<String>, VisitError> {
+        let head = self.standing_reply().await?;
+        Ok(head["site"].as_str().map(str::to_string))
+    }
+
+    /// The Host's answer to a standing message.
+    async fn standing_reply(&self) -> Result<serde_json::Value, VisitError> {
         let (mut send, mut recv) = self.conn.open_bi().await?;
         wire::write_line(&mut send, &json!({"t": "standing"})).await?;
         send.finish()?;
-        let (head, _) = wire::read_line(&mut recv).await?;
-        Ok(head["site"].as_str().map(str::to_string))
+        Ok(wire::read_line(&mut recv).await?.0)
     }
 
     /// Offer the Host a Direct Path with `sdp`, as the browser shell does, and signal no more:

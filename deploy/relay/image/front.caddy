@@ -1,6 +1,7 @@
 # What a Relay serves on its domain and on every Key Address under it (ADR 0020): iroh's paths go to
 # iroh-relay (iroh-relay.toml), and everything else is the Bootstrap Bundle: its files, and its shell
-# (index.html) at every other path, which is a page of a Site's (ADR 0023).
+# (index.html) at every other path, which is a page of a Site's (ADR 0023), except to a page's
+# address saved outside the page ("Save link as"), which gets an explanation instead (#99).
 # No Cookie goes on: a Relay needs none, and a Site that fills the Relay's domain with cookies would
 # otherwise have iroh-relay refuse every other Host's Visitors (ADR 0021).
 request_header -Cookie
@@ -8,36 +9,27 @@ request_header -Cookie
 handle @iroh {
 	reverse_proxy 127.0.0.1:3340
 }
-# A page's address saved outside the page ("Save link as") never reaches the Host: only the page can
-# fetch a Site's files. The shell would save as an empty page, so the saved file says so instead
-# (#99). Chromium (Chrome, Brave) asks with Dest empty and Mode navigate; Firefox with Dest empty and
-# Mode no-cors, the Fetch spec's own for a download. A page visit is Dest document: the shell.
+# A page's address saved outside the page ("Save link as", told apart by its Fetch Metadata) never
+# reaches the Host: only the page can fetch a Site's files. The shell would save as an empty page,
+# so the saved file says so instead (#99). Chromium (Chrome, Brave) asks with Dest empty and Mode
+# navigate; Firefox with Dest empty and Mode no-cors, the Fetch spec's own for a download. A page
+# visit is Dest document: the shell. Safari sends no Fetch Metadata here, so it gets the shell.
 @saved {
-	not path /__tooob/* /tooob-sw.js */
+	not path /__tooob/* /tooob-sw.js
 	header Sec-Fetch-Dest empty
-	header Sec-Fetch-Mode navigate
-	header Sec-Fetch-Mode no-cors
+	header_regexp Sec-Fetch-Mode ^(navigate|no-cors)$
 }
 handle @saved {
 	header Cache-Control "no-store"
+	# A folder's address has no file name, and no Download link.
+	@folder path */
+	respond @folder <<TXT
+		This isn't {http.request.uri.path}. tooob can only fetch it from inside the page:
+		open the link in your browser.
+		TXT 200
 	respond <<TXT
 		This isn't {http.request.uri.path.file}. tooob can only fetch it from inside the page:
 		open the link in your browser and use ⬇ Download next to the file.
-		TXT 200
-}
-# A folder's address has no file name, and no Download link.
-@saved_folder {
-	path */
-	not path /__tooob/*
-	header Sec-Fetch-Dest empty
-	header Sec-Fetch-Mode navigate
-	header Sec-Fetch-Mode no-cors
-}
-handle @saved_folder {
-	header Cache-Control "no-store"
-	respond <<TXT
-		This isn't {http.request.uri.path}. tooob can only fetch it from inside the page:
-		open the link in your browser.
 		TXT 200
 }
 handle {
@@ -50,15 +42,15 @@ handle {
 	# elsewhere, and COOP's same-origin would break login popups.
 	header Origin-Agent-Cluster "?1"
 	header Cross-Origin-Opener-Policy "same-origin-allow-popups"
+	# A page's address saved outside the page is the explanation above: never answer one with the
+	# other from a cache.
+	header Vary "Sec-Fetch-Dest, Sec-Fetch-Mode"
 	# A page's own address, opened before the service worker is installed (a first visit), is the
 	# shell, which opens that page. A missing Bundle file stays a 404.
 	@page {
 		not path /__tooob/* /tooob-sw.js
 		not file
 	}
-	# The same address saved outside the page is the explanation above: never answer one with the
-	# other from a cache.
-	header @page Vary "Sec-Fetch-Dest, Sec-Fetch-Mode"
 	rewrite @page /index.html
 	file_server
 }
