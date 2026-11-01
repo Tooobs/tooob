@@ -18,6 +18,10 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
 - **`tooob start NAME`** starts a Host that `tooob stop` kept stopped, kept running again; with no
   NAME it lists them. `tooob ls` shows such a Host's AUTOSTART as `stopped` (`kept_stopped` in
   `--json`).
+- **A Host run in a terminal** prints its Invites in a block of their own, logs "still here" with
+  the bytes so far every 10 minutes of a Visit, and takes two keys while it's the terminal's
+  foreground job: `q` quits, `d` detaches (hands it to launchd or systemd, as `run -d`).
+  `tooob invites` has a header and aligned columns.
 
 ### Changed
 - **`run -d` and `share -d` replace `enable`,** and `stop` keeps a Host stopped, across logins and
