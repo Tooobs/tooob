@@ -24,6 +24,9 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
   `tooob invites` has a header and aligned columns.
 
 ### Changed
+- **Invite Links that don't work say why:** a cut-short or damaged link says so (and never reaches
+  the Host), and a used one says it may have been used in another browser, since each Invite opens
+  the Site in one browser.
 - **`run -d` and `share -d` replace `enable`,** and `stop` keeps a Host stopped, across logins and
   reboots, until it's started again; `rm` stops and removes a running or kept-running Host. `enable`
   and `disable` are removed: each says what to type instead (`tooob run NAME -d`, `tooob stop NAME`).
