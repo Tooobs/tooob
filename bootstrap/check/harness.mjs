@@ -284,6 +284,11 @@ export function tooob(args) {
   return execFileSync(TOOOB, args, { encoding: 'utf8', env: ENV }).trim();
 }
 
+/** The Visitor Key of NAME's first Visitor, from `tooob visitors --json`: its table has a header row. */
+export function visitorKey(name) {
+  return JSON.parse(tooob(['visitors', name, '--json']))[0].key;
+}
+
 /** Host `name`'s own log, as `tooob logs` shows it, without times: a line each. */
 export function logOf(name) {
   return tooob(['logs', name, '-n', 'all']).split('\n').map((l) => l.replace(/^\S+ \S+ {2}[^:]+: /, ''));

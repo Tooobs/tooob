@@ -258,7 +258,7 @@ test('an approve-first Invite waits, then opens by itself once the owner approve
   await page.goto(invite('mom', '--approve'));
   await h.pillSays(page, /Waiting for approval/, 20000);
 
-  const key = h.tooob(['visitors', name]).split(/\s+/)[0];
+  const key = h.visitorKey(name);
   h.tooob(['approve', name, key]);
   assert.match(await h.siteText(page), /label=mom/, 'the page opened by itself');
 });
@@ -357,7 +357,7 @@ test('a page waiting for approval survives the Host restarting', async ({ browse
   await h.pillSays(page, /Waiting for approval/, 20000);
 
   await restart(); // the page's connection drops while it's waiting
-  const key = h.tooob(['visitors', name]).split(/\s+/)[0];
+  const key = h.visitorKey(name);
   h.tooob(['approve', name, key]);
   assert.match(await h.siteText(page, 40000), /label=mom/, 'the page reconnected and opened by itself');
 });
@@ -390,7 +390,7 @@ test("two Sites through one Relay are two origins: neither can reach the other's
   assert.deepEqual(found.localStorage, {}, "Site Y read Site X's localStorage");
   assert.ok(!found.caches.includes('mine'), `Site Y saw Site X's caches: ${found.caches}`);
   assert.deepEqual(found.privateKeys, ['Ed25519'], 'only its own Visitor Key');
-  const visitorKey = (host) => h.tooob(['visitors', host.name]).split(/\s+/)[0];
+  const visitorKey = (host) => h.visitorKey(host.name);
   assert.notEqual(visitorKey(x), visitorKey(y), 'one Visitor Key for both Sites');
 });
 
@@ -863,7 +863,7 @@ test('a refused upload leaves the Direct Path carrying the next request', async 
   await page.goto(invite('mom'));
   await h.siteText(page);
   await h.pathIs(page, 'direct', 20000);
-  const key = h.tooob(['visitors', name]).split(/\s+/)[0];
+  const key = h.visitorKey(name);
   const frame = await (await page.$('iframe')).contentFrame();
 
   h.tooob(['block', name, key]); // refused before the Host reads the body
@@ -1131,7 +1131,7 @@ test("the tab's title follows the Site's, and is tooob before the Site has one",
   await h.pillSays(page, /Waiting for approval/, 20000);
   assert.equal(await page.title(), 'tooob', 'while waiting for approval');
 
-  h.tooob(['approve', host.name, h.tooob(['visitors', host.name]).split(/\s+/)[0]]);
+  h.tooob(['approve', host.name, h.visitorKey(host.name)]);
   assert.equal(await h.siteText(page), 'front page');
   await titleIs(page, 'Our holiday');
   const site = await siteFrame(page);
