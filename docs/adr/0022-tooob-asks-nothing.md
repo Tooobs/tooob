@@ -4,4 +4,6 @@ Supersedes the guided `tooob share` of #22. No `tooob` command asks a question, 
 
 One exception (amended 2026-10-30, ADR 0024): `tooob upgrade` asks before it installs a Release (`Install 0.2.0? [y/N]`), because replacing the command is the one step worth a confirmation. `--yes` skips the question, and without a terminal it refuses unless `--yes`.
 
+Reading a key isn't asking a question (amended 2026-11-01, #97): a Host run in a terminal reads `q` (stop) and `d` (keep it running in the background), only while it's the terminal's foreground job, and serves on the same whether a key comes or not; with `&`, or no terminal, it reads nothing.
+
 We rejected keeping the questions for people at a keyboard. A command that asks in one setting and not another has two behaviours to learn and test, a backgrounded job that asks a question is stopped by the shell without a word, and a question loop ("Who else?") gets between an Owner and a one-liner. Guided set-up for Normal people belongs in the tray app, not the command line.

@@ -347,3 +347,42 @@ async fn saving_usage_every_0s_is_refused() {
     let said = String::from_utf8_lossy(&out.stderr);
     assert!(said.contains("TOOOB_USAGE_SAVE_EVERY"), "{said}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn while_a_visit_lasts_the_log_says_every_so_often_that_the_visitor_is_still_here() {
+    let media = Media::start_with(&[
+        ("TOOOB_VISIT_GRACE", "1s"),
+        ("TOOOB_DIRECT_WAIT", "1s"),
+        ("TOOOB_STILL_HERE_EVERY", "2s"),
+    ])
+    .await;
+    let (jm, tab) = media.visitor("jm").await;
+    tab.get("/bytes/2300000").await.unwrap();
+    let still = format!("jm ({}) still here after ", short(&jm));
+    media.until_logged(&format!("{still}4 s"));
+    tab.close().await;
+    media.until_logged(&format!("jm ({}) left after ", short(&jm)));
+
+    let said = media.said();
+    let still: Vec<&String> = said.iter().filter(|l| l.starts_with(&still)).collect();
+    assert!(still.len() >= 2, "{said:#?}");
+    assert_eq!(
+        still[..2],
+        [
+            &format!(
+                "jm ({}) still here after 2 s · sent 2.3 MB so far",
+                short(&jm)
+            ),
+            &format!(
+                "jm ({}) still here after 4 s · sent 2.3 MB so far",
+                short(&jm)
+            ),
+        ],
+        "{said:#?}"
+    );
+    let at = &media.events("still_here")[0]["fields"];
+    assert_eq!(at["label"], "jm", "{at}");
+    assert_eq!(at["seconds"], 2, "{at}");
+    assert!(about(&at["sent"], 2_300_000), "{at}");
+    assert!(about(&at["received"], 0), "{at}");
+}

@@ -710,7 +710,7 @@ fn share_adds_a_host_named_after_the_folder_invites_and_runs_it_and_reuses_it_ne
     let shared = home.spawn(&[
         "share", path, "--relay", &relay.url, "--invite", "Alice", "--invite", "Bob",
     ]);
-    shared.until_it_says("Invite for Bob");
+    shared.until_it_says("    Bob · works for 7 days\n");
     shared.until_it_says("#invite=");
     let invites = home.ok(&["invites", "my-photos"]);
     assert!(
@@ -721,7 +721,7 @@ fn share_adds_a_host_named_after_the_folder_invites_and_runs_it_and_reuses_it_ne
     shared.stop();
 
     let again = home.spawn(&["share", path, "--invite", "Carol"]);
-    again.until_it_says("Invite for Carol to my-photos");
+    again.until_it_says("    Carol · works for 7 days\n");
     assert_eq!(home.shown("my-photos", "Host Key"), key, "the same Host");
     assert_eq!(home.ok(&["ls"]).lines().count(), 2, "{}", home.ok(&["ls"]));
     assert_eq!(
@@ -1880,7 +1880,7 @@ fn run_and_share_on_a_host_kept_running_never_start_a_second_copy_and_share_adds
         assert!(out.status.success(), "{args:?}: {}", stderr(&out));
         let said = stderr(&out);
         assert!(
-            said.contains(&format!("Invite for {invited} to photos"))
+            said.contains(&format!("\n    {invited} · works for 7 days\n"))
                 && said.ends_with(
                     "tooob: photos is already running in the background: `tooob logs photos -f` \
                      follows it, and `tooob stop photos` stops it\n"
@@ -1919,7 +1919,7 @@ fn share_d_adds_a_host_invites_and_keeps_it_running_and_again_once_its_stopped()
     assert!(out.status.success(), "{}", stderr(&out));
     let said = stderr(&out);
     assert!(
-        said.contains("Invite for Ann to ") && said.contains("is kept running now"),
+        said.contains("\n    Ann · works for 7 days\n") && said.contains("is kept running now"),
         "{said}"
     );
     assert!(String::from_utf8_lossy(&out.stdout).contains("/#invite="));

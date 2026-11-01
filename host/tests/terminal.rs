@@ -9,22 +9,85 @@ use std::{process::Command, time::Duration};
 use support::github::TestGitHub;
 use support::home::{Home, RELAY, TestRelay, a_folder, name_of};
 
-/// `program ARGS` in a terminal of its own, under the test's TOOOB_HOME.
+/// `program ARGS` in a terminal of its own, under the test's TOOOB_HOME. A `tooob` it runs finds
+/// only stand-ins for launchctl and systemctl, never the Owner's own: on `PATH` ahead of the rest,
+/// which a shell needs.
 fn spawn_in_terminal(home: &Home, program: &str, args: &[&str]) -> OsSession {
+    let path = format!("{}:/usr/bin:/bin", home.stand_ins().display());
+    spawn_in_terminal_with(home, program, args, &[("PATH", &path)])
+}
+
+/// `program ARGS` in a terminal of its own, with `env` set too.
+fn spawn_in_terminal_with(
+    home: &Home,
+    program: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> OsSession {
     let mut cmd = Command::new(program);
     cmd.args(args)
         .env("TOOOB_HOME", home.0.path())
         .env("HOME", home.0.path())
         .env("TERM", "xterm-256color")
-        .envs(home.releases_env());
+        .env_remove("TOOOB_AUTOSTART")
+        .envs(home.releases_env())
+        .envs(env.iter().copied());
     let mut session = Session::spawn(cmd).unwrap();
     session.set_expect_timeout(Some(Duration::from_secs(30)));
     session
 }
 
-/// `tooob ARGS` in a terminal of its own.
+/// `tooob ARGS` in a terminal of its own, with only stand-ins for launchctl and systemctl on its
+/// `PATH`.
 fn in_terminal(home: &Home, args: &[&str]) -> OsSession {
-    spawn_in_terminal(home, env!("CARGO_BIN_EXE_tooob"), args)
+    let path = home.stand_ins();
+    let path = path.to_str().unwrap();
+    spawn_in_terminal_with(home, env!("CARGO_BIN_EXE_tooob"), args, &[("PATH", path)])
+}
+
+/// What a terminal showed, as lines: its `\r\n`s as `\n`.
+fn shown(said: &[u8]) -> String {
+    String::from_utf8_lossy(said).replace("\r\n", "\n")
+}
+
+/// The hint a Host run in a terminal shows under what it printed as it started.
+const KEYS: &str = "(q) quit · (d) detach: keep it running in the background";
+
+/// An interactive bash in a terminal of its own, its prompt `$ `.
+fn bash(home: &Home) -> OsSession {
+    let mut sh = spawn_in_terminal(home, "/bin/bash", &["--norc", "--noprofile", "-i"]);
+    sh.send_line("PS1='$ '; stty echo").unwrap();
+    sh.expect("$ ").unwrap();
+    sh
+}
+
+/// `tooob ARGS` as a line for `bash`, with only stand-ins for launchctl and systemctl on its
+/// `PATH`, never the Owner's own.
+fn tooob_line(home: &Home, args: &str) -> String {
+    format!(
+        "PATH='{}' '{}' {args}",
+        home.stand_ins().display(),
+        env!("CARGO_BIN_EXE_tooob")
+    )
+}
+
+/// What `stty -a` says, in the shell `sh`, of the terminal's line editing and echo: as a shell
+/// leaves them, `icanon` and `echo`, or `-icanon` and `-echo` while a program reads single keys.
+fn line_editing(sh: &mut OsSession) -> (String, String) {
+    sh.send_line("stty -a | tr ' ' '\\n' | grep -E '^-?(icanon|echo)$' | tr '\\n' ' '; echo EN''D")
+        .unwrap();
+    let said = sh.expect("END\r\n").unwrap();
+    let said = shown(said.before());
+    sh.expect("$ ").unwrap(); // its prompt, so what's expected next comes after it
+    let said = said.lines().last().unwrap_or_default().to_string();
+    let words: Vec<&str> = said.split_whitespace().collect();
+    let find = |what: &str| {
+        words
+            .iter()
+            .find(|w| w.trim_start_matches('-') == what)
+            .map_or(String::new(), |w| w.to_string())
+    };
+    (find("icanon"), find("echo"))
 }
 
 /// Run `tooob ARGS` in a terminal, sending it nothing: everything it said, once it has ended,
@@ -46,7 +109,8 @@ fn host_name(folder: &std::path::Path) -> String {
 }
 
 #[test]
-fn share_with_everything_given_asks_nothing_prints_the_link_and_serves_until_ctrl_c() {
+fn share_with_everything_given_asks_nothing_prints_its_invites_and_the_keys_and_serves_until_ctrl_c()
+ {
     let home = Home::new();
     let folder = a_folder();
     let name = host_name(folder.path());
@@ -59,19 +123,34 @@ fn share_with_everything_given_asks_nothing_prints_the_link_and_serves_until_ctr
         &relay.url,
         "--invite",
         "Alice",
+        "--invite",
+        "Bob",
         "--expires",
         "1d",
     ];
     let mut t = in_terminal(&home, &args);
 
-    let said = t
-        .expect(format!("Invite for Alice to {name}, works for 1 day"))
-        .unwrap();
-    let said = String::from_utf8_lossy(said.before()).into_owned();
+    let said = t.expect(KEYS).unwrap();
+    let said = shown(said.before());
     assert!(said.contains(&format!("{name}: serving")), "{said}");
     assert!(!said.contains('?'), "asked something: {said}");
-    t.expect(".localhost:").unwrap();
-    t.expect("/#invite=").unwrap();
+    let block = &said[said.find("\n\n  Invites").expect(&said)..];
+    let lines: Vec<&str> = block.split('\n').collect();
+    let link = |line: &str| {
+        line.starts_with("    http://")
+            && line.contains(".localhost:")
+            && line.contains("/#invite=")
+    };
+    assert_eq!(lines.len(), 11, "{block:?}");
+    assert_eq!(
+        lines[..4],
+        ["", "", "  Invites · each opens in one browser", ""]
+    );
+    assert_eq!(lines[4], "    Alice · works for 1 day", "{block:?}");
+    assert!(link(lines[5]), "{block:?}");
+    assert_eq!(lines[6..8], ["", "    Bob · works for 1 day"], "{block:?}");
+    assert!(link(lines[8]), "{block:?}");
+    assert_eq!(lines[9..], ["", ""], "{block:?}");
     assert!(home.row(&name).contains("running"));
     assert!(home.ok(&["invites", &name]).contains("Alice"));
 
@@ -82,32 +161,254 @@ fn share_with_everything_given_asks_nothing_prints_the_link_and_serves_until_ctr
 }
 
 #[test]
-fn share_started_with_an_ampersand_prints_the_link_and_keeps_serving_in_the_background() {
+fn q_stops_a_host_run_in_the_terminal_cleanly_and_gives_the_terminal_back_as_it_was() {
+    let home = Home::new();
+    let folder = a_folder();
+    home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
+    let mut sh = bash(&home);
+    let before = line_editing(&mut sh);
+    assert_eq!(before, ("icanon".into(), "echo".into()));
+
+    sh.send_line(tooob_line(&home, "run photos")).unwrap();
+    let said = sh.expect(KEYS).unwrap();
+    assert!(shown(said.before()).contains("photos: serving"));
+    assert!(home.row("photos").contains("running"));
+    sh.send("x").unwrap(); // not a key it reads: nothing happens
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(home.row("photos").contains("running"));
+    sh.send("q").unwrap();
+    let said = sh.expect("$ ").unwrap();
+    let said = shown(said.before());
+    assert!(said.contains("photos: stopped"), "{said}");
+    assert!(!said.contains('x'), "x was echoed: {said}");
+    assert!(home.row("photos").contains("stopped"));
+    sh.send_line("echo status $?").unwrap();
+    sh.expect("status 0").unwrap();
+    assert_eq!(line_editing(&mut sh), before);
+    sh.send_line("exit").unwrap();
+    sh.expect(expectrl::Eof).unwrap();
+}
+
+#[test]
+fn a_host_suspended_with_ctrl_z_or_stopped_with_ctrl_c_leaves_the_terminal_as_it_was() {
+    let home = Home::new();
+    let folder = a_folder();
+    home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
+    let mut sh = bash(&home);
+    let before = line_editing(&mut sh);
+    sh.send_line(tooob_line(&home, "run photos")).unwrap();
+    sh.expect(KEYS).unwrap();
+
+    sh.send("\x1a").unwrap(); // Ctrl-Z
+    sh.expect("Stopped").unwrap();
+    sh.expect("$ ").unwrap();
+    assert_eq!(line_editing(&mut sh), before, "suspended");
+    sh.send_line("fg").unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+    sh.send("x").unwrap(); // read as a key again, not echoed
+    std::thread::sleep(Duration::from_millis(300));
+    sh.send("\x03").unwrap(); // Ctrl-C
+    let said = shown(sh.expect("$ ").unwrap().before());
+    assert!(said.contains("photos: stopped"), "{said}");
+    assert!(!said.contains('x'), "x was echoed: {said}");
+    assert_eq!(line_editing(&mut sh), before, "stopped");
+    assert!(home.row("photos").contains("stopped"));
+    sh.send_line("exit").unwrap();
+    sh.expect(expectrl::Eof).unwrap();
+}
+
+#[test]
+fn share_started_with_an_ampersand_prints_the_link_reads_no_keys_and_keeps_serving_in_the_background()
+ {
     let home = Home::new();
     let folder = a_folder();
     let name = host_name(folder.path());
     let relay = TestRelay::start();
-    let mut sh = spawn_in_terminal(&home, "/bin/bash", &["--norc", "--noprofile", "-i"]);
-    sh.send_line("PS1='$ '").unwrap();
+    let mut sh = bash(&home);
 
-    sh.send_line(format!(
-        "'{}' share '{}' --relay {} --invite Alice &",
-        env!("CARGO_BIN_EXE_tooob"),
+    let share = format!(
+        "share '{}' --relay {} --invite Alice &",
         folder.path().display(),
         relay.url
-    ))
-    .unwrap();
+    );
+    sh.send_line(tooob_line(&home, &share)).unwrap();
     sh.expect("/#invite=").unwrap();
     // A job that read the terminal from the background would be stopped by the shell.
     sh.send_line("sleep 1; jobs -l").unwrap();
-    sh.expect("Running").unwrap();
+    let said = sh.expect("Running").unwrap();
     assert!(home.row(&name).contains("running"));
     assert!(home.ok(&["invites", &name]).contains("Alice"));
+    // The shell's to read: q is a command to it, and d too.
+    sh.send_line("q; d; echo after-keys; jobs -l").unwrap();
+    let said = [
+        shown(said.before()),
+        shown(sh.expect("Running").unwrap().before()),
+    ]
+    .concat();
+    assert!(said.contains("after-keys"), "{said}");
+    assert!(!said.contains(KEYS), "no keys to show: {said}");
+    assert!(home.row(&name).contains("running"));
+    let (icanon, echo) = line_editing(&mut sh);
+    assert_eq!((icanon.as_str(), echo.as_str()), ("icanon", "echo"));
 
-    sh.send_line("kill %1").unwrap();
+    // Brought to the foreground, it reads them: q stops it.
+    sh.send_line("fg").unwrap();
+    std::thread::sleep(Duration::from_secs(1));
+    sh.send("q").unwrap();
     sh.expect(format!("{name}: stopped")).unwrap();
+    sh.expect("$ ").unwrap();
+    assert!(home.row(&name).contains("stopped"));
+    assert_eq!(line_editing(&mut sh), ("icanon".into(), "echo".into()));
     sh.send_line("exit").unwrap();
     sh.expect(expectrl::Eof).unwrap();
+}
+
+/// Host photos, sharing a folder on this network only, with tooob where the install script puts
+/// it, as keeping it running needs.
+fn photos(home: &Home) -> tempfile::TempDir {
+    let folder = a_folder();
+    home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
+    home.install_tooob();
+    folder
+}
+
+/// Where photos' Autostart entry is, for launchd.
+fn launch_agent(home: &Home) -> std::path::PathBuf {
+    home.0
+        .path()
+        .join("Library/LaunchAgents/net.tooobs.photos.plist")
+}
+
+#[test]
+fn d_hands_a_host_run_in_the_terminal_to_its_service_manager_says_so_in_a_line_and_gives_the_terminal_back()
+ {
+    let home = Home::new();
+    let _folder = photos(&home);
+    // What `tooob ls` says of photos as launchd is asked to start it: stopped here first.
+    let at_bootstrap = home.0.path().join("ls-at-bootstrap");
+    home.stand_in(
+        "launchctl",
+        &format!(
+            "'{}' ls > '{}'",
+            env!("CARGO_BIN_EXE_tooob"),
+            at_bootstrap.display()
+        ),
+    );
+    let mut sh = bash(&home);
+    sh.send_line(tooob_line(&home, "run photos")).unwrap();
+    sh.expect(KEYS).unwrap();
+
+    sh.send("d").unwrap();
+    let said = shown(sh.expect("$ ").unwrap().before());
+    let after_stopped = &said[said.find("photos: stopped\n").expect(&said)..];
+    assert_eq!(
+        after_stopped,
+        "photos: stopped\ntooob: photos is kept running now, and after logins, reboots and \
+         crashes: `tooob logs photos -f` follows it, and `tooob stop photos` stops it.\n"
+    );
+    sh.send_line("echo status $?").unwrap();
+    sh.expect("status 0").unwrap();
+    assert_eq!(line_editing(&mut sh), ("icanon".into(), "echo".into()));
+    let uid = unsafe { libc::getuid() };
+    let agent = launch_agent(&home);
+    assert_eq!(
+        home.calls("launchctl"),
+        [format!("bootstrap gui/{uid} {}", agent.display())]
+    );
+    assert!(agent.exists());
+    let ls = std::fs::read_to_string(&at_bootstrap).unwrap();
+    let row = ls.lines().find(|l| l.starts_with("photos ")).expect(&ls);
+    assert_eq!(row.split_whitespace().nth(1), Some("stopped"), "{ls}");
+    sh.send_line("exit").unwrap();
+    sh.expect(expectrl::Eof).unwrap();
+}
+
+#[test]
+fn d_where_the_host_cant_be_kept_running_says_what_to_do_and_keeps_serving() {
+    let home = Home::new();
+    let folder = a_folder();
+    home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
+    let tooob = home.0.path().join(".local/bin/tooob");
+    for (stand_in, says) in [
+        (
+            None,
+            "tooob: keeping photos running needs systemd or launchd, and this system has \
+             neither.\n  Have your service manager run `~/.local/bin/tooob run photos` as you, \
+             restarting it on failure.\n"
+                .to_string(),
+        ),
+        (
+            Some("launchctl"),
+            format!(
+                "tooob: photos would start from {}, where the install script puts tooob, and it \
+                 isn't there: install tooob, or put this one there:\n",
+                tooob.display()
+            ),
+        ),
+    ] {
+        if let Some(tool) = stand_in {
+            home.stand_in(tool, "");
+        }
+        let mut t = in_terminal(&home, &["run", "photos"]);
+        t.expect(KEYS).unwrap();
+        t.send("d").unwrap();
+        let said = t.expect(says.replace('\n', "\r\n").as_str()).unwrap();
+        let said = shown(said.before());
+        assert!(!said.contains("stopped"), "{said}");
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(home.row("photos").contains("running"), "{says}");
+        assert!(home.calls("launchctl").is_empty());
+        assert!(!launch_agent(&home).exists());
+
+        t.send("q").unwrap();
+        t.expect("photos: stopped").unwrap();
+        t.expect(expectrl::Eof).unwrap();
+        assert!(matches!(
+            t.get_process().wait().unwrap(),
+            WaitStatus::Exited(_, 0)
+        ));
+    }
+}
+
+#[test]
+fn d_whose_service_manager_then_refuses_serves_here_again_saying_why() {
+    let home = Home::new();
+    let _folder = photos(&home);
+    home.stand_in(
+        "launchctl",
+        "case \"$*\" in *bootstrap*) echo 'no session' >&2; exit 5;; esac",
+    );
+    let mut t = in_terminal(&home, &["run", "photos"]);
+    t.expect(KEYS).unwrap();
+
+    t.send("d").unwrap();
+    t.expect("photos: stopped").unwrap();
+    let said = shown(t.expect(KEYS).unwrap().before());
+    let lines: Vec<&str> = said.lines().filter(|l| !l.is_empty()).collect();
+    assert!(
+        lines[0].contains("photos: warning: it wasn't kept running ("),
+        "{said}"
+    );
+    assert!(
+        lines[0].contains("no session") && lines[0].ends_with("), so it serves here again"),
+        "{said}"
+    );
+    assert!(said.contains("photos: serving"), "{said}");
+    assert!(home.row("photos").contains("running"));
+    assert!(!launch_agent(&home).exists(), "nothing left behind");
+    assert!(
+        home.row("photos").contains(" no "),
+        "{}",
+        home.row("photos")
+    );
+
+    t.send("q").unwrap();
+    t.expect("photos: stopped").unwrap();
+    t.expect(expectrl::Eof).unwrap();
+    assert!(matches!(
+        t.get_process().wait().unwrap(),
+        WaitStatus::Exited(_, 0)
+    ));
 }
 
 #[test]

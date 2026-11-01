@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 use std::{collections::HashMap, io::IsTerminal, path::Path, time::Duration};
 use tokio::signal::unix::{SignalKind, signal};
 use tooob::access::InviteOptions;
-use tooob::autostart;
+use tooob::autostart::{self, Keeper};
 use tooob::awake::Awake;
 use tooob::bootstrap::{self, BootstrapVersion, Problem, Watch};
 use tooob::control::{Client, ControlError};
@@ -15,6 +15,7 @@ use tooob::hosts::{
     Entry, Home, NO_RELAY, RUN_YOUR_OWN, check_relay, name_char, no_invite_links, no_key_address,
     quote,
 };
+use tooob::keys::{self, Key, Keys};
 use tooob::log::{self, Log, Logged};
 use tooob::upgrade::{self, Relays, ReleaseNumber, Releases};
 use tooob::{Network, amount, lasting, seconds};
@@ -29,9 +30,10 @@ const USAGE: &str = "usage:
   tooob add NAME TARGET (--relay URL | --local)
                                                   make a Host; TARGET is a folder or file to share
                                                   read-only, or HOST:PORT for a web app
-  tooob run NAME [-d]                             serve it here, until Ctrl-C; -d (--detach) keeps
-                                                  it running instead, now and after logins,
-                                                  reboots and crashes: launchd or systemd runs it
+  tooob run NAME [-d]                             serve it here, until Ctrl-C or q; d there, or
+                                                  -d (--detach), keeps it running instead, now and
+                                                  after logins, reboots and crashes: launchd or
+                                                  systemd runs it
   tooob share PATH [--invite LABEL]... [--expires 7d] [--approve] [--name NAME]
                    [--relay URL | --local] [-d]
                                                   add a Host for PATH (or reuse its Host), invite
@@ -323,10 +325,7 @@ async fn share(
     };
     // Its service manager runs it, or is starting it: the Invites are made here, through the Host
     // or in its state, and never by a second copy of it (#96).
-    let client = host.client();
-    for who in &who {
-        invite_given(&host, &client, who).await?;
-    }
+    invite_given(&host, &host.client(), &who).await?;
     say(&said);
     Ok(())
 }
@@ -615,10 +614,8 @@ async fn owner_command(
             let invites = client.invites().await.map_err(refused)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&invites)?);
-            } else {
-                for i in invites {
-                    println!("{}  {:<20} expires {}", i.id, i.label, i.expires_at);
-                }
+            } else if !invites.is_empty() {
+                print_invites(&invites);
             }
         }
         "block" => client.block(&said()?).await.map_err(refused)?,
@@ -628,6 +625,24 @@ async fn owner_command(
         _ => unreachable!(),
     }
     Ok(())
+}
+
+/// `tooob invites NAME`: each unused Invite, its id, who it's for and when it expires, under a
+/// header, a column each.
+fn print_invites(invites: &[tooob::access::InviteInfo]) {
+    let rows: Vec<[String; 3]> = std::iter::once(["ID".into(), "LABEL".into(), "EXPIRES".into()])
+        .chain(
+            invites
+                .iter()
+                .map(|i| [i.id.clone(), i.label.clone(), i.expires_at.to_string()]),
+        )
+        .collect();
+    // As wide as its widest, in characters: a Label can be "Mamá".
+    let widest = |at: usize| rows.iter().map(|r| r[at].chars().count()).max();
+    let (id, label) = (widest(0).unwrap_or(0), widest(1).unwrap_or(0));
+    for [i, l, expires] in &rows {
+        println!("{i:<id$}  {l:<label$}  {expires}");
+    }
 }
 
 /// `tooob visitors NAME`: each Visitor, where they stand, and what they've used since they first
@@ -774,13 +789,23 @@ fn invite_options(flags: &Flags) -> Result<InviteOptions> {
     })
 }
 
-/// Make an Invite and print its link, alone on stdout so a script can take it. The Key Address
-/// comes first: without one, no Invite is made that nobody would have a link for.
+/// Make an Invite and print its link, alone on stdout so a script can take it.
 async fn invite(host: &Entry, client: &Client, label: &str, options: InviteOptions) -> Result<()> {
+    println!("{}", invite_link(host, client, label, options).await?);
+    Ok(())
+}
+
+/// Make an Invite; its link. The Key Address comes first: without one, no Invite is made that
+/// nobody would have a link for.
+async fn invite_link(
+    host: &Entry,
+    client: &Client,
+    label: &str,
+    options: InviteOptions,
+) -> Result<String> {
     host.key_address()?;
     let invite = client.invite(label, options).await.map_err(refused(host))?;
-    println!("{}", host.invite_link(&invite.token)?);
-    Ok(())
+    host.invite_link(&invite.token)
 }
 
 /// How long an Invite works, in words: "works for 7 days".
@@ -796,7 +821,32 @@ fn lasts(options: &InviteOptions) -> String {
 /// `tooob run`: serve a Host here, holding the lock on its state, with its settings as its file
 /// says now. One process per Host: a second is refused, with the first one's pid.
 /// `state` is its Home's state folder, where the box's release checks are kept.
+///
+/// `d` in its terminal hands it to its service manager, as `run -d` does, once it has stopped
+/// serving here: its lock is let go first, for the service manager's to take. Should the service
+/// manager refuse it then, it serves here again rather than not at all, saying why.
 async fn serve(host: &Entry, state: &Path, invitees: Vec<Invitee>) -> Result<()> {
+    let mut invitees = invitees;
+    loop {
+        let Some(keeper) = serve_once(host, state, std::mem::take(&mut invitees)).await? else {
+            return Ok(());
+        };
+        match keeper.keep_running(host) {
+            // Its first line says it's kept running, and how to follow and stop it: enough here.
+            Ok(said) => {
+                say(&said[..1]);
+                return Ok(());
+            }
+            Err(e) => log::warning(&format!(
+                "it wasn't kept running ({e:#}), so it serves here again"
+            )),
+        }
+    }
+}
+
+/// `tooob run`, once: serve until it stops, or until `d` detaches it, when it's what keeps it
+/// running that's returned, with its lock let go.
+async fn serve_once(host: &Entry, state: &Path, invitees: Vec<Invitee>) -> Result<Option<Keeper>> {
     if autostart::is_on(host) && !autostart::started_by_its_entry(host) {
         bail!(
             "{0} is kept running in the background, so its service manager runs it: `tooob logs \
@@ -823,7 +873,7 @@ async fn serve(host: &Entry, state: &Path, invitees: Vec<Invitee>) -> Result<()>
     }
     log.take_dying_words();
     match serve_locked(host, state, invitees).await {
-        Ok(()) => Ok(()),
+        Ok(detach) => Ok(detach),
         Err(e) => {
             log.event("error", Default::default(), &format!("{e:#}"));
             Err(Logged.into())
@@ -831,8 +881,13 @@ async fn serve(host: &Entry, state: &Path, invitees: Vec<Invitee>) -> Result<()>
     }
 }
 
-/// `tooob run`, holding the lock on its state, with its log kept.
-async fn serve_locked(host: &Entry, state: &Path, invitees: Vec<Invitee>) -> Result<()> {
+/// `tooob run`, holding the lock on its state, with its log kept; what keeps it running, once
+/// `d` detaches it.
+async fn serve_locked(
+    host: &Entry,
+    state: &Path,
+    invitees: Vec<Invitee>,
+) -> Result<Option<Keeper>> {
     let site = host.settings.site()?;
     let network = host
         .settings
@@ -881,8 +936,10 @@ fn every(var: &str, default: Duration) -> Result<Duration> {
 }
 
 /// Run the Host in this process until it's told to stop: Ctrl-C, SIGTERM from Docker or a
-/// service manager, SIGHUP from a closing terminal, or the Owner (`tooob stop`). Stopping cleanly
-/// closes every Visitor's connection, so their browsers know at once. What it says goes in its log.
+/// service manager, SIGHUP from a closing terminal, the Owner (`tooob stop`), or `q` in its
+/// terminal; or until `d` there detaches it, when it's what keeps it running that's returned.
+/// Stopping cleanly closes every Visitor's connection, so their browsers know at once. What it
+/// says goes in its log.
 async fn serve_here(
     host: &Entry,
     state: &Path,
@@ -890,7 +947,7 @@ async fn serve_here(
     network: Network,
     bootstrap: Option<Result<BootstrapVersion, Problem>>,
     invitees: Vec<Invitee>,
-) -> Result<()> {
+) -> Result<Option<Keeper>> {
     let check_every = check_every()?;
     let release_check_every = release_check_every()?;
     // Listening from before the Host starts, so a stop while it's still coming up is clean too.
@@ -958,6 +1015,7 @@ async fn serve_here(
             log::warning("not on its Relay yet, so Visitors' browsers can't reach it for now");
         }
     };
+    let mut detach = None;
     let stopped_early = tokio::select! {
         _ = online => false,
         _ = &mut signals => true,
@@ -977,13 +1035,8 @@ async fn serve_here(
         }
         // The socket only: this process holds the lock, and taking it again here would release it.
         let client = Client::new(&host.state_dir);
-        for who in &invitees {
-            invite_given(host, &client, who).await?;
-        }
-        tokio::select! {
-            _ = &mut signals => {}
-            _ = running.stop_requested() => {}
-        }
+        invite_given(host, &client, &invitees).await?;
+        detach = until_stopped(host, &running, &mut signals).await;
     }
     // Bounded, whatever a Visitor or the Site is doing: never hang on the way out.
     if tokio::time::timeout(Duration::from_secs(5), running.shutdown())
@@ -993,23 +1046,82 @@ async fn serve_here(
         log::warning("didn't stop cleanly within 5 s");
     }
     log::event("stopped", Default::default(), "stopped");
-    Ok(())
+    Ok(detach)
 }
 
-/// Make the Invite `share` was given, saying who it's for and for how long.
-async fn invite_given(host: &Entry, client: &Client, who: &Invitee) -> Result<()> {
-    let options = InviteOptions {
-        first_visit_approval: who.approve,
-        expires_in: Some(who.expires_in),
-        ..Default::default()
+/// What a Host run in a terminal shows under what it printed as it started, when it reads keys.
+const KEYS: &str = "(q) quit · (d) detach: keep it running in the background";
+
+/// Serve until the Host is told to stop: by a signal, the Owner (`tooob stop`), or in its
+/// terminal, `q`; or until `d` there detaches it, when it can be kept running: then what keeps it
+/// running. Keys are read only while it's its terminal's foreground job, and never for its service
+/// manager's.
+async fn until_stopped(
+    host: &Entry,
+    running: &Host,
+    signals: &mut std::pin::Pin<&mut impl std::future::Future<Output = ()>>,
+) -> Option<Keeper> {
+    let mut keys = match autostart::started_by_its_entry(host) {
+        true => None,
+        false => Keys::read(),
     };
-    eprintln!(
-        "  Invite for {} to {}, {}:",
-        who.label,
-        host.name,
-        lasts(&options)
-    );
-    invite(host, client, &who.label, options).await
+    if keys.is_some() && keys::in_the_foreground() {
+        eprintln!("{KEYS}");
+    }
+    let stop = running.stop_requested();
+    tokio::pin!(stop);
+    loop {
+        let key = async {
+            match keys.as_mut() {
+                Some(keys) => keys.next().await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            _ = &mut *signals => return None,
+            _ = &mut stop => return None,
+            key = key => match key {
+                Key::Quit => return None,
+                // Checked before it stops serving here: when it can't be kept running, it serves
+                // on, saying why.
+                Key::Detach => match autostart::require_keeping_running(&host.name) {
+                    Ok(keeper) => return Some(keeper),
+                    Err(e) => eprintln!("tooob: {e:#}"),
+                },
+            },
+        }
+    }
+}
+
+/// Make the Invites `share` was given, then print them in a block of their own, a blank line
+/// before and after: who each is for and for how long, then its link on a line of its own, alone
+/// on stdout so a script can take it. Nothing when there are none.
+async fn invite_given(host: &Entry, client: &Client, who: &[Invitee]) -> Result<()> {
+    let mut made = Vec::new();
+    for who in who {
+        let options = InviteOptions {
+            first_visit_approval: who.approve,
+            expires_in: Some(who.expires_in),
+            ..Default::default()
+        };
+        let lasts = lasts(&options);
+        made.push((
+            &who.label,
+            lasts,
+            invite_link(host, client, &who.label, options).await?,
+        ));
+    }
+    if made.is_empty() {
+        return Ok(());
+    }
+    eprintln!("\n  Invites · each opens in one browser");
+    for (label, lasts, link) in made {
+        eprintln!("\n    {label} · {lasts}");
+        eprint!("    ");
+        println!("{link}");
+    }
+    eprintln!();
+    Ok(())
 }
 
 /// Tell the Owner `lines`, a line each.

@@ -118,3 +118,39 @@ async fn an_absurd_expiry_is_a_bad_duration_not_a_crash() {
     );
     assert_eq!(stdout(&out), "");
 }
+
+#[test]
+fn invites_lists_each_unused_invite_under_a_header_in_aligned_columns() {
+    let home = Home::new();
+    let folder = tempfile::tempdir().unwrap();
+    home.add_naming(
+        "photos",
+        folder.path().to_str().unwrap(),
+        support::home::RELAY,
+    );
+    home.ok(&["invite", "photos", "jm"]);
+    home.ok(&["invite", "photos", "Dave's phone", "--expires", "1h"]);
+
+    let listed = home.ok(&["invites", "photos"]);
+    let lines: Vec<&str> = listed.lines().collect();
+    assert_eq!(lines.len(), 3, "{listed}");
+    let header: Vec<&str> = lines[0].split_whitespace().collect();
+    assert_eq!(header, ["ID", "LABEL", "EXPIRES"], "{listed}");
+    let (label_at, expires_at) = (
+        lines[0].find("LABEL").unwrap(),
+        lines[0].find("EXPIRES").unwrap(),
+    );
+    let jm = lines.iter().find(|l| l.contains("jm")).expect(&listed);
+    let dave = lines
+        .iter()
+        .find(|l| l.contains("Dave's phone"))
+        .expect(&listed);
+    for row in [jm, dave] {
+        assert_eq!(row.find(['j', 'D']), Some(label_at), "{listed}");
+        assert!(
+            row[expires_at..].starts_with(|c: char| c.is_ascii_digit()),
+            "{listed}"
+        );
+        assert!(row[..label_at].trim().len() >= 8, "an id first: {listed}");
+    }
+}

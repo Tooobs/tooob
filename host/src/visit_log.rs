@@ -33,6 +33,10 @@ const DIRECT_WAIT: Duration = Duration::from_secs(10);
 /// closed is never said to have moved.
 const UNNOTICED: Duration = Duration::from_secs(45);
 
+/// How often the log says a Visitor is still here, while their Visit lasts: every 10 minutes, or
+/// as `TOOOB_STILL_HERE_EVERY` says (`1s`), which tests use.
+const STILL_HERE: Duration = Duration::from_secs(10 * 60);
+
 /// How many devices refused within the grace the Host names one by one; past that, a line for
 /// all the rest each grace, so a stranger minting Visitor Keys can't fill its memory or its log.
 /// `TOOOB_REFUSED_CAP` says otherwise, which tests use.
@@ -107,6 +111,7 @@ impl std::fmt::Debug for Visits {
 struct Shared {
     grace: Duration,
     direct_wait: Duration,
+    still_here: Duration,
     refused_cap: usize,
     /// Its Visitors' Labels, as they are when the log names them, and whether they've been in.
     access: Arc<Mutex<Access>>,
@@ -151,12 +156,15 @@ struct Visit {
     /// Its Visitor's meter for this run, and what was on it when the Visit started.
     meter: Arc<Meter>,
     at_start: Used,
+    /// How many times the log has said they're still here, one each `still_here` since it started.
+    still_said: u32,
 }
 
 /// What the log is to say of a Visit.
 enum Said {
     GotIn { first: bool, path: Path },
     Moved(Path),
+    StillHere { after: Duration, used: Used },
     Left { stayed: Duration, used: Used },
 }
 
@@ -186,8 +194,31 @@ impl Visit {
     }
 
     /// What has settled of it at `now`, to say; when to look again (None: when it changes); and
-    /// whether it's over.
+    /// whether it's over. While its Visitor is connected, once its getting in is said, that
+    /// they're still here, each `still_here` since it started.
     fn settle(&mut self, now: Instant, shared: &Shared) -> (Vec<Said>, Option<Instant>, bool) {
+        let (mut says, next, over) = self.settle_path(now, shared);
+        if over || self.connections == 0 || self.said.is_none() {
+            return (says, next, over);
+        }
+        let every = shared.still_here;
+        if self.started + every * (self.still_said + 1) <= now {
+            let times = now.saturating_duration_since(self.started).as_nanos() / every.as_nanos();
+            self.still_said = u32::try_from(times).unwrap_or(u32::MAX);
+            let after = every * self.still_said;
+            let used = self.used();
+            says.push(Said::StillHere { after, used });
+        }
+        let still = self.started + every * (self.still_said + 1);
+        (
+            says,
+            Some(next.map_or(still, |next| next.min(still))),
+            false,
+        )
+    }
+
+    /// What has settled of its getting in, its path and its end at `now`, as `settle`.
+    fn settle_path(&mut self, now: Instant, shared: &Shared) -> (Vec<Said>, Option<Instant>, bool) {
         let mut says = Vec::new();
         if self.connections == 0 {
             // Its path isn't news while nobody's connected: a tab that closed took it.
@@ -249,6 +280,10 @@ impl Visits {
         Ok(Visits(Arc::new(Shared {
             grace: wait("TOOOB_VISIT_GRACE", GRACE)?,
             direct_wait: wait("TOOOB_DIRECT_WAIT", DIRECT_WAIT)?,
+            still_here: match wait("TOOOB_STILL_HERE_EVERY", STILL_HERE)? {
+                Duration::ZERO => anyhow::bail!("TOOOB_STILL_HERE_EVERY can't be 0"),
+                every => every,
+            },
             refused_cap,
             access,
             usage,
@@ -374,6 +409,16 @@ impl Visits {
                     fields.extend(path.fields());
                     ("path", format!("moved to {}", path.said()))
                 }
+                Said::StillHere { after, used } => {
+                    fields.insert("seconds".into(), after.as_secs().into());
+                    fields.insert("sent".into(), used.sent.into());
+                    fields.insert("received".into(), used.received.into());
+                    let (after, sent) = (for_how_long(after), crate::amount(used.sent));
+                    (
+                        "still_here",
+                        format!("still here after {after} · sent {sent} so far"),
+                    )
+                }
                 Said::Left { stayed, used } => {
                     fields.insert("seconds".into(), stayed.as_secs().into());
                     fields.insert("sent".into(), used.sent.into());
@@ -493,6 +538,7 @@ impl Presence {
                 nudge: nudge.clone(),
                 meter,
                 at_start,
+                still_said: 0,
             },
         );
         drop(state);
