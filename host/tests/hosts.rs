@@ -1334,10 +1334,7 @@ fn stop_on_a_host_kept_running_stops_it_and_keeps_it_stopped_until_start() {
         // Nothing its service manager loads at login or boot.
         assert!(entries(&home).is_empty(), "{tool}: {:?}", entries(&home));
         let row = home.row("photos");
-        assert!(
-            row.contains("stopped") && row.contains(" no "),
-            "{tool}: {row}"
-        );
+        assert!(autostart_column(&row) == "stopped", "{tool}: {row}");
         assert_eq!(
             home.shown("photos", "Autostart"),
             "no, kept stopped: `tooob start photos` starts it again",
@@ -1386,8 +1383,8 @@ fn start_after_stop_runs_it_again_the_way_it_ran_through_its_service_manager_and
         home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
         home.install_tooob();
         home.stand_in(tool, "");
-        // Kept running with the release check off: `start` brings it back as it ran, not as a
-        // `-d` typed now would write it.
+        // Kept running with the release check off, which `start` keeps though it isn't typed
+        // with it.
         let out = home.tooob_with(&["run", "photos", "-d"], &[("TOOOB_NO_UPDATE_CHECK", "1")]);
         assert!(out.status.success(), "{tool}: {}", stderr(&out));
         let entry = entries(&home)[0].clone();
@@ -1597,13 +1594,158 @@ fn a_start_its_service_manager_refuses_leaves_the_host_kept_stopped_and_says_so(
             "{tool}: {said}"
         );
         assert!(entries(&home).is_empty(), "{tool}: {:?}", entries(&home));
-        assert!(home.row("photos").contains(" no "), "{tool}");
+        assert!(autostart_column(&home.row("photos")) == "stopped", "{tool}");
 
         // It can still be started once its service manager will.
         home.stand_in(tool, "");
         home.ok(&["start", "photos"]);
         assert_eq!(entries(&home).len(), 1, "{tool}");
     }
+}
+
+/// The AUTOSTART column of a row `tooob ls` prints.
+fn autostart_column(row: &str) -> &str {
+    row.split_whitespace().nth(2).unwrap()
+}
+
+#[test]
+fn ls_shows_autostart_yes_for_kept_running_stopped_for_kept_stopped_and_no_otherwise() {
+    let home = Home::new();
+    home.install_tooob();
+    home.stand_in("launchctl", "");
+    let folder = a_folder();
+    for name in ["blog", "photos", "notes"] {
+        let path = folder.path().join(name);
+        std::fs::create_dir(&path).unwrap();
+        home.ok(&["add", name, path.to_str().unwrap(), "--local"]);
+    }
+    home.ok(&["run", "photos", "-d"]);
+    home.ok(&["run", "notes", "-d"]);
+    home.ok(&["stop", "photos"]);
+
+    for (name, shown, kept_stopped) in [
+        ("blog", "no", false),
+        ("photos", "stopped", true),
+        ("notes", "yes", false),
+    ] {
+        assert_eq!(autostart_column(&home.row(name)), shown, "{name}");
+        let json: serde_json::Value = serde_json::from_str(&home.ok(&["ls", "--json"])).unwrap();
+        let row = json
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|h| h["name"] == name)
+            .unwrap()
+            .clone();
+        assert_eq!(row["kept_stopped"], kept_stopped, "{name}");
+        assert_eq!(row["autostart"], shown == "yes", "{name}");
+    }
+}
+
+#[test]
+fn start_writes_its_entry_afresh_for_where_the_host_is_now() {
+    // Its Hosts' folder moved between `stop` and `start`: the entry put by names the old one.
+    for tool in ["launchctl", "systemctl"] {
+        let home = Home::new();
+        home.install_tooob();
+        home.stand_in(tool, "");
+        let folder = a_folder();
+        let old = home.0.path().join("old");
+        let new = home.0.path().join("new");
+        let run = |args: &[&str], dir: &std::path::Path, env: &[(&str, &str)]| {
+            let env: Vec<(&str, &str)> = [("TOOOB_HOME", dir.to_str().unwrap())]
+                .into_iter()
+                .chain(env.iter().copied())
+                .collect();
+            let out = home.tooob_with(args, &env);
+            assert!(out.status.success(), "{tool} {args:?}: {}", stderr(&out));
+        };
+        run(
+            &["add", "photos", folder.path().to_str().unwrap(), "--local"],
+            &old,
+            &[],
+        );
+        run(
+            &["run", "photos", "-d"],
+            &old,
+            &[("TOOOB_NO_UPDATE_CHECK", "1")],
+        );
+        run(&["stop", "photos"], &old, &[]);
+        std::fs::rename(&old, &new).unwrap();
+
+        run(&["start", "photos"], &new, &[]);
+        let text = std::fs::read_to_string(&entries(&home)[0]).unwrap();
+        assert!(
+            !text.contains(old.to_str().unwrap()),
+            "{tool}: names the old folder:\n{text}"
+        );
+        let env = entry_env(&home);
+        for (k, v) in [
+            ("TOOOB_HOME", new.to_str().unwrap()),
+            // What `-d` was typed with that the Host as found now can't say.
+            ("TOOOB_NO_UPDATE_CHECK", "1"),
+        ] {
+            assert!(
+                env.contains(&(k.to_string(), v.to_string())),
+                "{tool}: no {k}={v} in {env:?}"
+            );
+        }
+        let put_by: Vec<_> = walkdir(&new)
+            .into_iter()
+            .filter(|f| {
+                let f = f.to_string_lossy();
+                f.ends_with(".stopped") || f.ends_with(".stopping")
+            })
+            .collect();
+        assert!(put_by.is_empty(), "{tool}: {put_by:?}");
+    }
+}
+
+/// Every file under `dir`.
+fn walkdir(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    for e in std::fs::read_dir(dir).unwrap() {
+        let path = e.unwrap().path();
+        match path.is_dir() {
+            true => files.extend(walkdir(&path)),
+            false => files.push(path),
+        }
+    }
+    files
+}
+
+#[test]
+fn start_after_a_stop_cut_short_unloads_what_launchd_may_still_have_loaded_first() {
+    let home = Home::new();
+    let folder = a_folder();
+    home.ok(&["add", "photos", folder.path().to_str().unwrap(), "--local"]);
+    home.install_tooob();
+    // The stop is cut short as it asks launchd to unload the agent, as a Ctrl-C would.
+    let cut = home.stand_ins().join("cut");
+    home.stand_in(
+        "launchctl",
+        &format!(
+            "case \"$*\" in bootout*) if [ -e '{0}' ]; then /bin/rm '{0}'; kill -9 $PPID; fi;; \
+             esac",
+            cut.display()
+        ),
+    );
+    home.ok(&["run", "photos", "-d"]);
+    let agent = entries(&home)[0].clone();
+    std::fs::write(&cut, "").unwrap();
+    assert!(!home.tooob(&["stop", "photos"]).status.success());
+    assert!(entries(&home).is_empty(), "{:?}", entries(&home));
+    let before = home.calls("launchctl").len();
+
+    home.ok(&["start", "photos"]);
+    assert_eq!(
+        home.calls("launchctl")[before..],
+        [
+            format!("bootout gui/{}/net.tooobs.photos", uid()),
+            format!("bootstrap gui/{} {}", uid(), agent.display()),
+        ]
+    );
+    assert_eq!(entries(&home), [agent]);
 }
 
 #[test]
@@ -1655,10 +1797,7 @@ fn a_stop_cut_short_leaves_nothing_to_start_at_login_and_stop_again_finishes_it(
             stderr(&out)
         );
         let row = home.row("photos");
-        assert!(
-            row.contains("stopped") && row.contains(" no "),
-            "{tool}: {row}"
-        );
+        assert!(autostart_column(&row) == "stopped", "{tool}: {row}");
         home.ok(&["run", "photos", "-d"]);
         assert_eq!(entries(&home).len(), 1, "{tool}");
     }
@@ -1709,7 +1848,7 @@ fn stop_on_a_host_kept_running_that_isnt_running_now_keeps_it_stopped_too() {
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(stderr(&out).contains("stays stopped"), "{}", stderr(&out));
     assert!(entries(&home).is_empty(), "{:?}", entries(&home));
-    assert!(home.row("photos").contains(" no "));
+    assert!(autostart_column(&home.row("photos")) == "stopped");
 }
 
 #[test]
@@ -1942,7 +2081,7 @@ fn a_host_kept_running_by_0_2_0s_enable_stops_runs_d_and_rms_with_the_new_comman
     home.ok(&["stop", "photos"]);
     assert_eq!(home.calls("launchctl")[calls..], [unload.as_str()]);
     assert!(entries(&home).is_empty(), "{:?}", entries(&home));
-    assert!(home.row("photos").contains(" no "));
+    assert!(autostart_column(&home.row("photos")) == "stopped");
 
     home.ok(&["run", "photos", "-d"]);
     assert_eq!(

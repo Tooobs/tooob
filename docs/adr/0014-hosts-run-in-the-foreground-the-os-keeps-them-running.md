@@ -11,5 +11,5 @@ Amended 2026-10-31 (#96, #100): the commands are `run` and `run -d`. `tooob run 
 ## Consequences
 
 - This amends ADR 0010. Owner commands still go through the Host when it's running. When it isn't, they change its state directly, so Invites can be made before a Host's first run. A running Host holds a lock on its state, which keeps a command from writing alongside it: the overwrite ADR 0010 rejected. Pairing Invites still need access to the home box itself.
-- `stop` on an enabled Host goes through the service manager. Otherwise the service manager would start the Host again straight away.
-- `enable` has nothing to write on Windows until #41.
+- `stop` on a Host kept running goes through the service manager. Otherwise the service manager would start the Host again straight away.
+- `run -d` has nothing to write on Windows until #41.

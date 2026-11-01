@@ -434,6 +434,8 @@ async fn ls(home: &Home, json: bool) -> Result<()> {
         name: String,
         state: &'static str,
         autostart: bool,
+        /// `tooob stop` keeps it stopped, until `tooob start`.
+        kept_stopped: bool,
         visitors: Option<usize>,
         /// Its Relay's Bootstrap won't do for this tooob (ADR 0020): only a running Host knows.
         bootstrap_mismatch: bool,
@@ -461,6 +463,7 @@ async fn ls(home: &Home, json: bool) -> Result<()> {
             name,
             state: if running { "running" } else { "stopped" },
             autostart: autostart::is_on(&host),
+            kept_stopped: !autostart::is_on(&host) && autostart::is_kept_stopped(&host),
             visitors: visitors.map(|v| v.len()),
             bootstrap_mismatch: bootstrap.is_some_and(|b| b.is_mismatch()),
             serves: host.settings.serves,
@@ -487,7 +490,11 @@ async fn ls(home: &Home, json: bool) -> Result<()> {
     );
     for r in &rows {
         let visitors = r.visitors.map_or("-".into(), |n| n.to_string());
-        let autostart = if r.autostart { "yes" } else { "no" };
+        let autostart = match (r.autostart, r.kept_stopped) {
+            (true, _) => "yes",
+            (false, true) => "stopped",
+            (false, false) => "no",
+        };
         println!(
             "{:<width$}  {:<states$}  {autostart:<9}  {visitors:>8}  {}",
             r.name,
@@ -1029,9 +1036,9 @@ async fn stop(host: &Entry) -> Result<()> {
     host.until_stopped()
 }
 
-/// `tooob start`: start a Host `stop` keeps stopped, or one kept running that isn't running now,
-/// the way it ran before: through its service manager, which keeps it running again (ADR 0014).
-/// Never in the background by tooob itself: a Host only ever run in a terminal says what to type.
+/// `tooob start`: a running Host is left as it is, saying how it runs; any other is started the
+/// way it ran before, through its service manager, if it can be (`autostart::start`). Never in
+/// the background by tooob itself (ADR 0014).
 fn start(host: &Entry) -> Result<()> {
     let name = &host.name;
     if let Some(pid) = host.running() {
@@ -1052,11 +1059,7 @@ fn start(host: &Entry) -> Result<()> {
         );
         return Ok(());
     }
-    if !autostart::is_on(host) && !autostart::is_kept_stopped(host) {
-        bail!("{}", autostart::doesnt_start_by_itself(name));
-    }
-    let keeper = autostart::require_keeping_running(name)?;
-    say(&keeper.start(host)?);
+    say(&autostart::start(host)?);
     Ok(())
 }
 

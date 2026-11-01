@@ -152,17 +152,9 @@ impl Keeper {
                 host.name
             );
         }
-        std::fs::create_dir_all(file.parent().unwrap())?;
-        let text = match manager {
-            ServiceManager::Launchd => plist(host, &self.tooob)?,
-            ServiceManager::Systemd => systemd_unit(host, &self.tooob)?,
-        };
-        std::fs::write(&file, text)?;
+        self.write(host, &file, crate::upgrade::release_check_off())?;
         if let Err(e) = self.load(host, &file, was_on) {
-            let _ = std::fs::remove_file(&file);
-            if manager == ServiceManager::Systemd {
-                let _ = systemctl(&["daemon-reload"]);
-            }
+            let _ = self.withdraw(&file, None);
             return Err(e);
         }
         // Kept running again: whatever `tooob stop` put by is done with.
@@ -217,44 +209,80 @@ impl Keeper {
         }
     }
 
-    /// `tooob start`: start `host`, which isn't running, the way it ran before, through its
-    /// service manager, and keep it running again: from the entry `tooob stop` put by, as it was
-    /// written, or from its entry if it's still kept running (between crashes, say). Kept stopped
-    /// still when its service manager refuses. What to tell the Owner, a line each.
-    pub fn start(&self, host: &Entry) -> Result<Vec<String>> {
-        let file = entry_file(host).context("no entry")?;
-        if file.exists() {
-            self.load(host, &file, true)?;
-        } else {
-            let put = ["stopped", "stopping"]
-                .into_iter()
-                .filter_map(|state| put_by(host, state))
-                .find(|file| file.exists())
-                .with_context(|| doesnt_start_by_itself(&host.name))?;
-            std::fs::create_dir_all(file.parent().unwrap())?;
-            move_file(&put, &file)?;
-            if let Err(e) = self.load(host, &file, false) {
-                let back = move_file(&file, &put);
-                if self.manager == ServiceManager::Systemd {
-                    let _ = systemctl(&["daemon-reload"]);
-                }
-                return Err(match back {
-                    Ok(()) => e.context(format!("{} is still stopped", host.name)),
-                    Err(b) => e.context(format!(
-                        "{} didn't start, and its entry couldn't be put by again ({b:#}): \
-                         `tooob stop {}` keeps it stopped",
-                        host.name, host.name
-                    )),
-                });
-            }
+    /// Write `host`'s entry, `file`, as this tooob writes it, for the Host as it's found now.
+    fn write(&self, host: &Entry, file: &Path, release_check_off: bool) -> Result<()> {
+        std::fs::create_dir_all(file.parent().unwrap())?;
+        let text = match self.manager {
+            ServiceManager::Launchd => plist(host, &self.tooob, release_check_off)?,
+            ServiceManager::Systemd => systemd_unit(host, &self.tooob, release_check_off)?,
+        };
+        Ok(std::fs::write(file, text)?)
+    }
+
+    /// Take `file`, an entry its service manager wouldn't load, out of its sight again: removed,
+    /// or moved to `to`.
+    fn withdraw(&self, file: &Path, to: Option<&Path>) -> Result<()> {
+        let gone = match to {
+            Some(to) => move_file(file, to),
+            None => Ok(std::fs::remove_file(file)?),
+        };
+        if self.manager == ServiceManager::Systemd {
+            let _ = systemctl(&["daemon-reload"]);
         }
-        forget_put_by(host);
-        Ok(vec![kept_running(&host.name)])
+        gone
     }
 }
 
+/// `tooob start`: start `host`, which isn't running, the way it ran before: through its service
+/// manager, which keeps it running again. Its entry is written afresh, for where the Host is now
+/// (its Hosts' folder may have moved since `-d`), keeping only what `-d` was typed with that the
+/// Host can't say: whether its release check is off. A Host `tooob stop` keeps stopped, or one
+/// kept running that isn't running now (between crashes, say), starts; one only ever run in a
+/// terminal says what to type (ADR 0022). If its service manager refuses, it's kept stopped. What
+/// to tell the Owner, a line each.
+pub fn start(host: &Entry) -> Result<Vec<String>> {
+    let name = &host.name;
+    let (Some(file), Some(stopping), Some(stopped)) = (
+        entry_file(host),
+        put_by(host, "stopping"),
+        put_by(host, "stopped"),
+    ) else {
+        bail!("{}", doesnt_start_by_itself(name));
+    };
+    // Its entry, or what `stop` put by, newest first.
+    let Some(was) = [&file, &stopping, &stopped]
+        .into_iter()
+        .find(|f| f.exists())
+    else {
+        bail!("{}", doesnt_start_by_itself(name));
+    };
+    let keeper = require_keeping_running(name)?;
+    let release_check_off = crate::upgrade::release_check_off()
+        || std::fs::read_to_string(was).is_ok_and(|text| text.contains("TOOOB_NO_UPDATE_CHECK"));
+    // Only a stop that finished unloaded it: kept running, or a stop cut short, it may still be
+    // loaded (launchd loads an agent once).
+    let loaded = was != &stopped;
+    keeper.write(host, &file, release_check_off)?;
+    if let Err(e) = keeper.load(host, &file, loaded) {
+        // Kept stopped rather than kept running: an entry its service manager won't load would
+        // only fail again at the next login.
+        forget_put_by(host);
+        return Err(match keeper.withdraw(&file, Some(&stopped)) {
+            Ok(()) => e.context(format!(
+                "{name} is still stopped, and kept stopped: `tooob start {name}` tries again"
+            )),
+            Err(b) => e.context(format!(
+                "{name} didn't start, and its entry couldn't be put by ({b:#}): `tooob stop \
+                 {name}` keeps it stopped"
+            )),
+        });
+    }
+    forget_put_by(host);
+    Ok(vec![kept_running(name)])
+}
+
 /// What `start` says of a Host only ever run in a terminal.
-pub fn doesnt_start_by_itself(name: &str) -> String {
+fn doesnt_start_by_itself(name: &str) -> String {
     format!(
         "{name} doesn't start by itself; serve it here with `tooob run {name}`, or keep it \
          running with `tooob run {name} -d`"
@@ -494,10 +522,10 @@ fn systemctl(args: &[&str]) -> Result<()> {
 
 /// What the entry sets in the Host's environment: that it's the entry's own `tooob run` (which
 /// `run` allows for a Host kept running), where its Hosts are, when that isn't the default, and
-/// that its release check is off, when `TOOOB_NO_UPDATE_CHECK` says so as `-d` writes it.
-fn environment(host: &Entry) -> Result<Vec<(&'static str, String)>> {
+/// that its release check is off, when `release_check_off`.
+fn environment(host: &Entry, release_check_off: bool) -> Result<Vec<(&'static str, String)>> {
     let mut env = vec![(AUTOSTART, host.name.clone())];
-    if crate::upgrade::release_check_off() {
+    if release_check_off {
         env.push(("TOOOB_NO_UPDATE_CHECK", "1".to_string()));
     }
     if let Some(dir) = std::env::var_os("TOOOB_HOME") {
@@ -522,7 +550,7 @@ pub const AUTOSTART: &str = "TOOOB_AUTOSTART";
 /// A launchd agent for `host`: run at load (login), kept alive while it exits with a failure, with
 /// its output, only its dying words since it writes its own log, in its crash log. Interactive, so
 /// macOS doesn't throttle what it serves.
-fn plist(host: &Entry, tooob: &Path) -> Result<String> {
+fn plist(host: &Entry, tooob: &Path, release_check_off: bool) -> Result<String> {
     let string = |s: &str| {
         format!(
             "<string>{}</string>",
@@ -532,7 +560,7 @@ fn plist(host: &Entry, tooob: &Path) -> Result<String> {
         )
     };
     let crashes = string(path(&crate::log::crash_file(&host.state_dir))?);
-    let env: String = environment(host)?
+    let env: String = environment(host, release_check_off)?
         .iter()
         .map(|(k, v)| format!("\t\t<key>{k}</key>\n\t\t{}\n", string(v)))
         .collect();
@@ -578,7 +606,7 @@ fn plist(host: &Entry, tooob: &Path) -> Result<String> {
 /// A systemd user unit for `host`: started with the user's own service manager (at login, or at
 /// boot with lingering), restarted when it exits with a failure, with its output, only its dying
 /// words since it writes its own log, in its crash log.
-fn systemd_unit(host: &Entry, tooob: &Path) -> Result<String> {
+fn systemd_unit(host: &Entry, tooob: &Path, release_check_off: bool) -> Result<String> {
     // Quoted, with systemd's own specifiers (`%`) escaped.
     let quoted = |s: &str| {
         format!(
@@ -589,7 +617,7 @@ fn systemd_unit(host: &Entry, tooob: &Path) -> Result<String> {
         )
     };
     let crashes = path(&crate::log::crash_file(&host.state_dir))?.replace('%', "%%");
-    let env: String = environment(host)?
+    let env: String = environment(host, release_check_off)?
         .iter()
         .map(|(k, v)| format!("Environment={}\n", quoted(&format!("{k}={v}"))))
         .collect();
