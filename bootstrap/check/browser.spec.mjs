@@ -294,6 +294,22 @@ test('a device waiting for approval shows its Device Code, the one tooob visitor
   assert.equal(JSON.parse(h.tooob(['visitors', name, '--json']))[0].device_code, null);
 });
 
+test('a device Blocked while it waits for approval stops showing its Device Code, and tooob visitors shows none', async ({ browser, relay }) => {
+  test.skip(h.olderThan('0.3.4'), 'tests #110, from 0.3.4; the Release swapped in is older');
+  const { name, invite } = await hostWithSite(relay);
+  const page = await h.newVisitor(browser);
+  await page.goto(invite('aunt', '--approve'));
+  await h.codeSays(page, /Your device code:\s*\d{3} \d{3}/);
+
+  const key = h.visitorKey(name);
+  h.tooob(['block', name, key]);
+  await h.pillSays(page, /not invited/, 20000);
+  assert.equal(await h.codeText(page), '', 'Blocked: no code');
+  const row = h.tooob(['visitors', name]).split('\n').find((l) => l.startsWith(key.slice(0, 12)));
+  assert.match(row, /\sblocked\s+-\s/, row);
+  assert.equal(JSON.parse(h.tooob(['visitors', name, '--json']))[0].device_code, null);
+});
+
 test('a device in that uses an Owner Invite shows its Device Code over the Site until it is approved by that code', async ({ browser, relay }) => {
   test.skip(h.olderThan('0.3.4'), 'tests #110, from 0.3.4; the Release swapped in is older');
   const { name, invite } = await hostWithSite(relay);

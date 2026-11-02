@@ -328,6 +328,7 @@ for (;;) {
     break;
   }
   if (standing === 'denied') {
+    showCode(undefined); // Blocked while it waited: no code to read out any more
     show(refusal ?? "You're not invited to this site. Ask its owner for an Invite Link.");
     throw new Error('not invited');
   }

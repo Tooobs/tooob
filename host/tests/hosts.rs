@@ -2440,7 +2440,7 @@ async fn approving_a_device_code_no_waiting_device_has_says_so_and_approves_noth
         assert!(
             stderr(&out).contains(&format!(
                 "no device waiting for approval has Device Code {code}"
-            )),
+            )) && stderr(&out).contains("give 7 characters of it or more"),
             "{}",
             stderr(&out)
         );

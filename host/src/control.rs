@@ -420,9 +420,7 @@ fn resolve(control: &Control, prefix: &str) -> Result<String, String> {
 /// The Visitor Key of the one device waiting for approval whose Device Code is `code`: never a
 /// device that's in or Blocked, and never a guess between two that share it.
 fn waiting_with(control: &Control, code: &str) -> Result<String, String> {
-    let Some(code) = crate::access::typed_device_code(code) else {
-        return Err(format!("not_a_device_code: {code} isn't six digits"));
-    };
+    let code = crate::access::typed_device_code(code).unwrap_or_else(|| code.into());
     let matches: Vec<String> = control
         .visitors()
         .into_iter()
@@ -432,7 +430,9 @@ fn waiting_with(control: &Control, code: &str) -> Result<String, String> {
     match matches.as_slice() {
         [key] => Ok(key.clone()),
         [] => Err(format!(
-            "unknown_device_code: no device waiting for approval has Device Code {code}"
+            "unknown_device_code: no device waiting for approval has Device Code {code} \
+             (six digits always read as a Device Code: to name a device by its Visitor Key, give \
+             7 characters of it or more)"
         )),
         _ => Err(format!(
             "ambiguous_device_code: {} devices waiting for approval have Device Code {code}; \

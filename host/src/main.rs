@@ -61,7 +61,8 @@ const USAGE: &str = "usage:
   tooob invites NAME [--json]                     its unused Invites
   tooob approve NAME CODE                         let in the waiting device showing Device Code
                                                   CODE (482 917), once the person who has it
-                                                  reads you the same code; or by its KEY
+                                                  reads you the same code; or by its KEY (a
+                                                  prefix of six digits reads as a CODE: give 7)
   tooob block NAME KEY | unblock NAME KEY         KEY: a unique prefix is enough
   tooob revoke NAME INVITE-ID
   tooob upgrade [VERSION] [--check] [--yes] [--anyway]
@@ -681,7 +682,7 @@ fn print_visitors(visitors: &[tooob::access::VisitorInfo]) {
         received: String,
         owner_device: bool,
         /// Used an Owner Invite: it's in, and waits for approval to become an Owner Device.
-        becoming_owner_device: bool,
+        awaiting_owner_approval: bool,
     }
     let now = tooob::control::now();
     let rows: Vec<Row> = visitors
@@ -702,7 +703,7 @@ fn print_visitors(visitors: &[tooob::access::VisitorInfo]) {
             sent: amount(v.sent),
             received: amount(v.received),
             owner_device: v.owner_device,
-            becoming_owner_device: v.awaiting_owner_approval,
+            awaiting_owner_approval: v.awaiting_owner_approval,
         })
         .collect();
     let header = Row {
@@ -714,7 +715,7 @@ fn print_visitors(visitors: &[tooob::access::VisitorInfo]) {
         sent: "SENT".into(),
         received: "RECEIVED".into(),
         owner_device: false,
-        becoming_owner_device: false,
+        awaiting_owner_approval: false,
     };
     // Each column as wide as its widest, in characters: a Label can be "Mamá".
     let widest = |column: fn(&Row) -> &str| {
@@ -735,7 +736,7 @@ fn print_visitors(visitors: &[tooob::access::VisitorInfo]) {
     ];
     for r in std::iter::once(&header).chain(&rows) {
         let [key, label, status, code, seen, sent, received] = widths;
-        let owner_device = match (r.owner_device, r.becoming_owner_device) {
+        let owner_device = match (r.owner_device, r.awaiting_owner_approval) {
             (true, _) => "  owner device",
             (_, true) => "  waiting to become an owner device",
             _ => "",
