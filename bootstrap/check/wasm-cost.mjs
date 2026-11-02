@@ -1,6 +1,6 @@
 // How long the Bootstrap's WASM (web_bg.wasm) costs a Visitor (#112): a measurement, not a test,
 // outside the browser suite (not a *.spec.mjs). Hosts run here through our own Relay
-// (https://r.tooobs.net/, whose Bundle the browser loads), and Chromium opens their Invite Links:
+// (https://r.tooobs.net/, whose Bootstrap Bundle the browser loads), and Chromium opens their Invite Links:
 // a cold first visit in a fresh profile, then, after the browser closes, a return visit to the Key
 // Address with the service worker installed, in that same profile. Each in two profiles: a laptop
 // (unthrottled) and phone-like (CPU throttled ×4, DevTools' "Fast 4G" network). Findings:
@@ -36,9 +36,14 @@ const PHONE = {
 };
 const PROFILES = { laptop: null, phone: PHONE };
 
-/** The browser suite's one-run lock (guards.mjs), held until this process exits. */
+/**
+ * The browser suite's one-run lock, held until this process exits. A deliberate copy of guards.mjs's
+ * listener, since its lock() isn't exported (the runner takes it as it loads its config). It must
+ * keep that protocol (listen on machine.mjs's LOCK_PORT at 127.0.0.1, answer with this pid), or a
+ * suite run and this script could run at once. Change the two together.
+ */
 async function lock() {
-  const server = createServer((socket) => socket.on('error', () => {}).end(String(process.pid)));
+  const server = createServer((socket) => socket.unref().on('error', () => {}).end(String(process.pid)));
   await new Promise((resolve, reject) => {
     server.once('error', (e) => reject(e.code === 'EADDRINUSE' ? new Error('a browser suite run (or another measurement) is going: one run at a time') : e));
     server.listen(LOCK_PORT, '127.0.0.1', resolve);
