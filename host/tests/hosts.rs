@@ -2271,3 +2271,231 @@ fn run_d_makes_a_launch_agent_for_any_host_name() {
         }
     }
 }
+
+/// Devices of the stopped Host `name`, which shares `folder`, that each used an Invite for `label`
+/// with First-Visit Approval while it ran for a moment: their Visitor Keys. Each waits.
+async fn waiting_visitors(
+    home: &Home,
+    name: &str,
+    folder: &std::path::Path,
+    label: &str,
+    keys: &[[u8; 32]],
+) -> Vec<String> {
+    let host = Host::start(HostConfig {
+        site: Site::SharedFolder(folder.into()),
+        data_dir: home.shown(name, "state folder").into(),
+        network: Network::LocalOnly,
+    })
+    .await
+    .unwrap();
+    for key in keys {
+        let link = home.ok(&["invite", name, label, "--approve"]);
+        let token = link.trim().rsplit("#invite=").next().unwrap().to_string();
+        let visit = Visit::connect(host.address(), *key, Network::LocalOnly)
+            .await
+            .unwrap();
+        visit.redeem(&token).await.unwrap();
+    }
+    host.shutdown().await;
+    keys.iter()
+        .map(|k| iroh::SecretKey::from_bytes(k).public().to_string())
+        .collect()
+}
+
+fn new_key() -> [u8; 32] {
+    let mut key = [0u8; 32];
+    getrandom::fill(&mut key).unwrap();
+    key
+}
+
+/// `tooob visitors NAME`'s row for the Visitor whose Visitor Key is `key`, its columns split.
+fn visitor_row(home: &Home, name: &str, key: &str) -> Vec<String> {
+    let shown = home.ok(&["visitors", name]);
+    let row = shown
+        .lines()
+        .find(|l| l.starts_with(&key[..12]))
+        .unwrap_or_else(|| panic!("{key} isn't listed:\n{shown}"));
+    row.split("  ")
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+/// What `tooob visitors NAME --json` says of the Visitor whose Visitor Key is `key`.
+fn visitor_listed(home: &Home, name: &str, key: &str) -> serde_json::Value {
+    let visitors: serde_json::Value =
+        serde_json::from_str(&home.ok(&["visitors", name, "--json"])).unwrap();
+    visitors
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["key"] == key)
+        .unwrap()
+        .clone()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_waiting_device_is_approved_by_its_device_code_spaced_or_not() {
+    let home = Home::new();
+    let folder = a_folder();
+    let relay = TestRelay::start();
+    home.ok(&[
+        "add",
+        "photos",
+        folder.path().to_str().unwrap(),
+        "--relay",
+        &relay.url,
+    ]);
+    let keys = [new_key(), new_key(), new_key()];
+    let waiting = waiting_visitors(&home, "photos", folder.path(), "aunt", &keys).await;
+    let codes: Vec<String> = waiting
+        .iter()
+        .map(|k| tooob::access::device_code(k))
+        .collect();
+
+    let header = home.ok(&["visitors", "photos"]);
+    let header: Vec<&str> = header
+        .lines()
+        .next()
+        .unwrap()
+        .split("  ")
+        .map(str::trim)
+        .collect();
+    let header: Vec<&str> = header.into_iter().filter(|c| !c.is_empty()).collect();
+    assert_eq!(
+        header,
+        [
+            "KEY",
+            "LABEL",
+            "STATUS",
+            "CODE",
+            "LAST SEEN",
+            "SENT",
+            "RECEIVED"
+        ]
+    );
+    let row = visitor_row(&home, "photos", &waiting[0]);
+    assert_eq!(
+        row[1..4],
+        ["aunt", "waiting for approval", codes[0].as_str()],
+        "{row:?}"
+    );
+    assert_eq!(
+        visitor_listed(&home, "photos", &waiting[0])["device_code"],
+        codes[0].as_str()
+    );
+
+    // As shown, in one word ('482 917'), in two (482 917), and without the space (482917).
+    let (first, second) = codes[1].split_once(' ').unwrap();
+    let joined = codes[2].replace(' ', "");
+    for approve in [
+        vec!["approve", "photos", &codes[0]],
+        vec!["approve", "photos", first, second],
+        vec!["approve", "photos", &joined],
+    ] {
+        let out = home.tooob(&approve);
+        assert!(out.status.success(), "{approve:?}: {}", stderr(&out));
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "", "{approve:?}");
+        assert_eq!(stderr(&out), "", "{approve:?}");
+    }
+    for key in &waiting {
+        assert_eq!(visitor_listed(&home, "photos", key)["status"], "Allowed");
+        assert_eq!(
+            visitor_listed(&home, "photos", key)["device_code"],
+            serde_json::Value::Null
+        );
+        let row = visitor_row(&home, "photos", key);
+        assert_eq!(row[1..4], ["aunt", "allowed", "-"], "in: no code; {row:?}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn approving_a_device_code_no_waiting_device_has_says_so_and_approves_nothing() {
+    let home = Home::new();
+    let folder = a_folder();
+    let relay = TestRelay::start();
+    home.ok(&[
+        "add",
+        "photos",
+        folder.path().to_str().unwrap(),
+        "--relay",
+        &relay.url,
+    ]);
+    let alice = a_visitor(&home, "photos", folder.path()).await;
+    let waiting = waiting_visitors(&home, "photos", folder.path(), "aunt", &[new_key()]).await;
+    let aunt = tooob::access::device_code(&waiting[0]);
+    let _running = home.start("photos");
+
+    // A code nobody has, and the code of a device that's already in: neither is waiting.
+    let nobodys = if aunt == "000 000" {
+        "000 001"
+    } else {
+        "000 000"
+    };
+    for code in [nobodys.to_string(), tooob::access::device_code(&alice)] {
+        let out = home.tooob(&["approve", "photos", &code]);
+        assert!(!out.status.success(), "{code}");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+        assert!(
+            stderr(&out).contains(&format!(
+                "no device waiting for approval has Device Code {code}"
+            )),
+            "{}",
+            stderr(&out)
+        );
+    }
+    assert_eq!(
+        visitor_listed(&home, "photos", &waiting[0])["status"],
+        "AwaitingApproval",
+        "approved nothing"
+    );
+    // A key prefix still works.
+    home.ok(&["approve", "photos", &waiting[0][..8]]);
+    assert_eq!(
+        visitor_listed(&home, "photos", &waiting[0])["status"],
+        "Allowed"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn two_waiting_devices_with_one_device_code_are_approved_only_by_key() {
+    // One in a million each, so a few thousand keys have two that share a code.
+    let mut by_code = std::collections::HashMap::new();
+    let twins = loop {
+        let key = new_key();
+        let public = iroh::SecretKey::from_bytes(&key).public().to_string();
+        if let Some(twin) = by_code.insert(tooob::access::device_code(&public), key) {
+            break [twin, key];
+        }
+    };
+    let home = Home::new();
+    let folder = a_folder();
+    let relay = TestRelay::start();
+    home.ok(&[
+        "add",
+        "photos",
+        folder.path().to_str().unwrap(),
+        "--relay",
+        &relay.url,
+    ]);
+    let waiting = waiting_visitors(&home, "photos", folder.path(), "aunt", &twins).await;
+    let code = tooob::access::device_code(&waiting[0]);
+
+    let out = home.tooob(&["approve", "photos", &code]);
+    assert!(!out.status.success());
+    let said = stderr(&out);
+    assert!(
+        said.contains(&format!(
+            "2 devices waiting for approval have Device Code {code}"
+        )) && said.contains(&waiting[0])
+            && said.contains(&waiting[1]),
+        "{said}"
+    );
+    for key in &waiting {
+        assert_eq!(
+            visitor_listed(&home, "photos", key)["status"],
+            "AwaitingApproval"
+        );
+    }
+}

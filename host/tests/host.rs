@@ -855,3 +855,59 @@ async fn the_owner_can_ask_a_running_host_to_stop() {
     );
     host.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_device_waiting_for_approval_is_told_its_device_code_and_no_other_device_is() {
+    let site = TestSite::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let host = start_host(&site, &dir).await;
+    let key = new_visitor_key();
+    let visit = Visit::connect(host.address(), key, Network::LocalOnly)
+        .await
+        .unwrap();
+    assert_eq!(visit.device_code().await.unwrap(), None, "not a Visitor");
+
+    let options = InviteOptions {
+        first_visit_approval: true,
+        ..Default::default()
+    };
+    let invite = host.control().invite("mom", options).unwrap();
+    visit.redeem(&invite.token).await.unwrap();
+    let mom = iroh::SecretKey::from_bytes(&key).public().to_string();
+    let shown = visit.device_code().await.unwrap();
+    assert_eq!(shown, Some(tooob::access::device_code(&mom)));
+    let listed = |host: &Host| {
+        host.control()
+            .visitors()
+            .into_iter()
+            .find(|v| v.key == mom)
+            .unwrap()
+            .device_code
+    };
+    assert_eq!(listed(&host), shown, "the Owner sees the same code");
+
+    host.control().approve(&mom).unwrap();
+    assert_eq!(visit.standing().await.unwrap(), Standing::Allowed);
+    assert_eq!(visit.device_code().await.unwrap(), None, "in: no code");
+    assert_eq!(listed(&host), None);
+
+    // Using an Owner Invite, it's let in while it waits to become an Owner Device: told its code.
+    let pairing = Visit::connect(host.address(), new_visitor_key(), Network::LocalOnly)
+        .await
+        .unwrap();
+    let owner_invite = || InviteOptions {
+        owner_invite: true,
+        ..Default::default()
+    };
+    let first = host.control().invite("my laptop", owner_invite()).unwrap();
+    pairing.redeem(&first.token).await.unwrap();
+    let upgrade = host.control().invite("mom", owner_invite()).unwrap();
+    visit.redeem(&upgrade.token).await.unwrap();
+    assert_eq!(visit.standing().await.unwrap(), Standing::Allowed);
+    assert_eq!(visit.device_code().await.unwrap(), shown);
+    host.control().approve(&mom).unwrap();
+    assert_eq!(visit.device_code().await.unwrap(), None);
+
+    host.control().block(&mom).unwrap();
+    assert_eq!(visit.device_code().await.unwrap(), None, "Blocked: no code");
+}

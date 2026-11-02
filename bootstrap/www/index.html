@@ -12,9 +12,16 @@
             background: rgba(0,0,0,.75); color: #fff; font: 12px ui-monospace, monospace; }
   #status[role=button], #download { cursor: pointer; }
   #download[hidden] { display: none; }
+  #code { position: fixed; z-index: 1; padding: 10px 14px; border-radius: 10px; background: rgba(0,0,0,.85); color: #fff; }
+  #code.page { top: 30%; left: 50%; transform: translateX(-50%); width: min(26em, calc(100% - 32px)); box-sizing: border-box; font-size: 15px; text-align: center; }
+  #code.page strong { display: block; margin: 6px 0; font: 600 32px ui-monospace, monospace; letter-spacing: .08em; }
+  #code.notice { right: 8px; bottom: 40px; max-width: min(24em, calc(100% - 16px)); box-sizing: border-box; }
+  #code.notice strong { font-family: ui-monospace, monospace; }
+  #code[hidden] { display: none; }
 </style>
 </head>
 <body>
+<div id="code" hidden></div>
 <div id="corner"><button id="download" type="button" hidden>⬇ Download</button><div id="status">starting…</div></div>
 <script type="module" src="/__tooob/shell.js"></script>
 </body>

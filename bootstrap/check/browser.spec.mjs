@@ -267,6 +267,72 @@ test('an approve-first Invite waits, then opens by itself once the owner approve
   assert.match(await h.siteText(page), /label=mom/, 'the page opened by itself');
 });
 
+test('a device waiting for approval shows its Device Code, the one tooob visitors and the log show, and approving it by that code opens the page', async ({ browser, relay }) => {
+  test.skip(h.olderThan('0.3.4'), 'tests #110, from 0.3.4; the Release swapped in is older');
+  const { name, invite } = await hostWithSite(relay);
+  const page = await h.newVisitor(browser);
+  await page.goto(invite('aunt', '--approve'));
+  await h.pillSays(page, /Waiting for approval/, 20000);
+  await h.codeSays(page, /Your device code:\s*\d{3} \d{3}/);
+  const code = (await h.codeText(page)).match(/\d{3} \d{3}/)[0];
+  assert.match(await h.codeText(page), /Tell it to the person who invited you/);
+
+  const [aunt] = JSON.parse(h.tooob(['visitors', name, '--json']));
+  assert.equal(aunt.device_code, code, 'tooob visitors --json');
+  const row = h.tooob(['visitors', name]).split('\n').find((l) => l.startsWith(aunt.key.slice(0, 12)));
+  assert.match(row, new RegExp(`\\swaiting for approval\\s+${code}\\s`), row);
+  await h.logged(name, new RegExp(`aunt \\(${aunt.key.slice(0, 8)}\\) is waiting for approval · Device Code ${code}$`));
+
+  // A code no waiting device shows lets nobody in.
+  const other = code === '000 000' ? '000 001' : '000 000';
+  assert.throws(() => h.tooob(['approve', name, other]), /no device waiting for approval has Device Code/);
+  assert.equal(JSON.parse(h.tooob(['visitors', name, '--json']))[0].status, 'AwaitingApproval');
+
+  h.tooob(['approve', name, code]);
+  assert.match(await h.siteText(page), /label=aunt/, 'the page opened by itself');
+  assert.equal(await h.codeText(page), '', 'in: no code');
+  assert.equal(JSON.parse(h.tooob(['visitors', name, '--json']))[0].device_code, null);
+});
+
+test('a device in that uses an Owner Invite shows its Device Code over the Site until it is approved by that code', async ({ browser, relay }) => {
+  test.skip(h.olderThan('0.3.4'), 'tests #110, from 0.3.4; the Release swapped in is older');
+  const { name, invite } = await hostWithSite(relay);
+  const owner = await h.newVisitor(browser); // the first Owner Invite pairs (First-Run Pairing): nothing to approve
+  await owner.goto(invite('phone', '--owner'));
+  await h.siteText(owner);
+  const page = await h.newVisitor(browser);
+  await page.goto(invite('laptop'));
+  await h.siteText(page);
+  assert.equal(await h.codeText(page), '', 'in, waiting for nothing: no code');
+
+  await page.goto('about:blank');
+  await page.goto(invite('laptop', '--owner')); // from another tab, say
+  assert.match(await h.siteText(page), /label=laptop/, 'still in while it waits');
+  await h.codeSays(page, /Your device code:\s*\d{3} \d{3}.*Owner Device/);
+  const code = (await h.codeText(page)).match(/\d{3} \d{3}/)[0];
+  const laptopNow = () => JSON.parse(h.tooob(['visitors', name, '--json'])).find((v) => v.label === 'laptop');
+  assert.equal(laptopNow().device_code, code);
+  assert.equal(laptopNow().owner_device, false);
+  assert.equal(await h.codeText(owner), '', 'the Owner Device waits for nothing');
+
+  h.tooob(['approve', name, code.replace(' ', '')]);
+  await h.codeSays(page, /^$/);
+  assert.equal(laptopNow().owner_device, true, 'approved as an Owner Device');
+  assert.equal(laptopNow().device_code, null);
+});
+
+test('a device waiting on a Host from before Device Codes says the Host shows none', async ({ browser, relay }) => {
+  test.skip(!process.env.TOOOB_BIN || !h.olderThan('0.3.4'), "tests #110 against a Host older than 0.3.4: only in a cross-Release check with an older tooob");
+  const { name, invite } = await hostWithSite(relay);
+  const page = await h.newVisitor(browser);
+  await page.goto(invite('aunt', '--approve'));
+  await h.pillSays(page, /Waiting for approval/, 20000);
+  await h.codeSays(page, /older tooob that shows no device code/);
+  h.tooob(['approve', name, h.visitorKey(name)]);
+  await h.siteText(page);
+  assert.equal(await h.codeText(page), '');
+});
+
 test('after redeeming, a reload still gets in (the device is remembered)', async ({ browser, relay }) => {
   const { invite } = await hostWithSite(relay);
   const page = await h.newVisitor(browser);

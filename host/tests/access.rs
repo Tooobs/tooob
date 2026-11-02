@@ -1,7 +1,7 @@
 //! Access rules for one Host: Invites, the Allowlist, Blocks and Owner Devices (see GLOSSARY.md).
 use tooob::access::{
     Access, ChangeError, Decision, InviteInfo, InviteOptions, RedeemError, Redeemed, Status,
-    VisitorInfo,
+    VisitorInfo, device_code,
 };
 
 const MOM_PHONE: &str = "visitor-key-mom-phone";
@@ -240,6 +240,7 @@ fn the_owner_can_list_visitors_with_their_status() {
             owner_device: false,
             awaiting_owner_approval: false,
             status: Status::AwaitingApproval,
+            device_code: Some("328 507".into()),
             last_seen: None,
             sent: 0,
             received: 0,
@@ -250,6 +251,7 @@ fn the_owner_can_list_visitors_with_their_status() {
             owner_device: false,
             awaiting_owner_approval: false,
             status: Status::Allowed,
+            device_code: None,
             last_seen: None,
             sent: 0,
             received: 0,
@@ -260,6 +262,7 @@ fn the_owner_can_list_visitors_with_their_status() {
             owner_device: false,
             awaiting_owner_approval: false,
             status: Status::Blocked,
+            device_code: None,
             last_seen: None,
             sent: 0,
             received: 0,
@@ -831,4 +834,90 @@ fn expired_invites_are_forgotten_when_the_next_invite_is_made() {
         std::fs::metadata(&path).unwrap().len() < size_before,
         "the file stops growing"
     );
+}
+
+#[test]
+fn a_device_code_is_six_digits_worked_out_from_the_visitor_key_the_same_every_time() {
+    // Worked out independently: SHA-256 of "tooob device code " and the key, its first 8 bytes
+    // big-endian, mod a million, grouped 3+3.
+    assert_eq!(device_code(MOM_PHONE), "528 404");
+    assert_eq!(device_code(MOM_PHONE), "528 404", "the same every time");
+    assert_eq!(device_code(MOM_LAPTOP), "328 507");
+    assert_eq!(
+        device_code("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"),
+        "706 133"
+    );
+}
+
+#[test]
+fn only_a_device_waiting_for_approval_has_a_device_code() {
+    let (_dir, mut access) = fresh();
+    let approve_first = InviteOptions {
+        first_visit_approval: true,
+        ..Default::default()
+    };
+    let waiting = access.invite("mom", approve_first, NOW).unwrap();
+    access.redeem(&waiting.token, MOM_PHONE, NOW).unwrap();
+    assert_eq!(access.device_code(MOM_PHONE), Some("528 404".into()));
+    let listed = |access: &Access, key: &str| {
+        access
+            .visitors()
+            .into_iter()
+            .find(|v| v.key == key)
+            .unwrap()
+            .device_code
+    };
+    assert_eq!(listed(&access, MOM_PHONE), Some("528 404".into()));
+
+    access.approve(MOM_PHONE).unwrap();
+    assert_eq!(access.device_code(MOM_PHONE), None, "in: no code");
+    assert_eq!(listed(&access, MOM_PHONE), None);
+
+    let waiting = access
+        .invite(
+            "mom",
+            InviteOptions {
+                first_visit_approval: true,
+                ..Default::default()
+            },
+            NOW,
+        )
+        .unwrap();
+    access.redeem(&waiting.token, MOM_LAPTOP, NOW).unwrap();
+    access.block(MOM_LAPTOP).unwrap();
+    assert_eq!(access.device_code(MOM_LAPTOP), None, "Blocked: no code");
+    assert_eq!(listed(&access, MOM_LAPTOP), None);
+    assert_eq!(access.device_code(STRANGER), None, "not a Visitor");
+}
+
+#[test]
+fn a_device_waiting_to_become_an_owner_device_has_a_device_code_until_approved() {
+    let (_dir, mut access) = fresh();
+    let owner_invite = || InviteOptions {
+        owner_invite: true,
+        ..Default::default()
+    };
+    let pairing = access.invite("my laptop", owner_invite(), NOW).unwrap();
+    access.redeem(&pairing.token, OWNER_LAPTOP, NOW).unwrap();
+    assert_eq!(
+        access.device_code(OWNER_LAPTOP),
+        None,
+        "paired: nothing to approve"
+    );
+
+    // A device already in, upgrading: it keeps its access while it waits.
+    admit(&mut access, "my phone", OWNER_PHONE);
+    let upgrade = access.invite("my phone", owner_invite(), NOW).unwrap();
+    access.redeem(&upgrade.token, OWNER_PHONE, NOW).unwrap();
+    let code = tooob::access::device_code(OWNER_PHONE);
+    assert_eq!(access.device_code(OWNER_PHONE), Some(code));
+    // A new device: it waits outside.
+    let new = access.invite("my tablet", owner_invite(), NOW).unwrap();
+    access.redeem(&new.token, MOM_PHONE, NOW).unwrap();
+    assert_eq!(access.device_code(MOM_PHONE), Some("528 404".into()));
+
+    access.approve(OWNER_PHONE).unwrap();
+    access.approve(MOM_PHONE).unwrap();
+    assert_eq!(access.device_code(OWNER_PHONE), None);
+    assert_eq!(access.device_code(MOM_PHONE), None);
 }

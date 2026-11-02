@@ -346,6 +346,19 @@ export async function statusText(page) {
   return page.$eval('#status', (el) => el.textContent);
 }
 
+/** What the shell shows of this device's Device Code (the waiting page, or a notice over the Site): '' if nothing. */
+export async function codeText(page) {
+  return page.$eval('#code', (el) => (el.hidden ? '' : el.textContent));
+}
+
+/** Wait until what the shell shows of the Device Code matches `re` (/^$/: until it shows none). */
+export async function codeSays(page, re, ms = 20000) {
+  await page.waitForFunction((src) => {
+    const el = document.getElementById('code');
+    return el && new RegExp(src).test(el.hidden ? '' : el.textContent);
+  }, re.source, { timeout: ms });
+}
+
 /** Wait until the status line matches `re`. */
 export async function pillSays(page, re, ms) {
   await page.waitForFunction((src) => new RegExp(src).test(document.getElementById('status').textContent), re.source, { timeout: ms });

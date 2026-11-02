@@ -9,6 +9,26 @@ const dec = new TextDecoder();
 const statusEl = document.getElementById('status');
 const stats = (window.__tooobStats = {});
 const show = (s) => (statusEl.textContent = s);
+
+// The Device Code (#110), shown while this device waits for approval so the Owner lets in the
+// device whose code its person reads them, and gone once it's in. On the waiting page it's the
+// page; while a device that's in waits to become an Owner Device, a notice over the Site. A Host
+// from before Device Codes sends none: the waiting page says so (code null).
+const codeEl = document.getElementById('code');
+const OLD_HOST = "This site's host runs an older tooob that shows no device code, so there's no code to read out.";
+function showCode(code, where) {
+  codeEl.hidden = code === undefined;
+  codeEl.className = where ?? '';
+  if (code === undefined) return;
+  if (code === null) return (codeEl.textContent = OLD_HOST);
+  const big = document.createElement('strong');
+  big.textContent = code;
+  if (where === 'page') {
+    codeEl.replaceChildren('Your device code:', big, 'Tell it to the person who invited you: they let this device in when it matches the code they see.');
+  } else {
+    codeEl.replaceChildren('Your device code: ', big, ' · this device is waiting to become an Owner Device: approve it only where tooob visitors shows this code.');
+  }
+}
 const ms = (t) => Math.round(performance.now() - t);
 
 const concat = (a, b) => {
@@ -303,6 +323,8 @@ for (;;) {
   const standing = reply?.standing;
   if (standing === 'allowed') {
     sharedFolder = reply.site === 'shared_folder';
+    showCode(undefined);
+    if (reply.device_code) untilOwnerDevice(reply.device_code);
     break;
   }
   if (standing === 'denied') {
@@ -311,6 +333,7 @@ for (;;) {
   }
   if (standing === 'awaiting_approval') {
     show('Waiting for approval: the owner has to let this device in. This page will open by itself.');
+    showCode(reply.device_code ?? null, 'page');
   } else {
     tooob.close(); // or its Relay link lingers
     tooob = await connect().catch(() => tooob);
@@ -320,6 +343,17 @@ for (;;) {
 
 watch(tooob);
 document.addEventListener('visibilitychange', checkOnWake);
+
+// In, and waiting to become an Owner Device (it used an Owner Invite): the notice shows its Device
+// Code, and goes once the Host stops sending one (approved, or Blocked). Checked every 3 s.
+async function untilOwnerDevice(code) {
+  showCode(code, 'notice');
+  for (;;) {
+    await sleep(3000);
+    const reply = await Promise.race([ask({ t: 'standing' }), sleep(5000)]).catch(() => undefined);
+    if (reply?.standing && !reply.device_code) return showCode(undefined);
+  }
+}
 
 // The Direct Path (ADR 0004): one WebRTC data channel, negotiated over the iroh connection. The
 // offer, the answer (with the Host's DTLS fingerprint) and the ICE candidates all travel over iroh,

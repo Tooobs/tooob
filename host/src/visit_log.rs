@@ -650,11 +650,15 @@ impl Presence {
                 fields! {"label" => label},
                 format!("refused {label} ({short}) · blocked"),
             ),
-            Refusal::AwaitingApproval(label) => (
-                "awaiting_approval",
-                fields! {"label" => label},
-                format!("{label} ({short}) is waiting for approval"),
-            ),
+            // With its Device Code, the one the device shows, for the Owner to compare (#110).
+            Refusal::AwaitingApproval(label) => {
+                let code = crate::access::device_code(key);
+                (
+                    "awaiting_approval",
+                    fields! {"label" => label, "device_code" => code.as_str()},
+                    format!("{label} ({short}) is waiting for approval · Device Code {code}"),
+                )
+            }
             Refusal::Invite {
                 reason,
                 invite: Some((id, label)),

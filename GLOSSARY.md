@@ -105,8 +105,12 @@ A short-lived Owner Invite made on the home box itself, which needs no approval:
 _Avoid_: recovery code, reset link
 
 **First-Visit Approval**:
-An option on an Invite: the device that uses it waits for the Owner's approval before it's let in.
+An option on an Invite: the device that uses it waits for the Owner's approval before it's let in. The Owner approves it only once its Device Code matches the one its person reads them.
 _Avoid_: manual approval, moderation
+
+**Device Code**:
+Six digits, worked out from a Visitor Key, that a device shows while it waits for the Owner's approval (First-Visit Approval, or an Owner Invite) and the Owner sees beside it, so the Owner approves the device they meant to. Shown only while waiting.
+_Avoid_: PIN, verification code, pairing code
 
 **Invite Link**:
 The URL that carries an Invite: its Host's Key Address, with the Invite after the `#`. Opening it is how a device becomes a Visitor.

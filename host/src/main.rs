@@ -5,7 +5,7 @@
 use anyhow::{Context, Result, bail};
 use std::{collections::HashMap, io::IsTerminal, path::Path, time::Duration};
 use tokio::signal::unix::{SignalKind, signal};
-use tooob::access::InviteOptions;
+use tooob::access::{InviteOptions, Status};
 use tooob::autostart::{self, Keeper};
 use tooob::awake::Awake;
 use tooob::bootstrap::{self, BootstrapVersion, Problem, Watch};
@@ -49,12 +49,20 @@ const USAGE: &str = "usage:
   tooob rm NAME                                   stop it and delete it, Host Key and all
   tooob logs NAME [-n N|all] [-f] [--json]       its log, the last 50 lines, N, or all of it;
                                                   -f follows it, --json gives an object a line
-  tooob invite NAME LABEL [--approve] [--owner] [--expires 1h]  print an Invite Link
+  tooob invite NAME LABEL [--approve] [--owner] [--expires 1h]
+                                                  print an Invite Link; --approve: each device
+                                                  it lets in waits for approve, --owner: to be
+                                                  an Owner Device. Each waiting device shows a
+                                                  Device Code: approve only when it's the code
+                                                  tooob visitors shows
   tooob pair NAME LABEL                           Pairing Invite (this box only)
   tooob visitors NAME [--json]                    its Visitors: when each was last seen, and what
                                                   was sent to them and received from them
   tooob invites NAME [--json]                     its unused Invites
-  tooob block NAME KEY | approve NAME KEY | unblock NAME KEY   KEY: a unique prefix is enough
+  tooob approve NAME CODE                         let in the waiting device showing Device Code
+                                                  CODE (482 917), once the person who has it
+                                                  reads you the same code; or by its KEY
+  tooob block NAME KEY | unblock NAME KEY         KEY: a unique prefix is enough
   tooob revoke NAME INVITE-ID
   tooob upgrade [VERSION] [--check] [--yes] [--anyway]
                                                   install the newest Release, or VERSION (older
@@ -565,6 +573,15 @@ async fn owner_command(
         "visitors" | "invites" => &["json"],
         _ => &[],
     };
+    // A Device Code typed as shown, unquoted (`approve NAME 482 917`), is one word (#110).
+    let joined;
+    let words = match words {
+        [_, _, a, b] if command == "approve" && [a, b].iter().all(|w| three_digits(w)) => {
+            joined = [words[0].clone(), words[1].clone(), format!("{a} {b}")];
+            &joined[..]
+        }
+        _ => words,
+    };
     let arity = if after_name(command).is_some() { 3 } else { 2 };
     if words.len() > arity {
         bail!("too many arguments: {}\n{USAGE}", words[arity..].join(" "));
@@ -627,6 +644,11 @@ async fn owner_command(
     Ok(())
 }
 
+/// Half a Device Code as shown: three digits.
+fn three_digits(word: &str) -> bool {
+    word.len() == 3 && word.bytes().all(|b| b.is_ascii_digit())
+}
+
 /// `tooob invites NAME`: each unused Invite, its id, who it's for and when it expires, under a
 /// header, a column each.
 fn print_invites(invites: &[tooob::access::InviteInfo]) {
@@ -653,10 +675,13 @@ fn print_visitors(visitors: &[tooob::access::VisitorInfo]) {
         key: String,
         label: String,
         status: String,
+        code: String,
         seen: String,
         sent: String,
         received: String,
         owner_device: bool,
+        /// Used an Owner Invite: it's in, and waits for approval to become an Owner Device.
+        becoming_owner_device: bool,
     }
     let now = tooob::control::now();
     let rows: Vec<Row> = visitors
@@ -664,23 +689,32 @@ fn print_visitors(visitors: &[tooob::access::VisitorInfo]) {
         .map(|v| Row {
             key: v.key.chars().take(12).collect(),
             label: v.label.clone(),
-            status: format!("{:?}", v.status),
+            status: match v.status {
+                Status::Allowed => "allowed",
+                Status::AwaitingApproval => "waiting for approval",
+                Status::Blocked => "blocked",
+            }
+            .into(),
+            code: v.device_code.clone().unwrap_or_else(|| "-".into()),
             seen: v
                 .last_seen
                 .map_or("-".into(), |at| ago(now.saturating_sub(at))),
             sent: amount(v.sent),
             received: amount(v.received),
             owner_device: v.owner_device,
+            becoming_owner_device: v.awaiting_owner_approval,
         })
         .collect();
     let header = Row {
         key: "KEY".into(),
         label: "LABEL".into(),
         status: "STATUS".into(),
+        code: "CODE".into(),
         seen: "LAST SEEN".into(),
         sent: "SENT".into(),
         received: "RECEIVED".into(),
         owner_device: false,
+        becoming_owner_device: false,
     };
     // Each column as wide as its widest, in characters: a Label can be "Mamá".
     let widest = |column: fn(&Row) -> &str| {
@@ -694,16 +728,21 @@ fn print_visitors(visitors: &[tooob::access::VisitorInfo]) {
         widest(|r| &r.key),
         widest(|r| &r.label),
         widest(|r| &r.status),
+        widest(|r| &r.code),
         widest(|r| &r.seen),
         widest(|r| &r.sent),
         widest(|r| &r.received),
     ];
     for r in std::iter::once(&header).chain(&rows) {
-        let [key, label, status, seen, sent, received] = widths;
-        let owner_device = if r.owner_device { "  owner device" } else { "" };
+        let [key, label, status, code, seen, sent, received] = widths;
+        let owner_device = match (r.owner_device, r.becoming_owner_device) {
+            (true, _) => "  owner device",
+            (_, true) => "  waiting to become an owner device",
+            _ => "",
+        };
         println!(
-            "{:<key$}  {:<label$}  {:<status$}  {:<seen$}  {:>sent$}  {:>received$}{owner_device}",
-            r.key, r.label, r.status, r.seen, r.sent, r.received
+            "{:<key$}  {:<label$}  {:<status$}  {:<code$}  {:<seen$}  {:>sent$}  {:>received$}{owner_device}",
+            r.key, r.label, r.status, r.code, r.seen, r.sent, r.received
         );
     }
 }
@@ -764,7 +803,12 @@ fn after_name(command: &str) -> Option<(&'static str, &'static str)> {
     match command {
         "invite" => Some(("say who the Invite is for", "LABEL")),
         "pair" => Some(("say which device the Pairing Invite is for", "LABEL")),
-        "block" | "approve" | "unblock" => Some((
+        "approve" => Some((
+            "say which device, by the Device Code it shows (`tooob visitors` lists them) or its \
+             Visitor Key (a unique prefix is enough)",
+            "CODE",
+        )),
+        "block" | "unblock" => Some((
             "say which Visitor, by their Visitor Key (a unique prefix is enough)",
             "KEY",
         )),

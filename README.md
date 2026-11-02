@@ -41,8 +41,12 @@ tooob stop photos                           # stop it; one kept running stays st
 tooob start photos                          # start it again the way it ran: launchd or systemd runs it
 tooob invite photos mom --expires 7d        # prints the Invite Link (https://<host key>.relay.example/#invite=…)
 tooob visitors photos                       # who has got in
+tooob invite photos aunt --approve          # a device it lets in waits until you approve it
+tooob approve photos 482 917                # the Device Code that device shows, and visitors shows
 tooob block photos <key prefix>
 ```
+
+With `--approve` (and with `--owner`, for a device to become an Owner Device), the device that opens the link shows a **Device Code**, `482 917`, and `tooob visitors` shows the same code beside it. Ask the person who has the device to read you its code, and approve only when the two match: a link that's been forwarded, or opened by someone else first, shows a code you weren't told.
 
 `TARGET` is a folder or file (served read-only, as a Shared Folder) or `HOST:PORT` for a web app. A Host's settings are a file you edit by hand (`tooob show photos` says where). Owner commands work whether the Host is running or not. `tooob` with no arguments lists every command.
 

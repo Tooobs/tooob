@@ -485,6 +485,11 @@ impl Admission {
             let decision = self.access.lock().unwrap().admits(visitor);
             heard(&decision);
             let mut reply = json!({"status": 200, "standing": standing(&decision)});
+            // While it waits for the Owner's approval, to be let in or to become an Owner Device:
+            // its Device Code, so its person can read it to the Owner (#110).
+            if let Some(code) = self.access.lock().unwrap().device_code(visitor) {
+                reply["device_code"] = code.into();
+            }
             // Only to a Visitor who's in: what the Site is, so the shell offers to save a Shared
             // Folder's files (#99).
             if matches!(decision, Decision::Allowed { .. }) {

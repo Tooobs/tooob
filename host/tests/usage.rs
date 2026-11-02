@@ -213,12 +213,20 @@ async fn tooob_visitors_totals_what_each_visitor_used_since_they_first_got_in_ac
     let columns: Vec<&str> = columns.iter().map(|c| c.trim()).collect();
     assert_eq!(
         columns,
-        ["KEY", "LABEL", "STATUS", "LAST SEEN", "SENT", "RECEIVED"],
+        [
+            "KEY",
+            "LABEL",
+            "STATUS",
+            "CODE",
+            "LAST SEEN",
+            "SENT",
+            "RECEIVED"
+        ],
         "{header}"
     );
     let shown: Vec<&str> = shown.split_whitespace().collect();
-    assert_eq!(shown[1..6], ["jm", "Allowed", "now", "1.5", "MB"]);
-    assert!(shown[6].starts_with("20.") && shown[7] == "KB", "{shown:?}");
+    assert_eq!(shown[1..7], ["jm", "allowed", "-", "now", "1.5", "MB"]);
+    assert!(shown[7].starts_with("20.") && shown[8] == "KB", "{shown:?}");
     drop(socket);
     tab.close().await;
     media.until_logged(" · sent 520 KB, received 20.");
@@ -235,10 +243,15 @@ async fn tooob_visitors_totals_what_each_visitor_used_since_they_first_got_in_ac
         (&0.into(), &0.into(), &Value::Null)
     );
     let (_, shown) = row(&media.home, &gran);
-    let shown: Vec<&str> = shown.split_whitespace().collect();
+    let shown: Vec<&str> = shown
+        .split("  ")
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .collect();
+    let code = tooob::access::device_code(&iroh::SecretKey::from_bytes(&gran).public().to_string());
     assert_eq!(
         shown[1..],
-        ["gran", "AwaitingApproval", "-", "0", "B", "0", "B"]
+        ["gran", "waiting for approval", &code, "-", "0 B", "0 B"]
     );
 }
 

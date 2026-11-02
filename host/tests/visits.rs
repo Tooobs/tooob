@@ -269,7 +269,15 @@ async fn refusals_are_logged_once_a_device_with_why() {
             && l.ends_with(" for frank · already used")),
         "{said:#?}"
     );
-    assert!(said.contains(&format!("gran ({gran_short}) is waiting for approval")));
+    // With its Device Code, the one the device shows (#110).
+    let code = tooob::access::device_code(&iroh::SecretKey::from_bytes(&gran).public().to_string());
+    assert!(
+        said.contains(&format!(
+            "gran ({gran_short}) is waiting for approval · Device Code {code}"
+        )),
+        "{said:#?}"
+    );
+    assert_eq!(refused[4]["fields"]["device_code"], code.as_str());
 }
 
 #[tokio::test(flavor = "multi_thread")]

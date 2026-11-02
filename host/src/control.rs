@@ -323,7 +323,12 @@ fn reply(control: &Control, request: &Value) -> Value {
             outcome(revoked.map(drop))
         }
         Some(op @ ("block" | "approve" | "unblock")) => {
-            match resolve(control, request["key"].as_str().unwrap_or_default()) {
+            // Approve takes a waiting device's Device Code too (#110).
+            let key = match request["code"].as_str() {
+                Some(code) if op == "approve" => waiting_with(control, code),
+                _ => resolve(control, request["key"].as_str().unwrap_or_default()),
+            };
+            match key {
                 Ok(key) => {
                     let owner_device = |control: &Control| {
                         control
@@ -409,6 +414,32 @@ fn resolve(control: &Control, prefix: &str) -> Result<String, String> {
         [key] => Ok(key.clone()),
         [] => Err("unknown_visitor".into()),
         _ => Err(format!("ambiguous: {}", matches.join(", "))),
+    }
+}
+
+/// The Visitor Key of the one device waiting for approval whose Device Code is `code`: never a
+/// device that's in or Blocked, and never a guess between two that share it.
+fn waiting_with(control: &Control, code: &str) -> Result<String, String> {
+    let Some(code) = crate::access::typed_device_code(code) else {
+        return Err(format!("not_a_device_code: {code} isn't six digits"));
+    };
+    let matches: Vec<String> = control
+        .visitors()
+        .into_iter()
+        .filter(|v| v.device_code.as_deref() == Some(code.as_str()))
+        .map(|v| v.key)
+        .collect();
+    match matches.as_slice() {
+        [key] => Ok(key.clone()),
+        [] => Err(format!(
+            "unknown_device_code: no device waiting for approval has Device Code {code}"
+        )),
+        _ => Err(format!(
+            "ambiguous_device_code: {} devices waiting for approval have Device Code {code}; \
+             approve one by its Visitor Key: {}",
+            matches.len(),
+            matches.join(", ")
+        )),
     }
 }
 
@@ -502,10 +533,14 @@ impl Client {
             .map(drop)
     }
 
-    pub async fn approve(&self, key: &str) -> Result<(), ControlError> {
-        self.ask(json!({"op": "approve", "key": key}))
-            .await
-            .map(drop)
+    /// Approve a device waiting for it, named by its Visitor Key (or a unique prefix of it), or by
+    /// its Device Code as shown, spaces or not.
+    pub async fn approve(&self, key_or_code: &str) -> Result<(), ControlError> {
+        let request = match crate::access::typed_device_code(key_or_code) {
+            Some(code) => json!({"op": "approve", "code": code}),
+            None => json!({"op": "approve", "key": key_or_code}),
+        };
+        self.ask(request).await.map(drop)
     }
 
     pub async fn unblock(&self, key: &str) -> Result<(), ControlError> {

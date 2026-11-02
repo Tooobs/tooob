@@ -119,6 +119,13 @@ impl Visit {
         Ok(head["site"].as_str().map(str::to_string))
     }
 
+    /// The Device Code the Host tells this device while it waits for the Owner's approval (to be
+    /// let in, or to become an Owner Device), as its standing reply says; None otherwise.
+    pub async fn device_code(&self) -> Result<Option<String>, VisitError> {
+        let head = self.standing_reply().await?;
+        Ok(head["device_code"].as_str().map(str::to_string))
+    }
+
     /// The Host's answer to a standing message.
     async fn standing_reply(&self) -> Result<serde_json::Value, VisitError> {
         let (mut send, mut recv) = self.conn.open_bi().await?;

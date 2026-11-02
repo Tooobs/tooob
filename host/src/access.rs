@@ -31,6 +31,10 @@ pub struct VisitorInfo {
     /// Used an Owner Invite; becomes an Owner Device once approved.
     pub awaiting_owner_approval: bool,
     pub status: Status,
+    /// Its Device Code, while it waits for approval (First-Visit Approval, or to become an Owner
+    /// Device); None otherwise.
+    #[serde(default)]
+    pub device_code: Option<String>,
     /// When they were last seen, in Unix seconds: now while they visit; None if never, as far as
     /// this Host has kept (ADR 0025).
     #[serde(default)]
@@ -135,6 +139,13 @@ struct Visitor {
     /// before tooob recorded this has been.
     #[serde(default = "yes")]
     visited: bool,
+}
+
+impl Visitor {
+    /// Waits for the Owner's approval: to be let in, or to become an Owner Device. A Block wins.
+    fn waiting(&self) -> bool {
+        !self.blocked && (!self.approved || self.awaiting_owner_approval)
+    }
 }
 
 fn yes() -> bool {
@@ -394,11 +405,19 @@ impl Access {
                 } else {
                     Status::Allowed
                 },
+                device_code: v.waiting().then(|| device_code(key)),
                 last_seen: None,
                 sent: 0,
                 received: 0,
             })
             .collect()
+    }
+
+    /// The Device Code of the device whose Visitor Key is `visitor_key`, while it waits for the
+    /// Owner's approval (First-Visit Approval, or to become an Owner Device); None for any other.
+    pub fn device_code(&self, visitor_key: &str) -> Option<String> {
+        let v = self.state.visitors.get(visitor_key)?;
+        v.waiting().then(|| device_code(visitor_key))
     }
 
     /// The Owner approves a Visitor that is awaiting approval (first visit, or becoming an Owner Device).
@@ -453,6 +472,27 @@ impl Access {
         }
         result
     }
+}
+
+/// The Device Code of the device whose Visitor Key is `visitor_key`: six digits, grouped 3+3
+/// (`482 917`), that it shows while it waits for approval and the Owner sees beside it. Worked out
+/// here, on the Host, and only here: the device is told it. Nobody keeps a code, so any Release
+/// may change how it's worked out.
+pub fn device_code(visitor_key: &str) -> String {
+    let hash = Sha256::new()
+        .chain_update(b"tooob device code ")
+        .chain_update(visitor_key.as_bytes())
+        .finalize();
+    let n = u64::from_be_bytes(hash[..8].try_into().expect("8 bytes")) % 1_000_000;
+    format!("{:03} {:03}", n / 1000, n % 1000)
+}
+
+/// A Device Code as the Owner types it, spaces or not (`482 917`, `482917`), as it's shown; None
+/// if it isn't six digits.
+pub fn typed_device_code(typed: &str) -> Option<String> {
+    let digits: String = typed.chars().filter(|c| !c.is_whitespace()).collect();
+    (digits.len() == 6 && digits.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| format!("{} {}", &digits[..3], &digits[3..]))
 }
 
 /// Invites are stored under a hash of their token, so the access file (and its backups) holds no
