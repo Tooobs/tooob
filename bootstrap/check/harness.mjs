@@ -105,7 +105,6 @@ const IROH_PATHS = ['/relay', '/ping', '/generate_204', '/healthz'];
  */
 export async function startRelayFront(relayUrl, domain = 'localhost') {
   const relay = new URL(relayUrl);
-  const www = process.env.TOOOB_WWW || join(ROOT, 'bootstrap/www');
   const open = new Set();
   const asked = [];
   const server = createServer((req, res) => {
@@ -136,9 +135,9 @@ export async function startRelayFront(relayUrl, domain = 'localhost') {
     // Any other path is a page of the Site's, opened before the service worker is installed: the
     // shell, which opens it (ADR 0023). A missing Bundle file is still missing.
     const file = path.endsWith('/') ? join(path, 'index.html') : path;
-    const page = isBundlePath(path) ? file : existsSync(join(www, file)) && statSync(join(www, file)).isFile() ? file : '/index.html';
+    const page = isBundlePath(path) ? file : existsSync(join(WWW, file)) && statSync(join(WWW, file)).isFile() ? file : '/index.html';
     try {
-      const body = readFileSync(join(www, page));
+      const body = readFileSync(join(WWW, page));
       res.setHeader('content-type', TYPES[extname(page)] ?? 'text/html');
       res.setHeader('cache-control', 'no-store');
       res.setHeader('origin-agent-cluster', '?1');
@@ -283,6 +282,12 @@ function add(args) {
 export function tooob(args) {
   return execFileSync(TOOOB, args, { encoding: 'utf8', env: ENV }).trim();
 }
+
+/**
+ * The Bootstrap Bundle a Relay front serves: TOOOB_WWW's, swapped in for a cross-Release check, or
+ * this checkout's. What a test expects the front to serve comes from here.
+ */
+export const WWW = process.env.TOOOB_WWW || join(ROOT, 'bootstrap/www');
 
 /**
  * Whether the Release swapped in for a cross-Release check (release.sh: TOOOB_BIN's tooob or

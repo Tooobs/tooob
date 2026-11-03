@@ -544,7 +544,7 @@ test('the Relay serves the Bundle for process isolation, and passes no Cookie on
   try {
     const front = await h.startRelayFront(`http://127.0.0.1:${upstream.address().port}/`);
     const ask = (path, headers) => askFront(front, path, { cookie: 'bomb=x', ...headers });
-    const bundle = JSON.parse(readFileSync(new URL('../www/__tooob/version.json', import.meta.url), 'utf8'));
+    const bundle = JSON.parse(readFileSync(join(h.WWW, '__tooob/version.json'), 'utf8'));
     for (const path of ['/', '/__tooob/version.json', ...Object.keys(bundle.files).map((f) => '/' + f)]) {
       const res = await ask(path);
       assert.equal(res.statusCode, 200, path);
@@ -566,7 +566,7 @@ test("the Relay serves the shell at any page's path, and a missing Bundle file i
   // In step with the Relay image's front.caddy (ADR 0023): for a first visit, before the service
   // worker is installed.
   const front = await h.startRelayFront(irohRelay);
-  const shell = readFileSync(new URL('../www/index.html', import.meta.url), 'utf8');
+  const shell = readFileSync(join(h.WWW, 'index.html'), 'utf8');
   for (const path of ['/subfolder/', '/subfolder/page.html', '/photo.png?size=big', '/a/b/c', '/tooob-sw.js/x', '//example.invalid/x']) {
     const res = await askFront(front, path);
     assert.equal(res.statusCode, 200, path);
@@ -583,7 +583,7 @@ test('"Save link as" of a page\'s address gets an explanation, and a page visit 
   // In step with the Relay image's front.caddy (#99): Chromium saves a link with Dest empty and Mode
   // navigate, Firefox with Mode no-cors. Saved outside the page, it can't reach the Host.
   const front = await h.startRelayFront(irohRelay);
-  const shell = readFileSync(new URL('../www/index.html', import.meta.url), 'utf8');
+  const shell = readFileSync(join(h.WWW, 'index.html'), 'utf8');
   const fix = "tooob can only fetch it from inside the page:\nopen the link in your browser";
   for (const mode of ['navigate', 'no-cors']) {
     const saved = await askFront(front, '/Trip/d%C3%ADa%20uno.md', { 'sec-fetch-dest': 'empty', 'sec-fetch-mode': mode });
