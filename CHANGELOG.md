@@ -7,6 +7,12 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
 
 ## Unreleased
 
+### Added
+- A device waiting for approval (First-Visit Approval, or an Owner Invite) shows a Device Code, six digits; `tooob visitors` and the log show the same code, and `tooob approve NAME CODE` approves by it, so the Owner lets in the device they meant to (#110).
+
+### Changed
+- `tooob visitors` shows statuses in words ("waiting for approval"), with a CODE column; `--json` keeps its names and adds `device_code` (#110).
+
 ## 0.3.3 — 2026-11-01
 
 Protocol Version: `tooob/0`. Tested with iroh-relay 1.3.0.
