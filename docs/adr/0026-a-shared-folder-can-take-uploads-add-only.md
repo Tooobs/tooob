@@ -1,0 +1,12 @@
+# A Shared Folder can take uploads, add-only, when its Owner turns them on
+
+Amends ADRs 0012, 0025 and 0006. A Shared Folder whose Owner turns on uploads lets every allowed Visitor add files to the folder they're looking at, but never overwrite, rename or delete one: a drop box, like a Dropbox file request, served by the Host itself. ADR 0012 had kept uploads for web apps the Host forwards to, but the simplest Host there is should also be the simplest way to send the Owner a file, and add-only keeps one bad Visitor from wiping the Owner's files. We rejected a read-write folder (a shared drive: that's the Sync milestone's ground, and much riskier), per-Visitor upload rights (a permission model tooob doesn't have; a Visitor who shouldn't upload gets a different Shared Folder), and a separate inbox folder Visitors can't see (they can already see the whole share).
+
+Uploaded files run on the Site's origin, so a Visitor could upload a page whose script acts as the Site for every other Visitor and the Owner's devices. So in a Shared Folder with uploads on, every file is served sandboxed (`Content-Security-Policy: sandbox`) and no upload may be named `index.html` or `index.htm`, nor land in a folder that serves one. Sandboxing the whole folder means the Host never has to remember which files a Visitor sent. Each file is sent as its own `PUT` with its bytes as the body, never a `POST` or a form, and the Host grants no CORS preflight, so another Site (another Key Address on the same Relay) can't make a Visitor's browser upload.
+
+## Consequences
+
+- ADR 0025 recorded nothing about what a Visitor reads. An upload is a Visitor giving something to the Owner, who wants to know who sent it: the Host's log records each finished upload (Label and short Visitor Key, the file's path in the share, its size, when). Opening and downloading files still go unrecorded.
+- Turning uploads on lets Visitors write to the Owner's disk, so it counts as letting someone in (ADR 0006): an Agent may turn uploads off, and only propose turning them on.
+- An upload lands whole or not at all: it's written beside its destination under a temporary name the listing hides, and renamed into place once complete. A name that's taken gets a ` (1)` before its extension, as browsers name downloads.
+- The Host refuses an upload that would leave the disk with less than 1 GiB free.

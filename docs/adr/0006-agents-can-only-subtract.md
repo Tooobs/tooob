@@ -1,5 +1,5 @@
 ---
-status: amended by ADR 0018
+status: amended by ADRs 0018 and 0026
 ---
 
 # Agents can remove access but only propose granting it

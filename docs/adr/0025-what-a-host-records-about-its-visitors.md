@@ -1,3 +1,7 @@
+---
+status: amended by ADR 0026
+---
+
 # What a Host records about its Visitors
 
 A Host keeps a log of its own, in its state folder and readable only by the Owner's account, and nothing in it leaves the Host (ADR 0002). It records Visits (who got in, by Label and short Visitor Key, first visit or return, on which path, and when they left, with the bytes sent and received), switches between the Relayed and Direct Paths, refusals (an unknown or Blocked device, an expired or used Invite, a device waiting for approval), the Owner's changes (Invites, Blocks, approvals, and where each came from), and the Host's own starts, stops and warnings. It never records which pages or files a Visitor opened, or their IP addresses. Per-Visitor byte totals are kept with the Host's state so `tooob visitors` can show them across restarts.
