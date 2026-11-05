@@ -33,7 +33,7 @@ A home box serving a Site to invited Visitors in ordinary browsers, for technica
 ### Sharing and the `tooob` command
 
 - ✅ A folder or a file is a Site, no web app needed ([#44](https://github.com/Tooobs/tooob/issues/44))
-- ⬜ Visitors can add files to a Shared Folder whose Owner turned uploads on, never change or remove any ([#116](https://github.com/Tooobs/tooob/issues/116))
+- ✅ Visitors can add files to a Shared Folder whose Owner turned uploads on, never change or remove any ([#116](https://github.com/Tooobs/tooob/issues/116))
 - ✅ `tooob add`, `run`, `ls`, `show` and `rm`; Owner commands name the Host first and work with it stopped ([#47](https://github.com/Tooobs/tooob/issues/47), [#48](https://github.com/Tooobs/tooob/issues/48), [#49](https://github.com/Tooobs/tooob/issues/49))
 - 🟡 `tooob` works like a unix tool ([#33](https://github.com/Tooobs/tooob/issues/33)); the docs describe it all ([#34](https://github.com/Tooobs/tooob/issues/34))
 - ✅ `enable`, `disable`, `stop` and `logs`: the service manager keeps a Host running across logins, crashes and idle sleep ([#27](https://github.com/Tooobs/tooob/issues/27))

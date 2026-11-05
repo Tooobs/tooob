@@ -9,6 +9,7 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
 
 ### Added
 - A device waiting for approval (First-Visit Approval, or an Owner Invite) shows a Device Code, six digits; `tooob visitors` and the log show the same code, and `tooob approve NAME CODE` approves by it, so the Owner lets in the device they meant to (#110).
+- Uploads into a Shared Folder, add-only and off by default: `tooob share --uploads` (or `uploads = true` in Host Settings) gives every allowed Visitor an Upload button and drag-and-drop in each folder's listing. Each file is a streamed `PUT`, saved whole or not at all, never overwriting (a taken name gets ` (1)`), refused for unsafe names, in a folder serving `index.html`, or when it would leave under 1 GiB free (`507`). Files in such a folder are served with `Content-Security-Policy: sandbox`, and the log records each finished upload (#116).
 
 ### Changed
 - `tooob visitors` shows statuses in words ("waiting for approval"), with a CODE column; `--json` keeps its names and adds `device_code` (#110).
