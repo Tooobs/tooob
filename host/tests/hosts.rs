@@ -77,7 +77,7 @@ fn add_needs_a_relay_and_a_bootstrap_is_refused() {
     );
     for command in [
         "tooob run NAME [-d]",
-        "[--relay URL | --local] [-d]",
+        "[--relay URL | --local] [--uploads] [-d]",
         "tooob stop NAME",
         "tooob logs NAME [-n N|all] [-f] [--json]",
     ] {
@@ -981,6 +981,44 @@ fn add_run_show_and_rm_missing_something_say_what_and_show_the_command() {
         2,
         "nothing added or removed"
     );
+}
+
+#[test]
+fn share_uploads_turns_uploads_on_in_its_settings_for_a_new_host_and_a_reused_one() {
+    let home = Home::new();
+    let folder = a_folder();
+    let path = folder.path().to_str().unwrap();
+    let shared = home.spawn(&["share", path, "--local", "--uploads", "--name", "new"]);
+    shared.until_it_says("serving");
+    shared.stop();
+    let settings = std::fs::read_to_string(home.shown("new", "settings file")).unwrap();
+    assert!(settings.contains("\nuploads = true\n"), "{settings}");
+
+    let other = a_folder();
+    let path = other.path().to_str().unwrap();
+    home.ok(&["add", "old", path, "--local"]);
+    let file = home.shown("old", "settings file");
+    assert!(
+        !std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("uploads = true")
+    );
+    let shared = home.spawn(&["share", path, "--uploads"]);
+    shared.until_it_says("serving");
+    shared.stop();
+    let settings = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(settings.matches("uploads = true").count(), 1, "{settings}");
+    home.ok(&["show", "old"]);
+
+    // Turned on, it stays on: share without --uploads leaves it, and never adds a second line.
+    let shared = home.spawn(&["share", path, "--uploads"]);
+    shared.until_it_says("serving");
+    shared.stop();
+    let shared = home.spawn(&["share", path]);
+    shared.until_it_says("serving");
+    shared.stop();
+    let settings = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(settings.matches("uploads = true").count(), 1, "{settings}");
 }
 
 #[test]

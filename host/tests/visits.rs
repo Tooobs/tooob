@@ -100,6 +100,48 @@ fn short(key: &[u8; 32]) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn each_finished_upload_is_logged_with_who_where_and_how_big() {
+    let home = Home::new();
+    let folder = a_folder();
+    std::fs::create_dir(folder.path().join("Trip")).unwrap();
+    let relay = TestRelay::start();
+    let path = folder.path().to_str().unwrap();
+    home.ok(&["add", "photos", path, "--relay", &relay.url]);
+    // As its Owner turns them on: in its settings file.
+    let file = home.shown("photos", "settings file");
+    let settings = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(&file, settings + "uploads = true\n").unwrap();
+    let running = home.start_with("photos", &QUICK);
+    let photos = Photos {
+        home,
+        relay,
+        running,
+        _folder: folder,
+    };
+    let dave = new_key();
+    let token = photos.invite("dave", &[]);
+    let tab = photos.connect(dave).await;
+    assert_eq!(tab.redeem(&token).await, Ok(Redeemed::Admitted));
+    let sent = tab
+        .request("PUT", "/Trip/beach.jpg", &[], &[7u8; 2048])
+        .await
+        .unwrap();
+    assert_eq!(sent.status, 201);
+
+    let uploaded = format!("dave ({}) uploaded /Trip/beach.jpg · 2.0 KB", short(&dave));
+    photos.until_logged(&uploaded);
+    let logged = &photos.events("uploaded")[0];
+    assert_eq!(logged["fields"]["label"], "dave");
+    assert_eq!(logged["fields"]["key"], short(&dave));
+    assert_eq!(logged["fields"]["path"], "/Trip/beach.jpg");
+    assert_eq!(logged["fields"]["size"], 2048);
+    assert!(
+        logged["at"].is_string() || logged["time"].is_string(),
+        "{logged}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_visitors_first_visit_is_logged_when_they_get_in_and_when_they_leave() {
     let photos = Photos::start();
     let dave = new_key();

@@ -248,10 +248,17 @@ export async function startHost(site, relay, name, env = {}) {
   return runHost(name, env);
 }
 
-/** A Host sharing PATH (a Shared Folder, or a single file), through a Relay, running. */
-export async function startShare(path, relay) {
+/**
+ * A Host sharing PATH (a Shared Folder, or a single file), through a Relay, running. `uploads`:
+ * its Visitors can add files to it, turned on in its settings file as its Owner does.
+ */
+export async function startShare(path, relay, { uploads = false } = {}) {
   const name = `share-${++hosts}`;
   await add([name, path, '--relay', relay]);
+  if (uploads) {
+    const settings = join(HOME, 'config', 'hosts', `${name}.toml`);
+    writeFileSync(settings, `${readFileSync(settings, 'utf8')}uploads = true\n`);
+  }
   return runHost(name);
 }
 

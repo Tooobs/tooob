@@ -35,10 +35,12 @@ const USAGE: &str = "usage:
                                                   after logins, reboots and crashes: launchd or
                                                   systemd runs it
   tooob share PATH [--invite LABEL]... [--expires 7d] [--approve] [--name NAME]
-                   [--relay URL | --local] [-d]
+                   [--relay URL | --local] [--uploads] [-d]
                                                   add a Host for PATH (or reuse its Host), invite
                                                   each LABEL, then run it (-d as for run); it
-                                                  warns when PATH holds .git, .env or .ssh
+                                                  warns when PATH holds .git, .env or .ssh;
+                                                  --uploads: its Visitors can add files to it,
+                                                  never replacing one
   tooob ls [--json]                               every Host on this box, running or stopped
   tooob show NAME                                 its settings, Host Key and files
   tooob stop NAME                                 stop it; one kept running stays stopped, across
@@ -79,7 +81,7 @@ Running Hosts look for a newer Release once a day, and say when one is out.";
 
 const VALUE_FLAGS: &[&str] = &["relay", "expires", "name", "lines"];
 const BARE_FLAGS: &[&str] = &[
-    "local", "json", "approve", "owner", "follow", "yes", "check", "anyway", "detach",
+    "local", "json", "approve", "owner", "follow", "yes", "check", "anyway", "detach", "uploads",
 ];
 
 /// Where an Owner learns to deploy a Relay.
@@ -301,7 +303,7 @@ async fn share(
         true => Some(autostart::require_keeping_running(&name)?),
         false => None,
     };
-    let (host, added) = match found {
+    let (mut host, added) = match found {
         Some(host) => {
             if !who.is_empty() {
                 host.key_address()?;
@@ -316,6 +318,9 @@ async fn share(
             (home.add(&name, &serves, &relay)?, true)
         }
     };
+    if flags.contains_key("uploads") {
+        host.turn_on_uploads()?;
+    }
     for warning in warnings(given, &path) {
         eprintln!("tooob: warning: {warning}");
     }
@@ -1045,12 +1050,13 @@ async fn serve_here(
             lasting(check_every)
         ));
     }
-    let running = Host::start(HostConfig {
+    let uploads = host.settings.uploads.then(tooob::host::Uploads::default);
+    let config = HostConfig {
         site,
         data_dir: host.state_dir.clone(),
         network,
-    })
-    .await?;
+    };
+    let running = Host::start_with(config, uploads).await?;
     let key = running.address().id.to_z32();
     let fields = tooob::fields! {"host_key" => key, "relay" => relay, "local" => local};
     log::event("host", fields, &format!("Host {key}, through {through}"));

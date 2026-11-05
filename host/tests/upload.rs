@@ -10,7 +10,7 @@ use support::{TestSite, hex};
 use tokio::io::{AsyncRead, ReadBuf};
 use tooob::Network;
 use tooob::access::InviteOptions;
-use tooob::host::{Host, HostConfig, Site};
+use tooob::host::{Host, HostConfig, Site, Uploads};
 use tooob::visit::Visit;
 
 const MIB: u64 = 1 << 20;
@@ -130,6 +130,49 @@ async fn an_upload_far_over_64_mib_reaches_the_site_intact_without_the_host_hold
         format!("{size} {expected}")
     );
     let grew = peak_memory().saturating_sub(before);
+    assert!(
+        grew < 32 * MIB,
+        "memory grew {} MiB for a {} MiB upload",
+        grew / MIB,
+        size / MIB
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_upload_far_over_64_mib_into_a_shared_folder_lands_intact_without_the_host_holding_it() {
+    let size = 320 * MIB;
+    let expected = Pattern::sha256(size);
+    let folder = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let config = HostConfig {
+        site: Site::SharedFolder(folder.path().into()),
+        data_dir: dir.path().into(),
+        network: Network::LocalOnly,
+    };
+    let uploads = Uploads::with_free_space(|_| Ok(u64::MAX));
+    let host = Host::start_with(config, Some(uploads)).await.unwrap();
+    let mut key = [0u8; 32];
+    getrandom::fill(&mut key).unwrap();
+    let visit = Visit::connect(host.address(), key, Network::LocalOnly)
+        .await
+        .unwrap();
+    let invite = host
+        .control()
+        .invite("mom", InviteOptions::default())
+        .unwrap();
+    visit.redeem(&invite.token).await.unwrap();
+    let before = peak_memory();
+
+    let reply = visit
+        .upload("PUT", "/big.bin", &[], Pattern::new(size))
+        .await
+        .unwrap();
+
+    assert_eq!(reply.status, 201);
+    let grew = peak_memory().saturating_sub(before);
+    let landed = std::fs::read(folder.path().join("big.bin")).unwrap();
+    assert_eq!(landed.len() as u64, size);
+    assert_eq!(hex(&sha2::Sha256::digest(&landed)), expected);
     assert!(
         grew < 32 * MIB,
         "memory grew {} MiB for a {} MiB upload",

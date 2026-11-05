@@ -1,7 +1,7 @@
 // The browser side of an Invite Link, end to end. Run: npx playwright test (after ../build.sh).
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
-import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { createServer, get } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -1181,8 +1181,8 @@ function aFolder() {
   return root;
 }
 
-async function visitSharedFolder(path, { browser, relay }) {
-  const host = await h.startShare(path, relay);
+async function visitSharedFolder(path, { browser, relay }, options) {
+  const host = await h.startShare(path, relay, options);
   const page = await h.newVisitor(browser);
   const downloads = h.watchDownloads(page);
   await page.goto(h.tooob(['invite', host.name, 'friend']));
@@ -1405,6 +1405,80 @@ test("a listing's Download link saves a file, web page or not, under its own nam
     assert.deepEqual(saved.bytes, readFileSync(join(root, name)), name);
   }
   assert.match(await frame.evaluate(() => document.title), /^Index of/, 'the listing stays');
+});
+
+/** Wait until each of `names` is a link in the listing, and its upload says it's done. */
+async function uploaded(frame, names) {
+  for (const name of names) {
+    await frame.waitForSelector(`a[href="${encodeURIComponent(name)}"]`, { timeout: 20000 });
+  }
+  return frame.$$eval('#uploads li', (lis) => lis.map((li) => li.textContent));
+}
+
+test('a Visitor uploads several files from a Shared Folder listing, and a taken name gets a number', async ({ browser, relay }) => {
+  test.skip(h.olderThan('0.3.4'), 'tests #116, from 0.3.4; the Release swapped in is older');
+  const root = aFolder();
+  const { frame } = await visitSharedFolder(root, { browser, relay }, { uploads: true });
+  await frame.waitForSelector('#pick', { timeout: 20000 });
+  assert.match(await frame.textContent('#pick'), /Upload/);
+  const big = Buffer.alloc(3 * 1024 * 1024, 7);
+  await frame.setInputFiles('#files', [
+    { name: 'notes.txt', mimeType: 'text/plain', buffer: Buffer.from('mine too') },
+    { name: 'big.bin', mimeType: 'application/octet-stream', buffer: big },
+  ]);
+  const said = await uploaded(frame, ['notes (1).txt', 'big.bin']);
+  assert.ok(said.includes('notes.txt: uploaded, saved as notes (1).txt'), said.join('\n'));
+  assert.ok(said.includes('big.bin: uploaded'), said.join('\n'));
+  assert.equal(readFileSync(join(root, 'notes.txt'), 'utf8'), 'hello friends', 'never overwritten');
+  assert.equal(readFileSync(join(root, 'notes (1).txt'), 'utf8'), 'mine too');
+  assert.deepEqual(readFileSync(join(root, 'big.bin')), big);
+});
+
+test('a Visitor drops files onto a Shared Folder listing to upload them, into the subfolder shown', async ({ browser, relay }) => {
+  test.skip(h.olderThan('0.3.4'), 'tests #116, from 0.3.4; the Release swapped in is older');
+  const root = aFolder();
+  const { frame } = await visitSharedFolder(root, { browser, relay }, { uploads: true });
+  await frame.waitForSelector('a[href="Holiday%20photos/"]', { timeout: 20000 });
+  await Promise.all([frame.waitForNavigation(), frame.click('a[href="Holiday%20photos/"]')]);
+  await frame.waitForSelector('#pick', { timeout: 20000 });
+  await frame.evaluate(() => {
+    const files = new DataTransfer();
+    files.items.add(new File(['sand'], 'dune.txt', { type: 'text/plain' }));
+    for (const type of ['dragover', 'drop']) {
+      document.body.dispatchEvent(new DragEvent(type, { dataTransfer: files, bubbles: true, cancelable: true }));
+    }
+  });
+  const said = await uploaded(frame, ['dune.txt']);
+  assert.deepEqual(said, ['dune.txt: uploaded']);
+  assert.equal(readFileSync(join(root, 'Holiday photos', 'dune.txt'), 'utf8'), 'sand');
+});
+
+test("an uploaded web page's script never runs, and a refused name says why", async ({ browser, relay }) => {
+  test.skip(h.olderThan('0.3.4'), 'tests #116, from 0.3.4; the Release swapped in is older');
+  const root = aFolder();
+  const { frame } = await visitSharedFolder(root, { browser, relay }, { uploads: true });
+  await frame.waitForSelector('#pick', { timeout: 20000 });
+  const page = '<!doctype html><title>Mine</title><p id="p">plain</p><script>document.getElementById("p").textContent = "ran"</script>';
+  await frame.setInputFiles('#files', [
+    { name: 'mine.html', mimeType: 'text/html', buffer: Buffer.from(page) },
+    { name: 'index.html', mimeType: 'text/html', buffer: Buffer.from(page) },
+  ]);
+  await uploaded(frame, ['mine.html']);
+  await frame.waitForFunction(() => document.querySelectorAll('#uploads li.failed').length === 1, null, { timeout: 20000 });
+  assert.match(await frame.textContent('#uploads li.failed'), /^index\.html: not uploaded: index\.html and index\.htm/);
+  assert.equal(existsSync(join(root, 'index.html')), false);
+
+  await Promise.all([frame.waitForNavigation(), frame.click('a[href="mine.html"]')]);
+  const shown = await (await frame.waitForSelector('#p', { timeout: 20000 })).textContent();
+  assert.equal(shown, 'plain', 'its script was sandboxed');
+});
+
+test('a Shared Folder without uploads has no Upload button', async ({ browser, relay }) => {
+  test.skip(h.olderThan('0.3.4'), 'tests #116, from 0.3.4; the Release swapped in is older');
+  const { frame } = await visitSharedFolder(aFolder(), { browser, relay });
+  await frame.waitForSelector('a[href="notes.txt"]', { timeout: 20000 });
+  assert.equal(await frame.$('#pick'), null);
+  assert.equal(await frame.$('#files'), null);
 });
 
 test("a Shared Folder file that isn't a web page shows a Download button by the pill, which saves it", async ({ browser, relay }) => {

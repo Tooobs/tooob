@@ -52,6 +52,57 @@ impl std::fmt::Display for Site {
     }
 }
 
+/// How much space is free, for a Visitor's upload, on the disk holding a folder.
+type FreeSpace = dyn Fn(&std::path::Path) -> std::io::Result<u64> + Send + Sync;
+
+/// A Shared Folder whose Owner turned uploads on: its Visitors may add files to it, never change
+/// or remove one (ADR 0026). The free space it reads is a seam, so tests can make a disk full.
+#[derive(Clone)]
+pub struct Uploads {
+    free_space: Arc<FreeSpace>,
+}
+
+impl Default for Uploads {
+    /// The free space the disk itself reports.
+    fn default() -> Uploads {
+        Uploads::with_free_space(free_space)
+    }
+}
+
+impl std::fmt::Debug for Uploads {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Uploads")
+    }
+}
+
+impl Uploads {
+    /// Uploads that read the free space on the disk holding a folder from `free_space`.
+    pub fn with_free_space(
+        free_space: impl Fn(&std::path::Path) -> std::io::Result<u64> + Send + Sync + 'static,
+    ) -> Uploads {
+        Uploads {
+            free_space: Arc::new(free_space),
+        }
+    }
+
+    /// How many bytes are free, for an unprivileged writer, on the disk holding `folder`.
+    pub(crate) fn free(&self, folder: &std::path::Path) -> std::io::Result<u64> {
+        (self.free_space)(folder)
+    }
+}
+
+/// The free space statvfs reports on the disk holding `path`.
+fn free_space(path: &std::path::Path) -> std::io::Result<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(path.as_ptr(), &mut stat) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    #[allow(clippy::unnecessary_cast)]
+    Ok(stat.f_bavail as u64 * stat.f_frsize as u64)
+}
+
 pub struct Host {
     router: Router,
     control: Control,
@@ -64,6 +115,11 @@ pub struct Host {
 
 impl Host {
     pub async fn start(config: HostConfig) -> Result<Host> {
+        Host::start_with(config, None).await
+    }
+
+    /// Start a Host; a Shared Folder takes uploads when `uploads` says how (ADR 0026).
+    pub async fn start_with(config: HostConfig, uploads: Option<Uploads>) -> Result<Host> {
         // It holds the Host Key, the access state and the control socket: anyone who can read the
         // Host Key can impersonate the Host. A directory we create is private to the Owner's account;
         // an existing one (a NAS mount, a Docker volume) is left as it is, with a warning if it's open.
@@ -103,6 +159,7 @@ impl Host {
             host_key: endpoint.id(),
             access: access.clone(),
             site,
+            uploads,
             jars: jars.clone(),
             changes: changes.clone(),
             visits: visits.clone(),
@@ -237,6 +294,8 @@ pub(crate) struct Admission {
     /// Fires when the Owner takes access away, so open WebSockets get rechecked.
     changes: Arc<watch::Sender<()>>,
     site: Site,
+    /// Set when its Shared Folder takes uploads (ADR 0026).
+    uploads: Option<Uploads>,
     /// Each Visitor's Site cookies, kept on disk across restarts (ADR 0005).
     jars: Arc<Jars>,
     /// What the log says of each Visitor's Visit (ADR 0025).
@@ -536,8 +595,16 @@ impl Admission {
             heard(&decision);
             let path = head["path"].as_str().unwrap_or("/");
             match (decision, &self.site) {
-                (Decision::Allowed { .. }, Site::SharedFolder(root)) => {
-                    crate::shared_folder::serve(root, &head, &mut send).await?
+                (Decision::Allowed { label, .. }, Site::SharedFolder(root)) => {
+                    let folder = crate::shared_folder::Folder {
+                        root,
+                        uploads: self.uploads.as_ref(),
+                    };
+                    let who = crate::shared_folder::Uploader {
+                        label: &label,
+                        key: visitor,
+                    };
+                    folder.serve(&head, rest, recv, &mut send, who).await?
                 }
                 (Decision::Allowed { .. }, Site::WebApp(site)) if !on_site(site, path) => {
                     let reply = json!({"status": 400, "error": "bad_path"});

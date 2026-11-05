@@ -39,6 +39,9 @@ pub struct Settings {
     pub serves: String,
     /// A Relay's URL, or `none`.
     pub relay: String,
+    /// A Shared Folder whose Visitors can add files to it, add-only (ADR 0026). Read when it starts.
+    #[serde(default)]
+    pub uploads: bool,
     /// Hosts made before a Relay served its Bootstrap (ADR 0020) named one here. Ignored.
     #[serde(default, rename = "bootstrap")]
     _bootstrap: Option<toml::Value>,
@@ -275,6 +278,7 @@ impl Home {
         let settings = Settings {
             serves,
             relay: relay.to_string(),
+            uploads: false,
             _bootstrap: None,
         };
         settings.network()?;
@@ -322,6 +326,38 @@ impl Home {
 }
 
 impl Entry {
+    /// Let its Visitors add files to its Shared Folder (ADR 0026), from the next time it starts:
+    /// `uploads = true` in its settings file, the Owner's own lines kept as they are.
+    pub fn turn_on_uploads(&mut self) -> Result<()> {
+        if self.settings.uploads {
+            return Ok(());
+        }
+        let text = std::fs::read_to_string(&self.settings_file)?;
+        let set = |l: &str| l.trim_start().starts_with("uploads") && l.contains('=');
+        let text = match text.lines().any(set) {
+            true => {
+                text.lines()
+                    .map(|l| if set(l) { "uploads = true" } else { l })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    + "\n"
+            }
+            false => format!(
+                "{}\n\
+                 # true: its Visitors can add files to the folder they're looking at, never\n\
+                 # replacing one. Takes effect the next time it runs.\n\
+                 uploads = true\n",
+                text.trim_end()
+            ),
+        };
+        let settings: Settings = toml::from_str(&text).with_context(|| {
+            format!("can't turn on uploads in {}", self.settings_file.display())
+        })?;
+        std::fs::write(&self.settings_file, text)?;
+        self.settings = settings;
+        Ok(())
+    }
+
     /// Its Key Address, `<host key>.<relay domain>`, from the Relay its settings name (ADR 0020):
     /// the page its Invite Links open. A Host with no Relay, or a Relay at an IP address, has
     /// none, since browsers reach Hosts only through a Relay's domain.
