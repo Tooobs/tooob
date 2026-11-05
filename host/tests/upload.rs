@@ -170,9 +170,20 @@ async fn an_upload_far_over_64_mib_into_a_shared_folder_lands_intact_without_the
 
     assert_eq!(reply.status, 201);
     let grew = peak_memory().saturating_sub(before);
-    let landed = std::fs::read(folder.path().join("big.bin")).unwrap();
-    assert_eq!(landed.len() as u64, size);
-    assert_eq!(hex(&sha2::Sha256::digest(&landed)), expected);
+    // Read as it's hashed, never whole: the other tests here measure this process's memory too.
+    let mut landed = std::fs::File::open(folder.path().join("big.bin")).unwrap();
+    let (mut hash, mut read) = (sha2::Sha256::new(), 0u64);
+    let mut chunk = vec![0u8; 64 * 1024];
+    loop {
+        let n = std::io::Read::read(&mut landed, &mut chunk).unwrap();
+        if n == 0 {
+            break;
+        }
+        hash.update(&chunk[..n]);
+        read += n as u64;
+    }
+    assert_eq!(read, size);
+    assert_eq!(hex(&hash.finalize()), expected);
     assert!(
         grew < 32 * MIB,
         "memory grew {} MiB for a {} MiB upload",
