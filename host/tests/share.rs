@@ -499,6 +499,28 @@ async fn without_uploads_a_listing_has_no_upload_button_and_a_put_writes_nothing
 }
 
 #[tokio::test]
+async fn a_taken_name_too_long_for_its_number_is_shortened_to_fit() {
+    let folder = tempfile::tempdir().unwrap();
+    let shared = share_uploads(folder.path()).await;
+    let name = format!("{}é.txt", "x".repeat(248)); // 255 bytes, a 2-byte letter at the cut
+    let path = format!("/{}", name.replace('é', "%C3%A9"));
+    assert_eq!(put(&shared, &path, b"one").await.status, 201);
+    let again = put(&shared, &path, b"two").await;
+    assert_eq!(
+        again.status,
+        201,
+        "{}",
+        String::from_utf8_lossy(&again.body)
+    );
+    let saved: serde_json::Value = serde_json::from_slice(&again.body).unwrap();
+    let saved = saved["saved"].as_str().unwrap();
+    assert!(saved.len() <= 255, "{saved}");
+    assert_eq!(saved, format!("{} (1).txt", "x".repeat(247)));
+    assert_eq!(std::fs::read(folder.path().join(&name)).unwrap(), b"one");
+    assert_eq!(std::fs::read(folder.path().join(saved)).unwrap(), b"two");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_upload_whose_name_is_taken_gets_a_number_and_nothing_is_overwritten() {
     let folder = tempfile::tempdir().unwrap();
     write(folder.path().join("photo.jpg"), "original");
@@ -520,14 +542,32 @@ async fn an_upload_whose_name_is_taken_gets_a_number_and_nothing_is_overwritten(
         "photo (2).jpg"
     );
     assert_eq!(saved(put(&shared, "/README", b"r").await), "README (1)");
-    // Two at once, of one name: each lands under a name of its own.
-    let (a, b) = tokio::join!(
-        put(&shared, "/same.txt", b"a"),
-        put(&shared, "/same.txt", b"b")
-    );
-    let mut both = [saved(a), saved(b)];
-    both.sort();
-    assert_eq!(both, ["same (1).txt", "same.txt"]);
+    // Eight at once, of one name, each written by the Host on a thread of its own: each lands
+    // under a name of its own, with its own bytes.
+    let body = |i: usize| vec![i as u8; 1 << 20];
+    let sent = (0..8).map(|i| {
+        let body = body(i);
+        let shared = &shared;
+        async move { put(shared, "/same.txt", &body).await }
+    });
+    let mut all: Vec<String> = futures::future::join_all(sent)
+        .await
+        .into_iter()
+        .map(saved)
+        .collect();
+    all.sort();
+    let mut expected: Vec<String> = (1..8).map(|n| format!("same ({n}).txt")).collect();
+    expected.push("same.txt".into());
+    expected.sort();
+    assert_eq!(all, expected);
+    let mut bytes: Vec<u8> = expected
+        .iter()
+        .map(|n| std::fs::read(folder.path().join(n)).unwrap())
+        .inspect(|b| assert!(b.len() == 1 << 20 && b.iter().all(|x| *x == b[0])))
+        .map(|b| b[0])
+        .collect();
+    bytes.sort();
+    assert_eq!(bytes, (0..8).collect::<Vec<u8>>(), "none overwritten");
 
     assert_eq!(
         std::fs::read(folder.path().join("photo.jpg")).unwrap(),
@@ -563,6 +603,8 @@ async fn each_refused_name_is_refused_with_its_reason_and_nothing_is_written() {
         ("/.tooob-partial-x", ".tooob-partial"),
         ("/index.html", "index.html"),
         ("/sub/index.htm", "index.htm"),
+        ("/Index.html", "index.html"),
+        ("/sub/INDEX.HTM", "index.htm"),
     ] {
         let reply = put(&shared, path, b"x").await;
         assert_eq!(reply.status, 400, "{path}");

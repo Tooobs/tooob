@@ -17,7 +17,7 @@ use tower::ServiceExt;
 use tower_http::services::ServeFile;
 
 /// A Shared Folder as one request finds it: where it is, and whether it takes uploads.
-pub(crate) struct Folder<'a> {
+pub(crate) struct SharedFolder<'a> {
     pub root: &'a Path,
     pub uploads: Option<&'a Uploads>,
 }
@@ -38,7 +38,15 @@ const CHECK_FREE_EVERY: u64 = 1 << 20;
 /// be named so.
 const PARTIAL: &str = ".tooob-partial";
 
-impl Folder<'_> {
+/// A PUT, as it arrived: the path in the share it names, its head, and what of its body came
+/// with the head.
+struct Put<'a> {
+    path: &'a str,
+    head: &'a Value,
+    rest: Vec<u8>,
+}
+
+impl SharedFolder<'_> {
     /// Answer one Visitor request. Only GET and HEAD, and no WebSockets; PUT too, adding a file,
     /// where uploads are on (ADR 0026). Never POST, and no CORS preflight: another Site can't make
     /// a Visitor's browser upload.
@@ -58,7 +66,8 @@ impl Folder<'_> {
         {
             let path = head["path"].as_str().unwrap_or("/");
             let path = path.split(['?', '#']).next().unwrap_or_default();
-            return upload(root, uploads, path, head, rest, recv, send, who).await;
+            let put = Put { path, head, rest };
+            return self.upload(uploads, put, recv, send, who).await;
         }
         if head["t"] == "ws" || !matches!(method, "GET" | "HEAD") {
             let allow = if uploads.is_some() {
@@ -69,23 +78,16 @@ impl Folder<'_> {
             let reply = json!({"status": 405, "headers": [["allow", allow]]});
             return wire::write_line(send, &reply).await;
         }
-        // An uploaded page must never run script as the Site (ADR 0026): every file in a folder
-        // taking uploads is sandboxed. Its listings are the Host's own, and run the Upload button.
-        let sandbox = Sandbox(self.uploads.is_some());
-        serve(root, uploads.is_some(), sandbox, method, head, send).await
+        serve(root, uploads.is_some(), method, head, send).await
     }
 }
 
-/// Whether every file served is sent with `Content-Security-Policy: sandbox`.
-#[derive(Clone, Copy)]
-struct Sandbox(bool);
-
-/// Answer a GET or HEAD from the Shared Folder at `root`; its listings offer uploads when
-/// `uploads` is set.
+/// Answer a GET or HEAD from the Shared Folder at `root`. When it takes `uploads`, its listings
+/// offer them, and every file is sandboxed: an uploaded page must never run script as the Site
+/// (ADR 0026). Its listings are the Host's own, and run the Upload button.
 async fn serve(
     root: &Path,
     uploads: bool,
-    sandbox: Sandbox,
     method: &str,
     head: &Value,
     send: &mut (impl AsyncWrite + Unpin + Send),
@@ -101,7 +103,7 @@ async fn serve(
     };
     let path = req.uri().path().to_string();
     if root.is_file() {
-        return single_file(root, req, sandbox, send).await;
+        return single_file(root, req, send).await; // nothing can be uploaded to it
     }
     match locate(root, &path) {
         // As web servers do: the page's relative links then resolve inside the folder. One leading
@@ -120,10 +122,10 @@ async fn serve(
             match inside(root, &folder.join("index.html")).filter(|p| p.is_file()) {
                 Some(page) => {
                     let resp = ServeFile::new(page).oneshot(req).await?;
-                    reply(send, sandbox, resp).await
+                    reply(send, uploads, resp).await
                 }
                 None => match listing(root, &folder, &path, uploads) {
-                    Ok(page) => reply(send, Sandbox(false), page).await,
+                    Ok(page) => reply(send, false, page).await,
                     Err(_) => status(send, 404).await, // unreadable: as for a file
                 },
             }
@@ -136,7 +138,7 @@ async fn serve(
                 .next()
                 .unwrap_or_default();
             let name = percent_decode_str(last).decode_utf8_lossy().into_owned();
-            serve_file(&file, &name, req, sandbox, send).await
+            serve_file(&file, &name, req, uploads, send).await
         }
         None => status(send, 404).await,
     }
@@ -151,7 +153,6 @@ async fn status(send: &mut (impl AsyncWrite + Unpin + Send), code: u16) -> Resul
 async fn single_file(
     file: &Path,
     req: http::Request<()>,
-    sandbox: Sandbox,
     send: &mut (impl AsyncWrite + Unpin + Send),
 ) -> Result<()> {
     let name = file.file_name().context("no file name")?.to_string_lossy();
@@ -164,16 +165,17 @@ async fn single_file(
     if percent_decode_str(path).decode_utf8().ok().as_deref() != Some(&format!("/{name}")) {
         return status(send, 404).await;
     }
-    serve_file(file, &name, req, sandbox, send).await
+    serve_file(file, &name, req, false, send).await
 }
 
 /// A file, shown in the browser, or saved as `name` when asked for with `?download`: what a
-/// listing's Download link and the shell's Download button ask for (#99).
+/// listing's Download link and the shell's Download button ask for (#99). `sandboxed`, in a
+/// folder taking uploads.
 async fn serve_file(
     file: &Path,
     name: &str,
     req: http::Request<()>,
-    sandbox: Sandbox,
+    sandboxed: bool,
     send: &mut (impl AsyncWrite + Unpin + Send),
 ) -> Result<()> {
     let download = req.uri().query().is_some_and(|q| {
@@ -186,7 +188,7 @@ async fn serve_file(
         resp.headers_mut()
             .insert(http::header::CONTENT_DISPOSITION, value);
     }
-    reply(send, sandbox, resp).await
+    reply(send, sandboxed, resp).await
 }
 
 /// A Content-Disposition that saves the file as `name`: the real name (RFC 6266's `filename*`),
@@ -241,17 +243,18 @@ fn inside(root: &Path, path: &Path) -> Option<PathBuf> {
     real.starts_with(root.canonicalize().ok()?).then_some(real)
 }
 
-/// Send a response as the proxy does: its JSON line, then the body.
+/// Send a response as the proxy does: its JSON line, then the body; `sandboxed`, with
+/// `Content-Security-Policy: sandbox`.
 async fn reply<B>(
     send: &mut (impl AsyncWrite + Unpin + Send),
-    sandbox: Sandbox,
+    sandboxed: bool,
     mut resp: http::Response<B>,
 ) -> Result<()>
 where
     B: http_body::Body<Data = bytes::Bytes> + Unpin,
     B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    if sandbox.0 {
+    if sandboxed {
         resp.headers_mut().insert(
             http::header::CONTENT_SECURITY_POLICY,
             http::HeaderValue::from_static("sandbox"),
@@ -491,21 +494,32 @@ fn refused_name(name: &str) -> Option<&'static str> {
     if name.starts_with(PARTIAL) {
         return Some("names starting .tooob-partial are tooob's own");
     }
-    if matches!(name, "index.html" | "index.htm") {
+    // In any case: on a case-insensitive disk, Index.html is index.html.
+    if ["index.html", "index.htm"]
+        .iter()
+        .any(|i| name.eq_ignore_ascii_case(i))
+    {
         return Some("index.html and index.htm would turn the folder into a website");
     }
     None
 }
 
-/// `name`, or its `n`th stand-in when it's taken, as browsers name downloads: `photo (1).jpg`.
+/// `name`, or its `n`th stand-in when it's taken, as browsers name downloads: `photo (1).jpg`. A
+/// stand-in past 255 bytes, which no disk takes, has its stem shortened to fit.
 fn numbered(name: &str, n: u32) -> String {
     if n == 0 {
         return name.to_string();
     }
-    match name.rfind('.').filter(|&i| i > 0) {
-        Some(i) => format!("{} ({n}){}", &name[..i], &name[i..]),
-        None => format!("{name} ({n})"),
+    let (stem, ext) = match name.rfind('.').filter(|&i| i > 0) {
+        Some(i) => name.split_at(i),
+        None => (name, ""),
+    };
+    let number = format!(" ({n}){ext}");
+    let mut cut = stem.len().min(255usize.saturating_sub(number.len()));
+    while !stem.is_char_boundary(cut) {
+        cut -= 1;
     }
+    format!("{}{number}", &stem[..cut])
 }
 
 /// A partial upload's file, deleted unless it's been renamed into place: an upload cut short or
@@ -528,129 +542,127 @@ async fn refuse(send: &mut (impl AsyncWrite + Unpin + Send), code: u16, text: &s
 
 const DISK_FULL: &str = "the disk is full";
 
-/// Add one file, a PUT to `path`, into the folder it names: whole or not at all, never over
-/// another file, and never so the disk is left with less than 1 GiB free (ADR 0026).
-#[allow(clippy::too_many_arguments)]
-async fn upload(
-    root: &Path,
-    uploads: &Uploads,
-    path: &str,
-    head: &Value,
-    rest: Vec<u8>,
-    mut recv: impl AsyncRead + Unpin + Send,
-    send: &mut (impl AsyncWrite + Unpin + Send),
-    who: Uploader<'_>,
-) -> Result<()> {
-    let (parent, last) = path.rsplit_once('/').unwrap_or(("", path));
-    let Ok(name) = percent_decode_str(last).decode_utf8() else {
-        return refuse(send, 400, "a name must be UTF-8").await;
-    };
-    if let Some(why) = refused_name(&name) {
-        return refuse(send, 400, why).await;
-    }
-    let Some(folder) = locate(root, &format!("{parent}/")).filter(|f| f.is_dir()) else {
-        return refuse(send, 404, "no such folder").await;
-    };
-    if inside(root, &folder.join("index.html")).is_some_and(|p| p.is_file()) {
-        return refuse(
-            send,
-            403,
-            "this folder is a website: nothing can be uploaded to it",
-        )
-        .await;
-    }
-    let length: Option<u64> = wire::request_headers(head)
-        .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
-        .and_then(|(_, v)| v.trim().parse().ok());
-    let leaves_enough = |more: u64| {
-        uploads
-            .free(&folder)
-            .is_ok_and(|free| free.saturating_sub(more) >= FREE_FLOOR)
-    };
-    if !leaves_enough(length.unwrap_or(0)) {
-        return refuse(send, 507, DISK_FULL).await;
-    }
+impl SharedFolder<'_> {
+    /// Add one file, `put`, into the folder its path names: whole or not at all, never over another
+    /// file, and never so the disk is left with less than 1 GiB free (ADR 0026).
+    async fn upload(
+        &self,
+        uploads: &Uploads,
+        put: Put<'_>,
+        mut recv: impl AsyncRead + Unpin + Send,
+        send: &mut (impl AsyncWrite + Unpin + Send),
+        who: Uploader<'_>,
+    ) -> Result<()> {
+        let Put { path, head, rest } = put;
+        let root = self.root;
+        let (parent, last) = path.rsplit_once('/').unwrap_or(("", path));
+        let Ok(name) = percent_decode_str(last).decode_utf8() else {
+            return refuse(send, 400, "a name must be UTF-8").await;
+        };
+        if let Some(why) = refused_name(&name) {
+            return refuse(send, 400, why).await;
+        }
+        let Some(folder) = locate(root, &format!("{parent}/")).filter(|f| f.is_dir()) else {
+            return refuse(send, 404, "no such folder").await;
+        };
+        if inside(root, &folder.join("index.html")).is_some_and(|p| p.is_file()) {
+            return refuse(
+                send,
+                403,
+                "this folder is a website: nothing can be uploaded to it",
+            )
+            .await;
+        }
+        let length: Option<u64> = wire::request_headers(head)
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+            .and_then(|(_, v)| v.trim().parse().ok());
+        let leaves_enough = |more: u64| {
+            uploads
+                .free(&folder)
+                .is_ok_and(|free| free.saturating_sub(more) >= FREE_FLOOR)
+        };
+        if !leaves_enough(length.unwrap_or(0)) {
+            return refuse(send, 507, DISK_FULL).await;
+        }
 
-    let mut id = [0u8; 8];
-    getrandom::fill(&mut id)?;
-    let id: String = id.iter().map(|b| format!("{b:02x}")).collect();
-    let partial = Partial(folder.join(format!("{PARTIAL}-{id}")));
-    let mut file = tokio::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&partial.0)
-        .await?;
-    let mut written = 0u64;
-    let mut checked = 0u64;
-    let mut chunk = rest;
-    loop {
-        if !chunk.is_empty() {
-            file.write_all(&chunk).await?;
-            written += chunk.len() as u64;
-            chunk.clear();
-            // A size that wasn't said, or was said wrong: the disk is checked as it fills.
-            if written - checked >= CHECK_FREE_EVERY {
-                checked = written;
-                if !leaves_enough(0) {
-                    return refuse(send, 507, DISK_FULL).await;
+        let mut id = [0u8; 8];
+        getrandom::fill(&mut id)?;
+        let id: String = id.iter().map(|b| format!("{b:02x}")).collect();
+        let partial = Partial(folder.join(format!("{PARTIAL}-{id}")));
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&partial.0)
+            .await?;
+        let mut written = 0u64;
+        let mut checked = 0u64;
+        let mut chunk = rest;
+        loop {
+            if !chunk.is_empty() {
+                file.write_all(&chunk).await?;
+                written += chunk.len() as u64;
+                chunk.clear();
+                // A size that wasn't said, or was said wrong: the disk is checked as it fills.
+                if written - checked >= CHECK_FREE_EVERY {
+                    checked = written;
+                    if !leaves_enough(0) {
+                        return refuse(send, 507, DISK_FULL).await;
+                    }
                 }
             }
+            chunk.reserve(wire::BODY_CHUNK);
+            // A stream that breaks off is an error here: the partial file goes with `partial`.
+            if recv.read_buf(&mut chunk).await? == 0 {
+                break;
+            }
         }
-        chunk.reserve(wire::BODY_CHUNK);
-        // A stream that breaks off is an error here: the partial file goes with `partial`.
-        if recv.read_buf(&mut chunk).await? == 0 {
-            break;
+        file.flush().await?;
+        file.sync_all().await?;
+        drop(file);
+        if !leaves_enough(0) {
+            return refuse(send, 507, DISK_FULL).await;
         }
-    }
-    file.flush().await?;
-    file.sync_all().await?;
-    drop(file);
-    if !leaves_enough(0) {
-        return refuse(send, 507, DISK_FULL).await;
-    }
-    if length.is_some_and(|l| l != written) {
-        return refuse(send, 400, "the upload ended short").await;
-    }
-    // A hard link never replaces what's there, even when two uploads of one name land at once.
-    let saved = (0..)
-        .map(|n| numbered(&name, n))
-        .find_map(
-            |saved| match fs::hard_link(&partial.0, folder.join(&saved)) {
-                Ok(()) => Some(Ok(saved)),
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => None,
-                Err(e) => Some(Err(e)),
-            },
-        )
-        .context("no name left")??;
-    drop(partial);
+        if length.is_some_and(|l| l != written) {
+            return refuse(send, 400, "the upload ended short").await;
+        }
+        // A hard link never replaces what's there, even when two uploads of one name land at once.
+        let saved = (0..)
+            .map(|n| numbered(&name, n))
+            .find_map(
+                |saved| match fs::hard_link(&partial.0, folder.join(&saved)) {
+                    Ok(()) => Some(Ok(saved)),
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => None,
+                    Err(e) => Some(Err(e)),
+                },
+            )
+            .context("no name left")??;
+        drop(partial);
 
-    let shown = folder
-        .join(&saved)
-        .strip_prefix(root.canonicalize()?)
-        .map(|p| format!("/{}", p.display()))
-        .unwrap_or_else(|_| saved.clone());
-    let fields = crate::fields! {
-        "label" => who.label,
-        "key" => crate::visit_log::short(who.key),
-        "path" => shown.as_str(),
-        "size" => written,
-    };
-    crate::log::event(
-        "uploaded",
-        fields,
-        &format!(
-            "{} ({}) uploaded {shown} · {}",
+        let shown = folder
+            .join(&saved)
+            .strip_prefix(root.canonicalize()?)
+            .map(|p| format!("/{}", p.display()))
+            .unwrap_or_else(|_| saved.clone());
+        let short = crate::visit_log::short(who.key);
+        let text = format!(
+            "{} ({short}) uploaded {shown} · {}",
             who.label,
-            crate::visit_log::short(who.key),
             crate::amount(written)
-        ),
-    );
-    let location = format!("{parent}/{}", utf8_percent_encode(&saved, SEGMENT));
-    let headers = json!([["content-type", "application/json"], ["location", location]]);
-    wire::write_line(send, &json!({"status": 201, "headers": headers})).await?;
-    send.write_all(json!({"saved": saved}).to_string().as_bytes())
-        .await?;
-    Ok(())
+        );
+        let fields = crate::fields! {
+            "label" => who.label,
+            "key" => short,
+            "path" => shown.as_str(),
+            "size" => written,
+        };
+        crate::log::event("uploaded", fields, &text);
+        let location = format!("{parent}/{}", utf8_percent_encode(&saved, SEGMENT));
+        let headers = json!([["content-type", "application/json"], ["location", location]]);
+        wire::write_line(send, &json!({"status": 201, "headers": headers})).await?;
+        send.write_all(json!({"saved": saved}).to_string().as_bytes())
+            .await?;
+        Ok(())
+    }
 }
 
 fn escape(text: &str) -> String {

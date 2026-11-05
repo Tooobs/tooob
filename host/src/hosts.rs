@@ -333,7 +333,12 @@ impl Entry {
             return Ok(());
         }
         let text = std::fs::read_to_string(&self.settings_file)?;
-        let set = |l: &str| l.trim_start().starts_with("uploads") && l.contains('=');
+        // The `uploads` key itself, and never another starting with it.
+        let set = |l: &str| {
+            l.trim_start()
+                .strip_prefix("uploads")
+                .is_some_and(|rest| rest.trim_start().starts_with('='))
+        };
         let text = match text.lines().any(set) {
             true => {
                 text.lines()

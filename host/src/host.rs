@@ -596,7 +596,7 @@ impl Admission {
             let path = head["path"].as_str().unwrap_or("/");
             match (decision, &self.site) {
                 (Decision::Allowed { label, .. }, Site::SharedFolder(root)) => {
-                    let folder = crate::shared_folder::Folder {
+                    let shared = crate::shared_folder::SharedFolder {
                         root,
                         uploads: self.uploads.as_ref(),
                     };
@@ -604,7 +604,7 @@ impl Admission {
                         label: &label,
                         key: visitor,
                     };
-                    folder.serve(&head, rest, recv, &mut send, who).await?
+                    shared.serve(&head, rest, recv, &mut send, who).await?
                 }
                 (Decision::Allowed { .. }, Site::WebApp(site)) if !on_site(site, path) => {
                     let reply = json!({"status": 400, "error": "bad_path"});

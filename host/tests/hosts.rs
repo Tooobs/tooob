@@ -1022,6 +1022,24 @@ fn share_uploads_turns_uploads_on_in_its_settings_for_a_new_host_and_a_reused_on
 }
 
 #[test]
+fn share_uploads_sets_the_owners_own_uploads_line_and_leaves_every_other_line_as_it_was() {
+    let home = Home::new();
+    let folder = a_folder();
+    let path = folder.path().to_str().unwrap();
+    home.ok(&["add", "photos", path, "--local"]);
+    let file = home.shown("photos", "settings file");
+    let mine = "# mine: uploads=never, says my note\n";
+    let before = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(&file, format!("{mine}{before}uploads=false\n")).unwrap();
+
+    let shared = home.spawn(&["share", path, "--uploads"]);
+    shared.until_it_says("serving");
+    shared.stop();
+    let settings = std::fs::read_to_string(&file).unwrap();
+    assert_eq!(settings, format!("{mine}{before}uploads = true\n"));
+}
+
+#[test]
 fn share_with_no_invite_makes_none_and_serves() {
     let home = Home::new();
     let folder = a_folder();
