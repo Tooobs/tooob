@@ -58,6 +58,10 @@ _Avoid_: app, service, origin, backend
 A Site the Host serves itself, from a folder or a single file on the home box, with no separate web app. Read-only, unless its Owner turns on uploads: then its Visitors can add files to it, but never change or remove any.
 _Avoid_: share (as a noun), drive, bucket
 
+**Synced Folder**:
+A folder kept in step between two of the Owner's boxes, each with its own copy on disk and its own Host: what changes on one, added, edited, renamed or removed, reaches the other once both are online. A change made on both while apart keeps both versions. Either Host can also serve its copy to Visitors as a Shared Folder.
+_Avoid_: sync (as a noun), mirror, replica, share
+
 **Host Settings**:
 What a Host serves and which Relay it uses, in a file the Owner edits by hand (`tooob show` prints where). A Host runs as its settings say, however it's started. The Owner always names the Relay, and its Bootstrap comes with it: there are no defaults.
 _Avoid_: config (unqualified), options, preferences
@@ -111,6 +115,14 @@ _Avoid_: manual approval, moderation
 **Device Code**:
 Six digits, worked out from a Visitor Key, that a device shows while it waits for the Owner's approval (First-Visit Approval, or an Owner Invite) and the Owner sees beside it, so the Owner approves the device they meant to. Shown only while waiting.
 _Avoid_: PIN, verification code, pairing code
+
+**Sync Invite**:
+A single-use, short-lived permission for another of the Owner's boxes to join a Synced Folder, made on a box already in it. Using it starts a pairing that both boxes must confirm by their Sync Code.
+_Avoid_: sync link, join code
+
+**Sync Code**:
+Six digits, worked out from both boxes' Host Keys and the Sync Invite, that both boxes show while they pair. The Owner confirms on each box that the two match, so a box that got hold of the Sync Invite can't pair in between unseen. Shown only while pairing.
+_Avoid_: Device Code (that's one device's, for the Owner's approval), PIN, pairing code
 
 **Invite Link**:
 The URL that carries an Invite: its Host's Key Address, with the Invite after the `#`. Opening it is how a device becomes a Visitor.

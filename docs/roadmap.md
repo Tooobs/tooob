@@ -121,4 +121,8 @@ tooob for people who don't open a terminal.
 
 ## [Sync](https://github.com/Tooobs/tooob/milestone/4)
 
-A folder kept in step across the Owner's devices and the people they invite. Its scope is still to be settled; no tickets yet.
+A folder kept in step across the Owner's devices and the people they invite, like Dropbox, with no third party holding a copy. The Owner's own boxes first, two of them ([#117](https://github.com/Tooobs/tooob/issues/117), ADRs [0027](adr/0027-synced-folders-use-our-own-sync-protocol-over-iroh-blobs.md) and [0028](adr/0028-boxes-pair-by-sync-codes-confirmed-on-both.md)); other people's boxes, and three or more, later.
+
+- ⬜ Two of the Owner's boxes pair, each confirming the other's Sync Code ([#118](https://github.com/Tooobs/tooob/issues/118))
+- ⬜ Two paired boxes keep their folder in step, two-way, online at different times ([#119](https://github.com/Tooobs/tooob/issues/119))
+- ⬜ A conflict keeps both versions, and what's deleted or overwritten is kept 30 days ([#120](https://github.com/Tooobs/tooob/issues/120))
