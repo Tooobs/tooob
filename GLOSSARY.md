@@ -55,7 +55,7 @@ What a Host makes reachable: a web app on the home box, such as Home Assistant o
 _Avoid_: app, service, origin, backend
 
 **Shared Folder**:
-A Site the Host serves itself, from a folder or a single file on the home box, with no separate web app. Read-only, unless its Owner turns on uploads: then its Visitors can add files to it, but never change or remove any.
+A Site the Host serves itself, from a folder or a single file on the home box, with no separate web app. Read-only, unless its Owner turns on uploads: then its Visitors can add files to it, outside its hidden folders, but never change or remove any. A home folder never takes uploads.
 _Avoid_: share (as a noun), drive, bucket
 
 **Synced Folder**:
