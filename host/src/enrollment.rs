@@ -101,11 +101,8 @@ pub fn last_found(state_dir: &Path) -> Enrollment {
 
 /// Keep what was found, for `tooob ls`. Written whole and renamed in; a failure only loses it.
 pub fn keep(state_dir: &Path, found: Enrollment) {
-    let tmp = state_dir.join(".enrollment.json.tmp");
-    if let Ok(json) = serde_json::to_vec(&found)
-        && std::fs::write(&tmp, json).is_ok()
-    {
-        let _ = std::fs::rename(&tmp, file(state_dir));
+    if let Ok(json) = serde_json::to_vec(&found) {
+        let _ = crate::save_privately(&file(state_dir), &json);
     }
 }
 

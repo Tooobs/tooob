@@ -171,16 +171,7 @@ async fn run() -> Result<()> {
             };
             let relay = new_host_relay(&typed, &flags).await?;
             let host = home.add(name, target, &relay)?;
-            // A closed Relay drops its Visitors' packets without a word: say so now (#130).
-            if let Ok(Network::Relay(url)) = host.settings.network()
-                && let Some(key) = host.host_key()
-            {
-                let found = enrollment::check(url.as_str(), &key).await;
-                enrollment::keep(&host.state_dir, found);
-                if found == Enrollment::NotEnrolled {
-                    say(&[enrollment::not_carried(url.as_str(), &key)]);
-                }
-            }
+            say_if_not_carried(&host).await;
         }
         Some("run") => {
             exactly(2, &["detach"])?;
@@ -372,6 +363,21 @@ fn relay(flags: &Flags) -> Result<Option<String>> {
     }
 }
 
+/// Ask a Host just added (by `add` or `share`) whether its Relay carries it, keep the answer for
+/// `tooob ls`, and tell the Owner if it doesn't: a closed Relay drops its Visitors' packets
+/// without a word (ADR 0030, #130).
+async fn say_if_not_carried(host: &Entry) {
+    if let Ok(Network::Relay(url)) = host.settings.network()
+        && let Some(key) = host.host_key()
+    {
+        let found = enrollment::check(url.as_str(), &key).await;
+        enrollment::keep(&host.state_dir, found);
+        if found == Enrollment::NotEnrolled {
+            say(&[enrollment::not_carried(url.as_str(), &key)]);
+        }
+    }
+}
+
 /// A new Host's Relay, as `--relay URL` (or `--local`) says: never a guess (ADR 0015), and never
 /// asked for (ADR 0022). A Relay whose Bootstrap won't do for this tooob is refused before the Host
 /// is made (ADR 0020).
@@ -461,7 +467,9 @@ async fn share(
             if let Some(why) = no_key_address(&relay).filter(|_| !who.is_empty()) {
                 bail!(no_invite_links("the new Host", why));
             }
-            (home.add(&name, &serves, &relay)?, true)
+            let host = home.add(&name, &serves, &relay)?;
+            say_if_not_carried(&host).await;
+            (host, true)
         }
     };
     if flags.contains_key("uploads") {
