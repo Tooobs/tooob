@@ -490,8 +490,12 @@ test('a Visitor reaches a Site through a Relay that carries only its Enrolled Ho
   const hostKey = new URL(link).hostname.split('.')[0]; // the Key Address: as the Host logs its key
   await h.enrollOnRelay(relayUrl, hostKey, 'site');
   const page = await h.newVisitor(browser);
+  await h.breakDirectPath(page); // the Site has to come over the Relay
   await page.goto(link);
   assert.match(await h.siteText(page), /site \/ label=mom/);
+  await h.pathIs(page, 'relay', 20000);
+  const bytes = await h.bytesForReload(page);
+  assert.ok(bytes.relay > 0, `nothing came over the Relay: ${JSON.stringify(bytes)}`);
 });
 
 test("a cookie a Site sets for the whole Relay domain stays with that Site", async ({ browser, irohRelay }) => {

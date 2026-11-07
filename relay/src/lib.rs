@@ -114,12 +114,22 @@ impl Relay {
                     let mut request = [0u8; 2048];
                     let n = stream.read(&mut request).await.unwrap_or(0);
                     let asked = String::from_utf8_lossy(&request[..n]);
-                    let reply = if asked.starts_with("GET /__tooob/relay.json ") {
+                    // "METHOD TARGET HTTP/1.1": any query on the path is ignored.
+                    let mut line = asked.split_whitespace();
+                    let method = line.next().unwrap_or("");
+                    let path = line.next().unwrap_or("").split('?').next().unwrap_or("");
+                    let reply = if path == "/__tooob/relay.json"
+                        && (method == "GET" || method == "HEAD")
+                    {
                         let body = format!(r#"{{"relay_access":"{}"}}"#, rule.access());
-                        format!(
-                            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncache-control: no-store\r\naccess-control-allow-origin: *\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        let head = format!(
+                            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncache-control: no-store\r\naccess-control-allow-origin: *\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
                             body.len()
-                        )
+                        );
+                        match method {
+                            "HEAD" => head,
+                            _ => head + &body,
+                        }
                     } else {
                         "HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
                             .to_string()

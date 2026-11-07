@@ -16,7 +16,7 @@ pub const RELAY: &str = "https://relay.example/";
 
 /// A real Relay on this machine (tooob-relay, open: no Enrolled Keys) behind a front that serves its
 /// Bootstrap's `/__tooob/version.json`, as a Relay does (ADR 0020), and hands everything else to
-/// iroh-relay. Stopped when dropped. It's on `localhost`, a domain, so its Hosts have Key
+/// tooob-relay. Stopped when dropped. It's on `localhost`, a domain, so its Hosts have Key
 /// Addresses.
 pub struct TestRelay {
     pub url: String,
