@@ -71,7 +71,7 @@ What a Host keeps for itself and only tooob writes: its Host Key, Allowlist, Inv
 _Avoid_: data dir, storage
 
 **Backup**:
-One Host, sealed in a single file under a passphrase, to bring it back on another box (`tooob backup NAME FILE`, then `tooob restore NAME FILE`): its Host Key, Allowlist, Invites and Blocks, and its Host Settings, so it keeps its Key Address and its Visitors. Cookie jars and what each Visitor has used are left out, since they're rebuilt. Without the passphrase the file is unreadable, and restoring never replaces a Host already there.
+One Host, sealed in a single file under a passphrase, to bring it back on another box (`tooob backup NAME FILE`, then `tooob restore NAME FILE`): its Host Key, Allowlist, Invites and Blocks, and its Host Settings, so it keeps its Key Address and its Visitors. Cookie jars and what each Visitor has used are left out, since they're rebuilt. Without the passphrase the file is unreadable, and restoring never replaces a Host already there. Restoring is the only time a Host's Site can move: `--serves PATH` says where it is on the new box (ADR 0029).
 _Avoid_: export, import, dump, snapshot
 
 **Autostart**:

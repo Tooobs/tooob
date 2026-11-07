@@ -126,6 +126,36 @@ fn web_app(address: &str) -> Result<SocketAddr> {
 }
 
 /// Letters, digits, `-` and `_`: safe as a file name, and in a shell, as it is.
+/// What a Host serves, from a TARGET as `add` takes one: a folder or file, made absolute, or a
+/// web app's `HOST:PORT` / `http://HOST:PORT`.
+fn serves(target: &str) -> Result<String> {
+    Ok(match Path::new(target).canonicalize() {
+        Ok(path) => path
+            .to_str()
+            .with_context(|| format!("can't share {target}: its path isn't UTF-8"))?
+            .to_string(),
+        Err(_) => {
+            web_app(target)?;
+            target.to_string()
+        }
+    })
+}
+
+/// Settings file `text` with its `serves` line saying `serves`, the Owner's other lines kept.
+fn moved(text: &str, serves: &str) -> String {
+    let set = |l: &str| {
+        l.trim_start()
+            .strip_prefix("serves")
+            .is_some_and(|rest| rest.trim_start().starts_with('='))
+    };
+    let line = format!("serves = {}", toml::Value::from(serves));
+    text.lines()
+        .map(|l| if set(l) { line.as_str() } else { l })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
+}
+
 pub fn valid_name(name: &str) -> bool {
     !name.is_empty() && name.chars().all(name_char)
 }
@@ -265,16 +295,7 @@ impl Home {
                 state_dir.display()
             );
         }
-        let serves = match Path::new(target).canonicalize() {
-            Ok(path) => path
-                .to_str()
-                .with_context(|| format!("can't share {target}: its path isn't UTF-8"))?
-                .to_string(),
-            Err(_) => {
-                web_app(target)?;
-                target.to_string()
-            }
-        };
+        let serves = serves(target)?;
         let settings = Settings {
             serves,
             relay: relay.to_string(),
@@ -322,7 +343,15 @@ impl Home {
     /// Bring back a Host from a Backup's `contents`, as Host `name` (ADR 0029): its state, Host
     /// Key first, then its settings file, as `add` makes one. Never over a Host already there, and
     /// never half a Host.
-    pub fn restore(&self, name: &str, contents: &crate::backup::Contents) -> Result<Entry> {
+    ///
+    /// With `serves` (a TARGET as `add` takes one), the Site has moved: it's rewritten in both
+    /// the settings file, the Owner's other lines kept, and the record of what the Host serves.
+    pub fn restore(
+        &self,
+        name: &str,
+        contents: &crate::backup::Contents,
+        serves: Option<&str>,
+    ) -> Result<Entry> {
         if !valid_name(name) {
             bail!("{name:?} can't be a Host Name: use letters, digits, - and _");
         }
@@ -337,8 +366,23 @@ impl Home {
                 state_dir.display()
             );
         }
-        let settings: Settings =
+        let mut settings: Settings =
             toml::from_str(&contents.settings).context("the Backup's settings are damaged")?;
+        let mut settings_text = contents.settings.clone();
+        let mut record = contents.record.clone();
+        if let Some(target) = serves {
+            settings_text = moved(&settings_text, &self::serves(target)?);
+            settings =
+                toml::from_str(&settings_text).context("the Backup's settings are damaged")?;
+            // A Host that never ran has no record yet: its first run makes one.
+            if let Some(text) = &record {
+                let mut was: crate::host::Record =
+                    serde_json::from_str(text).context("the Backup's record is damaged")?;
+                was.site = settings.site()?;
+                record = Some(serde_json::to_string_pretty(&was)?);
+            }
+        }
+        let (contents_access, contents_settings) = (&contents.access, &settings_text);
         let key = contents.key_bytes()?;
         let made = (|| -> Result<()> {
             std::fs::DirBuilder::new()
@@ -346,10 +390,7 @@ impl Home {
                 .mode(0o700)
                 .create(&state_dir)?;
             crate::save_privately(&state_dir.join("host.key"), &key)?;
-            for (file, text) in [
-                ("access.json", &contents.access),
-                ("host.json", &contents.record),
-            ] {
+            for (file, text) in [("access.json", contents_access), ("host.json", &record)] {
                 if let Some(text) = text {
                     crate::save_privately(&state_dir.join(file), text.as_bytes())?;
                 }
@@ -357,7 +398,7 @@ impl Home {
             // Whole or not at all: written beside it, then linked in, which never replaces a file.
             std::fs::create_dir_all(settings_file.parent().unwrap())?;
             let tmp = crate::temp_path(&settings_file);
-            let linked = std::fs::write(&tmp, &contents.settings)
+            let linked = std::fs::write(&tmp, contents_settings)
                 .and_then(|()| std::fs::hard_link(&tmp, &settings_file));
             let _ = std::fs::remove_file(&tmp);
             Ok(linked?)

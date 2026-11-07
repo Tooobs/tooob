@@ -70,9 +70,11 @@ const USAGE: &str = "usage:
   tooob backup NAME FILE --passphrase-file PATH  write its Backup to FILE: its Host Key, Visitors,
                                                   Invites, Blocks and settings, sealed under the
                                                   passphrase in PATH's first line (- for stdin)
-  tooob restore NAME FILE --passphrase-file PATH bring a Backup back as Host NAME, here or on
+  tooob restore NAME FILE --passphrase-file PATH [--serves PATH]
+                                                  bring a Backup back as Host NAME, here or on
                                                   another box, with its Key Address and Visitors;
-                                                  never over a Host already there
+                                                  never over a Host already there; --serves PATH:
+                                                  its Site is at PATH here (a TARGET, as for add)
   tooob upgrade [VERSION] [--check] [--yes] [--anyway]
                                                   install the newest Release, or VERSION (older
                                                   ones too), asking first: --check only looks,
@@ -85,7 +87,14 @@ Host is running or not. There's no default Relay: deploy/ shows how to run your 
 asked but upgrade's one question: what's missing is an error that shows the command to type.
 Running Hosts look for a newer Release once a day, and say when one is out.";
 
-const VALUE_FLAGS: &[&str] = &["relay", "expires", "name", "lines", "passphrase-file"];
+const VALUE_FLAGS: &[&str] = &[
+    "relay",
+    "expires",
+    "name",
+    "lines",
+    "passphrase-file",
+    "serves",
+];
 const BARE_FLAGS: &[&str] = &[
     "local", "json", "approve", "owner", "follow", "yes", "check", "anyway", "detach", "uploads",
 ];
@@ -222,7 +231,7 @@ async fn run() -> Result<()> {
             backup(&host, file, &passphrase(&typed, &flags)?)?;
         }
         Some("restore") => {
-            exactly(3, &["passphrase-file"])?;
+            exactly(3, &["passphrase-file", "serves"])?;
             let (name, file) = match (words.get(1), words.get(2)) {
                 (Some(name), Some(file)) => (name, file),
                 (Some(_), None) => return Err(typed.missing("say which Backup", "FILE")),
@@ -231,7 +240,10 @@ async fn run() -> Result<()> {
                     return Err(typed.missing(what, "NAME FILE"));
                 }
             };
-            restore(&home, name, file, || passphrase(&typed, &flags))?;
+            let serves = flags.get("serves").cloned().flatten();
+            restore(&home, name, file, serves.as_deref(), || {
+                passphrase(&typed, &flags)
+            })?;
         }
         Some("upgrade") => {
             exactly(2, &["yes", "check", "anyway"])?;
@@ -294,6 +306,7 @@ fn restore(
     home: &Home,
     name: &str,
     file: &str,
+    serves: Option<&str>,
     passphrase: impl FnOnce() -> Result<Vec<u8>>,
 ) -> Result<()> {
     let again = format!(
@@ -332,7 +345,7 @@ fn restore(
             quote(file)
         );
     }
-    home.restore(name, &contents)?;
+    home.restore(name, &contents, serves)?;
     Ok(())
 }
 

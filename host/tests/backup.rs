@@ -108,6 +108,120 @@ async fn a_host_restored_on_a_fresh_box_has_its_host_key_and_its_visitors_invite
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_host_restored_with_serves_runs_its_site_at_the_new_path_with_its_visitors() {
+    let (old, new) = (Home::new(), Home::new());
+    let relay = TestRelay::start();
+    let (folder, moved) = (a_folder(), a_folder());
+    a_host_with_visitors(&old, &relay, folder.path()).await;
+    let pass = passphrase_file(new.0.path(), "correct horse battery staple");
+    let file = new.0.path().join("photos.tooob-backup");
+    let (file_arg, pass_arg) = (file.to_str().unwrap(), pass.to_str().unwrap());
+    let moved_path = moved.path().canonicalize().unwrap();
+
+    old.ok(&["backup", "photos", file_arg, "--passphrase-file", pass_arg]);
+    new.ok(&[
+        "restore",
+        "photos",
+        file_arg,
+        "--passphrase-file",
+        pass_arg,
+        "--serves",
+        moved.path().to_str().unwrap(),
+    ]);
+
+    assert_eq!(new.shown("photos", "serves"), moved_path.to_str().unwrap());
+    assert_eq!(
+        new.shown("photos", "Host Key"),
+        old.shown("photos", "Host Key")
+    );
+    assert_eq!(access(&new, "photos"), access(&old, "photos"));
+    let settings = std::fs::read_to_string(new.shown("photos", "settings file")).unwrap();
+    assert!(
+        settings.contains("# The Relay its Visitors reach"),
+        "{settings}"
+    );
+
+    // It runs, serving the new path: its record moved with it.
+    let _running = new.start("photos");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn restore_refuses_a_serves_that_add_would_refuse() {
+    let (old, new) = (Home::new(), Home::new());
+    let relay = TestRelay::start();
+    let folder = a_folder();
+    old.ok(&[
+        "add",
+        "photos",
+        folder.path().to_str().unwrap(),
+        "--relay",
+        &relay.url,
+    ]);
+    let pass = passphrase_file(new.0.path(), "hunter22");
+    let file = new.0.path().join("photos.tooob-backup");
+    let (file_arg, pass_arg) = (file.to_str().unwrap(), pass.to_str().unwrap());
+    old.ok(&["backup", "photos", file_arg, "--passphrase-file", pass_arg]);
+
+    let gone = new.0.path().join("no-such-folder");
+    let out = new.tooob(&[
+        "restore",
+        "photos",
+        file_arg,
+        "--passphrase-file",
+        pass_arg,
+        "--serves",
+        gone.to_str().unwrap(),
+    ]);
+    assert!(!out.status.success());
+    let added = new.tooob(&[
+        "add",
+        "other",
+        gone.to_str().unwrap(),
+        "--relay",
+        &relay.url,
+    ]);
+    assert_eq!(stderr(&out), stderr(&added));
+    assert!(
+        !new.tooob(&["show", "photos"]).status.success(),
+        "nothing was restored"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restored_host_whose_serves_was_hand_edited_wont_run_and_says_how() {
+    let (old, new) = (Home::new(), Home::new());
+    let relay = TestRelay::start();
+    let (folder, moved) = (a_folder(), a_folder());
+    a_host_with_visitors(&old, &relay, folder.path()).await;
+    let pass = passphrase_file(new.0.path(), "hunter22");
+    let file = new.0.path().join("photos.tooob-backup");
+    let (file_arg, pass_arg) = (file.to_str().unwrap(), pass.to_str().unwrap());
+    old.ok(&["backup", "photos", file_arg, "--passphrase-file", pass_arg]);
+    new.ok(&["restore", "photos", file_arg, "--passphrase-file", pass_arg]);
+    let settings_file = new.shown("photos", "settings file");
+    let was = new.shown("photos", "serves");
+    let settings = std::fs::read_to_string(&settings_file).unwrap();
+    let now = moved.path().canonicalize().unwrap();
+    std::fs::write(
+        &settings_file,
+        settings.replace(&was, now.to_str().unwrap()),
+    )
+    .unwrap();
+
+    let out = new.tooob(&["run", "photos"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains(&format!(
+            "share {} as a new Host, or, restored from elsewhere? restore it again with \
+             --serves PATH",
+            now.display()
+        )),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_backup_holds_no_plaintext_host_key_or_access_state() {
     let home = Home::new();
     let relay = TestRelay::start();

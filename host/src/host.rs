@@ -393,7 +393,8 @@ impl Record {
         {
             let name = data_dir.file_name().unwrap_or_default().to_string_lossy();
             bail!(
-                "this Host ({name}) serves {}, not {site}: share {site} as a new Host",
+                "this Host ({name}) serves {}, not {site}: share {site} as a new Host, or, \
+                 restored from elsewhere? restore it again with --serves PATH",
                 record.site
             );
         }
