@@ -7,6 +7,9 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
 
 ## Unreleased
 
+### Added
+- `tooob backup NAME FILE` saves one Host (its Host Key, Allowlist, Invites and Host Settings, not its usage counts or cookie jars) into one file sealed under a passphrase (argon2id and XChaCha20-Poly1305, ADR 0029), and `tooob restore NAME FILE` brings it back as the same Host, on this machine or another. Both take `--passphrase-file PATH`, or `-` for standard input. `restore` refuses a wrong passphrase, a taken name, and a Host Key another Host here already has, writing nothing (#5).
+
 ### Changed
 - `./release.sh` runs the Host's tests on Linux (`test/linux/run.sh`, in podman) before it tags, and refuses when podman isn't running; CI runs `cargo test` on both musl targets on every push to `main` (#108).
 - `tooob invites` shows when each Invite expires in words (`in 7 days`, `in 5 hours`, `in 40 minutes`), rounded up, instead of a Unix timestamp; `--json` still gives `expires_at` in Unix seconds (#3).

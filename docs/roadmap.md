@@ -53,7 +53,7 @@ A home box serving a Site to invited Visitors in ordinary browsers, for technica
 - 🟡 The Owner sees who got in, who was refused and what the Owner changed in the Host's log ([#23](https://github.com/Tooobs/tooob/issues/23); on the owner page with #7)
 - ⬜ The Owner sets the Host's bandwidth, and the Direct Path isn't stuck at 80 Mbit/s ([#21](https://github.com/Tooobs/tooob/issues/21))
 - ⬜ A relay-only Host keeps the home IP hidden ([#25](https://github.com/Tooobs/tooob/issues/25))
-- ⬜ The Host Key and Allowlist can be backed up and restored ([#5](https://github.com/Tooobs/tooob/issues/5))
+- 🟡 The Host Key and Allowlist can be backed up and restored ([#5](https://github.com/Tooobs/tooob/issues/5), done); a Host restored where its folder is at another path can run ([#127](https://github.com/Tooobs/tooob/issues/127))
 - ⬜ The owner page: managing Visitors from a web page ([#7](https://github.com/Tooobs/tooob/issues/7)), first run pairing the Owner's browser from the home network ([#8](https://github.com/Tooobs/tooob/issues/8)), Owner Devices managing the Host over tooob ([#6](https://github.com/Tooobs/tooob/issues/6)), who's connected now and the unused Invites ([#26](https://github.com/Tooobs/tooob/issues/26)), bandwidth limits ([#24](https://github.com/Tooobs/tooob/issues/24))
 
 ### Relays and the Bootstrap
