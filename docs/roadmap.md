@@ -47,7 +47,7 @@ A home box serving a Site to invited Visitors in ordinary browsers, for technica
 
 - ✅ Invites for one device each, with expiry or First-Visit Approval; Pairing Invites; block, approve, unblock and revoke (before the issue tracker)
 - ✅ A device waiting for approval shows a Device Code, and the Owner approves by it ([#110](https://github.com/Tooobs/tooob/issues/110); in the log too for an Owner-Invite device with [#115](https://github.com/Tooobs/tooob/issues/115))
-- ⬜ An Invite can be reusable ([#18](https://github.com/Tooobs/tooob/issues/18)), and `tooob invites` shows readable expiry times ([#3](https://github.com/Tooobs/tooob/issues/3))
+- 🟡 An Invite can be reusable ([#18](https://github.com/Tooobs/tooob/issues/18)), and `tooob invites` shows readable expiry times ([#3](https://github.com/Tooobs/tooob/issues/3), done)
 - ✅ A Host keeps its own log, with timestamps and a size limit, and `tooob logs` reads it for any Host ([#91](https://github.com/Tooobs/tooob/issues/91))
 - ✅ The Owner sees how much each Visitor uses ([#4](https://github.com/Tooobs/tooob/issues/4))
 - 🟡 The Owner sees who got in, who was refused and what the Owner changed in the Host's log ([#23](https://github.com/Tooobs/tooob/issues/23); on the owner page with #7)

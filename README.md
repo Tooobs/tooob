@@ -142,6 +142,8 @@ Everything here up to #1 is in the first Release, **[0.1.0](https://github.com/T
   - Nothing shows in tooob itself; this changes how it's checked. `./release.sh` now runs the Host's tests on Linux (`test/linux/run.sh`, in podman) before it tags, and refuses up front, saying `podman machine start`, if podman isn't running. Every push to `main` runs `cargo test` on x86_64 and aarch64 musl in CI: `gh run list --workflow linux-tests.yml` shows each push's result.
 - **[#2](https://github.com/Tooobs/tooob/issues/2) A cancelled request stops the Host's request to the Site** · 2026-11-06 · the next Release (not out yet)
   - Share a Site that long-polls (a chat, a dashboard, anything holding a request open while it sends nothing) and click around it: each page you leave ends its open request on the Site within a couple of seconds, so they no longer pile up there, on the Direct Path and through the Relay. A page that aborts its own fetch still leaves it open (#126). The service worker's part comes from the Relay: it needs a Relay deployed with this Release.
+- **[#3](https://github.com/Tooobs/tooob/issues/3) `tooob invites` shows readable expiry times** · 2026-11-06 · the next Release (not out yet)
+  - `tooob invite blog jm`, `tooob invite blog dad --expires 40m` and `tooob invite blog mom --expires 5h`, then `tooob invites blog`: the EXPIRES column reads `in 7 days`, `in 40 minutes` and `in 5 hours` instead of a Unix timestamp. It rounds up, so it never says less time is left than there is: minutes up to 59, then hours up to 23, then days. `--json` still gives `expires_at` in Unix seconds, for scripts.
 
 ## Still to come
 
