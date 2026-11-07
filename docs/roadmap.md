@@ -75,6 +75,7 @@ A home box serving a Site to invited Visitors in ordinary browsers, for technica
 - ⬜ Anyone can rebuild a Release's Bundle and get the same bytes ([#60](https://github.com/Tooobs/tooob/issues/60))
 - ⬜ The Host ships as a Docker image ([#12](https://github.com/Tooobs/tooob/issues/12)) and a Home Assistant add-on ([#13](https://github.com/Tooobs/tooob/issues/13))
 - ✅ Local checks run on every push ([#58](https://github.com/Tooobs/tooob/issues/58))
+- ✅ Linux tests run before a Release is tagged, and in CI on every push to main ([#108](https://github.com/Tooobs/tooob/issues/108))
 - ✅ What you can try, and this roadmap ([#61](https://github.com/Tooobs/tooob/issues/61))
 
 ### Hardening and tests

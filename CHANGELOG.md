@@ -7,6 +7,9 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
 
 ## Unreleased
 
+### Changed
+- `./release.sh` runs the Host's tests on Linux (`test/linux/run.sh`, in podman) before it tags, and refuses when podman isn't running; CI runs `cargo test` on both musl targets on every push to `main` (#108).
+
 ## 0.3.5 — 2026-11-07
 
 Protocol Version: `tooob/0`. Tested with iroh-relay 1.3.0.
