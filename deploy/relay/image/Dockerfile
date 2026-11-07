@@ -5,13 +5,24 @@
 # caddy-dns module to build in (github.com/caddy-dns/<provider>): one configured by just a token.
 ARG DNS_PROVIDER=cloudflare
 
-FROM caddy:2.10-builder AS caddy
+# Caddy 2.11 or later: 2.10.2 answers every precompressed file with a 206 (caddyserver/caddy#7250),
+# which a service worker's cache refuses.
+FROM caddy:2.11-builder AS caddy
 ARG DNS_PROVIDER
 RUN xcaddy build --with github.com/caddy-dns/${DNS_PROVIDER}
 
 FROM n0computer/iroh-relay:v1.3.0 AS iroh-relay
 
-FROM caddy:2.10-alpine
+# The Bundle with a brotli and a gzip copy beside each file a browser is sent compressed (#113),
+# made here so the Bundle itself doesn't change, and in a stage of its own so brotli stays out of
+# the Relay's image.
+FROM alpine:3.22 AS bundle
+RUN apk add --no-cache brotli
+COPY --chmod=755 precompress.sh /usr/bin/precompress
+COPY www /srv
+RUN precompress /srv
+
+FROM caddy:2.11-alpine
 ARG DNS_PROVIDER
 ENV DNS_PROVIDER=${DNS_PROVIDER}
 COPY --from=caddy /usr/bin/caddy /usr/bin/caddy
@@ -24,6 +35,6 @@ COPY Caddyfile front.caddy /etc/caddy/
 RUN RELAY_DOMAIN=relay.example.com DNS_API_TOKEN=stand-in ACME_EMAIL=relay@example.com \
     caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null
 COPY --chmod=755 start.sh /usr/bin/start-relay
-COPY www /srv
+COPY --from=bundle /srv /srv
 EXPOSE 80 443
 CMD ["start-relay"]

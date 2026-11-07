@@ -52,5 +52,10 @@ handle {
 		not file
 	}
 	rewrite @page /index.html
-	file_server
+	# The brotli and gzip copies the image build made beside each file (#113): the WASM is 3.1 MB
+	# as is, 795 KB as brotli. Nothing is compressed on the fly, so a Relay spends no CPU on it.
+	# file_server adds Accept-Encoding to the Vary above.
+	file_server {
+		precompressed br gzip
+	}
 }

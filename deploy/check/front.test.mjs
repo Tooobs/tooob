@@ -49,3 +49,11 @@ test('a saved file\'s address gets an explanation naming the file, a folder\'s n
 test("every answer of the Bundle's varies by Fetch Metadata, so a cached shell never answers a save", () => {
   assert.match(block('handle'), /^\theader Vary "Sec-Fetch-Dest, Sec-Fetch-Mode"$/m);
 });
+
+test("the Bundle's files and its shell are sent as the image's brotli or gzip copies, nothing else is", () => {
+  // #113: the .br and .gz files the image build writes (precompress.sh); file_server adds
+  // Accept-Encoding to the Vary above. iroh's paths and the saved-page texts stay as they are.
+  assert.match(block('handle'), /^\tfile_server \{\n\t\tprecompressed br gzip\n\t\}$/m);
+  assert.equal(front.match(/precompressed/g).length, 1, 'only in the Bundle handler');
+  assert.doesNotMatch(front, /^\s*encode\b/m, 'nothing compressed on the fly');
+});

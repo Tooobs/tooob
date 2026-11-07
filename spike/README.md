@@ -48,7 +48,7 @@ Five runs of `check.mjs` and three of `check-ha.mjs`:
 |---|---|---|
 | 1 | 2.5 MB page < 3 s, bootstrap cached | **Marginal PASS**: 0.8–2.6 s on a quiet network (connect 0.2–0.7 s). One run took **15.6 s** while a 1.5 GB Docker pull saturated the uplink |
 | 2 | Video seek ~2 s | **Mostly PASS**: most seeks 0.7–2.5 s through a 23 MB / 1.5 Mbit/s MP4. One seek in one run took 5.0 s |
-| 3 | WASM < 5 MB | **PASS**: 3.0 MB (1.0 MB gzipped) with `opt-level="s"` + LTO. 5.0 MB without |
+| 3 | WASM < 5 MB | **PASS**: 3.0 MB (a Relay sends it as about 795 KB brotli, or 1.05 MB gzip: #113) with `opt-level="s"` + LTO. 5.0 MB without |
 | 4 | Survives 10 min idle | **PASS**: a request after 600 s of silence returned in 52 ms |
 | 5 | Home Assistant UI loads and updates live | **PASS**: WebSocket up in 1.2–1.4 s, dashboard rendered in 4.2–5.7 s cold, state changes reach the UI in < 55 ms |
 

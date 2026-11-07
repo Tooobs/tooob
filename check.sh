@@ -29,4 +29,5 @@ step "manifest tests" bootstrap/check node --test manifest.test.mjs
 step "release.sh tests" test node --test release.test.mjs
 step "deploy/bundle.sh tests" deploy/check node --test bundle.test.mjs
 step "front.caddy tests" deploy/check node --test front.test.mjs
+step "precompress.sh tests" deploy/check node --test precompress.test.mjs
 echo "check.sh: all passed"
