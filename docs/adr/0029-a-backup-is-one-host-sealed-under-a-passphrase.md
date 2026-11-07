@@ -1,0 +1,9 @@
+# A Backup is one Host, sealed under a passphrase
+
+Settled by the Owner on 2026-11-06 (#5). `tooob backup NAME FILE` writes one Host's Backup, and `tooob restore NAME FILE` brings it back as Host NAME, on this box or another, so the Site keeps its Key Address and its Visitors when an SD card dies. A Backup holds everything the Host needs to run as it did: its Host Key, `access.json` (Allowlist, Invites, Blocks), `host.json` (the Site and network it last ran with) and its settings file (its Relay). Cookie jars and usage are left out: they're rebuilt.
+
+The passphrase comes from `--passphrase-file PATH`, or `-` for stdin, never from a prompt (ADR 0022) or a `--passphrase` flag, which would leak into shell history and `ps`. Its first line is the passphrase. It's stretched with argon2id (64 MiB, 3 passes, 1 lane by default), and the contents are sealed with XChaCha20-Poly1305, behind a small versioned header: the magic `tooob-backup`, a format version byte (1), the argon2id costs, a 16-byte salt and a 24-byte nonce. The whole header is the cipher's associated data, so a changed cost or salt fails like a wrong passphrase. A Backup's costs travel in its header, so a later Release can raise them and still restore older Backups; `restore` refuses costs above 1 GiB, so a doctored file can't exhaust a small box.
+
+`restore` decrypts the whole Backup before writing anything, so a wrong passphrase writes nothing. It refuses a Host Name that's taken, as `add` does, and refuses while that Host is running: it never replaces a Host. `backup` never overwrites a file.
+
+We rejected `age`, which brings its own file format and passphrase handling for what two RustCrypto crates do in a few lines, and `tooob key export/import`, which didn't fit the CLI's `VERB NAME` shape. Backing up every Host at once was rejected too: each Host serves one Site (ADR 0009) and is moved on its own.

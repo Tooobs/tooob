@@ -70,6 +70,10 @@ _Avoid_: config (unqualified), options, preferences
 What a Host keeps for itself and only tooob writes: its Host Key, Allowlist, Invites, cookie jars and what each Visitor has used (bytes sent and received, and when they were last seen), in its state folder. Whether the Host is running or stopped isn't part of it.
 _Avoid_: data dir, storage
 
+**Backup**:
+One Host, sealed in a single file under a passphrase, to bring it back on another box (`tooob backup NAME FILE`, then `tooob restore NAME FILE`): its Host Key, Allowlist, Invites and Blocks, and its Host Settings, so it keeps its Key Address and its Visitors. Cookie jars and what each Visitor has used are left out, since they're rebuilt. Without the passphrase the file is unreadable, and restoring never replaces a Host already there.
+_Avoid_: export, import, dump, snapshot
+
 **Autostart**:
 Whether the operating system starts a Host by itself: at login (or at boot on a headless Linux box), and again after a crash. `tooob run NAME -d` turns it on; `tooob stop` turns it off and keeps it off until `tooob start` turns it on again; `tooob ls` shows yes, stopped or no. It says nothing about whether the Host is running now.
 _Avoid_: enabled (as what `ls` shows), service, daemon

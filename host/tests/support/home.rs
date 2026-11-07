@@ -210,6 +210,8 @@ impl Home {
             .env_remove("TOOOB_NO_UPDATE_CHECK")
             .env_remove("TOOOB_IN_CONTAINER")
             .envs(self.releases_env())
+            // A Backup's passphrase stretched with 64 KiB, not 64 MiB: fast, and the same format.
+            .env("TOOOB_BACKUP_KIB", "64")
             .stdin(Stdio::null());
         cmd
     }

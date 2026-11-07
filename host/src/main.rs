@@ -67,6 +67,12 @@ const USAGE: &str = "usage:
                                                   prefix of six digits reads as a CODE: give 7)
   tooob block NAME KEY | unblock NAME KEY         KEY: a unique prefix is enough
   tooob revoke NAME INVITE-ID
+  tooob backup NAME FILE --passphrase-file PATH  write its Backup to FILE: its Host Key, Visitors,
+                                                  Invites, Blocks and settings, sealed under the
+                                                  passphrase in PATH's first line (- for stdin)
+  tooob restore NAME FILE --passphrase-file PATH bring a Backup back as Host NAME, here or on
+                                                  another box, with its Key Address and Visitors;
+                                                  never over a Host already there
   tooob upgrade [VERSION] [--check] [--yes] [--anyway]
                                                   install the newest Release, or VERSION (older
                                                   ones too), asking first: --check only looks,
@@ -79,7 +85,7 @@ Host is running or not. There's no default Relay: deploy/ shows how to run your 
 asked but upgrade's one question: what's missing is an error that shows the command to type.
 Running Hosts look for a newer Release once a day, and say when one is out.";
 
-const VALUE_FLAGS: &[&str] = &["relay", "expires", "name", "lines"];
+const VALUE_FLAGS: &[&str] = &["relay", "expires", "name", "lines", "passphrase-file"];
 const BARE_FLAGS: &[&str] = &[
     "local", "json", "approve", "owner", "follow", "yes", "check", "anyway", "detach", "uploads",
 ];
@@ -207,6 +213,26 @@ async fn run() -> Result<()> {
             }
             host.remove()?;
         }
+        Some("backup") => {
+            exactly(3, &["passphrase-file"])?;
+            let host = named(&home, &typed, "backup", words.get(1))?;
+            let Some(file) = words.get(2) else {
+                return Err(typed.missing("say which file to write its Backup to", "FILE"));
+            };
+            backup(&host, file, &passphrase(&typed, &flags)?)?;
+        }
+        Some("restore") => {
+            exactly(3, &["passphrase-file"])?;
+            let (name, file) = match (words.get(1), words.get(2)) {
+                (Some(name), Some(file)) => (name, file),
+                (Some(_), None) => return Err(typed.missing("say which Backup", "FILE")),
+                (None, _) => {
+                    let what = "say the restored Host's name, and which Backup";
+                    return Err(typed.missing(what, "NAME FILE"));
+                }
+            };
+            restore(&home, name, file, || passphrase(&typed, &flags))?;
+        }
         Some("upgrade") => {
             exactly(2, &["yes", "check", "anyway"])?;
             upgrade(&home, &typed, words.get(1), &flags).await?;
@@ -216,6 +242,79 @@ async fn run() -> Result<()> {
         }
         _ => bail!("{USAGE}"),
     }
+    Ok(())
+}
+
+/// The passphrase `--passphrase-file` names: never asked for (ADR 0022), and never on the command
+/// line, where shell history and `ps` would keep it (ADR 0029).
+fn passphrase(typed: &Typed, flags: &Flags) -> Result<Vec<u8>> {
+    match flags.get("passphrase-file").cloned().flatten() {
+        Some(path) => tooob::backup::passphrase(&path),
+        None => Err(typed.missing(
+            "say where the passphrase is, a file or - for stdin (it's never asked for)",
+            "--passphrase-file PATH",
+        )),
+    }
+}
+
+/// `tooob backup NAME FILE`: write Host NAME's Backup to FILE, a new file only the Owner can read,
+/// sealed under the passphrase (ADR 0029). Never over a file already there.
+fn backup(host: &Entry, file: &str, passphrase: &[u8]) -> Result<()> {
+    use std::{io::Write, os::unix::fs::OpenOptionsExt};
+    if Path::new(file).exists() {
+        bail!("{file} is already there: say another FILE, or delete it first");
+    }
+    let contents = serde_json::to_vec(&host.backup_contents()?)?;
+    let sealed = tooob::backup::seal(passphrase, &contents, tooob::backup::Cost::from_env()?)?;
+    let mut out = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(file)
+        .with_context(|| format!("can't write {file}"))?;
+    out.write_all(&sealed)?;
+    out.sync_all()?;
+    Ok(())
+}
+
+/// `tooob restore NAME FILE`: bring back the Host in Backup FILE as Host NAME (ADR 0029). Never
+/// over a Host already there or running, and nothing is written until the whole Backup has opened.
+fn restore(
+    home: &Home,
+    name: &str,
+    file: &str,
+    passphrase: impl FnOnce() -> Result<Vec<u8>>,
+) -> Result<()> {
+    let again = format!(
+        "`tooob restore NAME {} --passphrase-file PATH`",
+        quote(file)
+    );
+    if home.running(name).is_some() {
+        bail!(
+            "{name} is running: restore it under another name, {again}, or stop it (`tooob stop \
+             {name}`) and `tooob rm {name}` first"
+        );
+    }
+    if home.taken(name) {
+        bail!(
+            "there's already a Host named {name}: restore it under another name, {again}, or \
+             `tooob rm {name}` first"
+        );
+    }
+    let passphrase = passphrase()?;
+    let sealed = std::fs::read(file).with_context(|| format!("can't read {file}"))?;
+    let contents = tooob::backup::open(&passphrase, &sealed).map_err(|e| {
+        match e.is::<tooob::backup::WontOpen>() {
+            true => anyhow::anyhow!(
+                "{file} can't be opened with that passphrase (or it isn't a tooob Backup): nothing \
+             was restored"
+            ),
+            false => anyhow::anyhow!("{file}: {e:#}: nothing was restored"),
+        }
+    })?;
+    let contents: tooob::backup::Contents =
+        serde_json::from_slice(&contents).context("the Backup is damaged: nothing was restored")?;
+    home.restore(name, &contents)?;
     Ok(())
 }
 
@@ -841,6 +940,7 @@ fn named(home: &Home, typed: &Typed, command: &str, wanted: Option<&String>) -> 
         "stop" => "say which Host to stop",
         "start" => "say which Host to start",
         "logs" => "say which Host's log",
+        "backup" => "say which Host to back up",
         _ => "say which Host",
     };
     let gap = match after_name(command) {

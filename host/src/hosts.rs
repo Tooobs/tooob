@@ -296,6 +296,77 @@ impl Home {
         })
     }
 
+    /// Whether a Host named `name` is running here, settings file or not: the pid holding the lock
+    /// on its state folder.
+    pub fn running(&self, name: &str) -> Option<u32> {
+        let state_dir = self.state.join(name);
+        if !valid_name(name) || !state_dir.is_dir() {
+            return None;
+        }
+        let held = record_lock(&lock_file(&state_dir).ok()?, libc::F_GETLK).ok()?;
+        (held.l_type != libc::F_UNLCK as libc::c_short).then_some(held.l_pid as u32)
+    }
+
+    /// Whether `name` is taken by a Host here.
+    pub fn taken(&self, name: &str) -> bool {
+        self.settings_file(name).exists()
+    }
+
+    /// Bring back a Host from a Backup's `contents`, as Host `name` (ADR 0029): its state, Host
+    /// Key first, then its settings file, as `add` makes one. Never over a Host already there, and
+    /// never half a Host.
+    pub fn restore(&self, name: &str, contents: &crate::backup::Contents) -> Result<Entry> {
+        if !valid_name(name) {
+            bail!("{name:?} can't be a Host Name: use letters, digits, - and _");
+        }
+        let settings_file = self.settings_file(name);
+        let state_dir = self.state.join(name);
+        if settings_file.exists() {
+            bail!("there's already a Host named {name}");
+        }
+        if state_dir.exists() {
+            bail!(
+                "{} is left from an earlier Host named {name}, Host Key and all: delete it, or use another name",
+                state_dir.display()
+            );
+        }
+        let settings: Settings =
+            toml::from_str(&contents.settings).context("the Backup's settings are damaged")?;
+        let key = contents.key_bytes()?;
+        let made = (|| -> Result<()> {
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(&state_dir)?;
+            crate::save_privately(&state_dir.join("host.key"), &key)?;
+            for (file, text) in [
+                ("access.json", &contents.access),
+                ("host.json", &contents.record),
+            ] {
+                if let Some(text) = text {
+                    crate::save_privately(&state_dir.join(file), text.as_bytes())?;
+                }
+            }
+            std::fs::create_dir_all(settings_file.parent().unwrap())?;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&settings_file)?;
+            io::Write::write_all(&mut file, contents.settings.as_bytes())?;
+            Ok(())
+        })();
+        if made.is_err() {
+            let _ = std::fs::remove_dir_all(&state_dir);
+        }
+        made?;
+        Ok(Entry {
+            name: name.to_string(),
+            settings,
+            settings_file,
+            state_dir,
+        })
+    }
+
     /// The state folder, with its Host Key, then the settings file: a Host exists once that's there.
     fn make(&self, settings: &Settings, settings_file: &Path, state_dir: &Path) -> Result<()> {
         // Private to the Owner's account: anyone who can read the Host Key can impersonate it.
@@ -392,6 +463,24 @@ impl Entry {
     /// Its Host Key, as Invite Links carry it.
     pub fn host_key(&self) -> Option<String> {
         crate::host::host_key(&self.state_dir)
+    }
+
+    /// What its Backup holds (ADR 0029): its Host Key, access state, record and settings file.
+    /// Read as they are on disk: a running Host saves each by renaming a whole new file in.
+    pub fn backup_contents(&self) -> Result<crate::backup::Contents> {
+        let key = std::fs::read(self.state_dir.join("host.key"))
+            .with_context(|| format!("{} has no Host Key", self.name))?;
+        let optional = |file: &str| match std::fs::read_to_string(self.state_dir.join(file)) {
+            Ok(text) => Ok(Some(text)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(anyhow!("can't read its {file}: {e}")),
+        };
+        Ok(crate::backup::Contents {
+            host_key: crate::backup::Contents::hex(&key),
+            access: optional("access.json")?,
+            record: optional("host.json")?,
+            settings: std::fs::read_to_string(&self.settings_file)?,
+        })
     }
 
     /// Its log, which it writes itself however it was started (ADR 0025).

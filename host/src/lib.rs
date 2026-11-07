@@ -2,6 +2,7 @@
 pub mod access;
 pub mod autostart;
 pub mod awake;
+pub mod backup;
 pub mod bootstrap;
 pub mod control;
 mod direct;
