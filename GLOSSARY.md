@@ -151,8 +151,16 @@ _Avoid_: suggestion, draft, proposal
 ## Network
 
 **Relay**:
-A server that forwards encrypted traffic between keys without being able to read it, and serves the Bootstrap for the Hosts that use it.
+A server that forwards encrypted traffic between keys without being able to read it, and serves the Bootstrap for the Hosts that use it. Once its Relay Operator has enrolled any key, it carries only traffic to or from an Enrolled Key.
 _Avoid_: server, proxy, TURN server, tunnel
+
+**Enrolled Key**:
+A key a Relay carries traffic for, enrolled by its Relay Operator: in practice a Host Key. The Relay forwards only what's sent to or from an Enrolled Key, so a Visitor reaches an Enrolled Host with nothing to enroll, while strangers can't use the Relay between themselves. A Relay with no Enrolled Keys is open to everyone. Enrolling is the Relay Operator's call about the Relay's bandwidth; who may see a Site stays the Host's Allowlist.
+_Avoid_: allowlisted key (the Allowlist is the Host's), registered host, member
+
+**Enrollment Code**:
+A one-time code a Relay Operator makes so an Owner can enroll a Host on that Relay. It names its Relay, and the Host redeems it as it first connects, proving its Host Key. One Host per code and unused after 7 days it expires, unless the Relay Operator made it for more Hosts or longer.
+_Avoid_: invite (an Invite is a Visitor's), token, pass, voucher
 
 **Relayed Path**:
 Traffic between a Visitor and a Host that goes through a Relay.
