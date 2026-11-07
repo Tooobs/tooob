@@ -100,6 +100,19 @@ pub fn lasting(duration: std::time::Duration) -> String {
     format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
 }
 
+/// When something expiring at `expires_at` (Unix seconds) expires, as seen at `now`, in words:
+/// "in 40 minutes" (rounded up) within the hour, "in 5 hours" within the day, "in 6 days" after
+/// (each to the nearest), or "expired".
+pub fn expires(expires_at: u64, now: u64) -> String {
+    let (n, unit) = match expires_at.saturating_sub(now) {
+        0 => return "expired".into(),
+        s if s < 3600 => (s.div_ceil(60), "minute"),
+        s if s < 86_400 => ((s + 1800) / 3600, "hour"),
+        s => ((s + 43_200) / 86_400, "day"),
+    };
+    format!("in {n} {unit}{}", if n == 1 { "" } else { "s" })
+}
+
 /// `0 B`, `512 B`, `4.1 KB`, `2.3 MB`, `456 MB`: in thousands, as file sizes are shown on a Mac.
 pub fn amount(bytes: u64) -> String {
     if bytes < 1000 {
@@ -125,7 +138,30 @@ pub fn amount(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::amount;
+    use super::{amount, expires};
+
+    #[test]
+    fn an_expiry_is_in_minutes_within_the_hour_then_hours_within_the_day_then_days() {
+        let now = 1_800_000_000;
+        for (left, said) in [
+            (0, "expired"),
+            (1, "in 1 minute"),
+            (60, "in 1 minute"),
+            (61, "in 2 minutes"),
+            (40 * 60, "in 40 minutes"),
+            (3599, "in 60 minutes"),
+            (3600, "in 1 hour"),
+            (5 * 3600 + 1700, "in 5 hours"),
+            (5 * 3600 + 1800, "in 6 hours"),
+            (86_399, "in 24 hours"),
+            (86_400, "in 1 day"),
+            (6 * 86_400, "in 6 days"),
+            (7 * 86_400 - 1, "in 7 days"),
+        ] {
+            assert_eq!(expires(now + left, now), said, "{left} s left");
+        }
+        assert_eq!(expires(now - 10, now), "expired");
+    }
 
     #[test]
     fn amounts_are_in_thousands_with_a_decimal_below_a_hundred() {

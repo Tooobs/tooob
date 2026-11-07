@@ -91,15 +91,17 @@ async fn invite_expiry_can_be_given_in_hours_and_bad_durations_are_errors() {
     let site = TestSite::start().await;
     let home = Home::new();
     let _serving = serve(&home, &site);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-
-    home.ok(&["invite", "site", "mom", "--expires", "1h"]);
+    home.ok(&["invite", "site", "mom", "--expires", "2h"]);
     let listed = home.ok(&["invites", "site"]);
-    let expires: u64 = listed.split_whitespace().last().unwrap().parse().unwrap();
-    assert!((now + 3590..=now + 3610).contains(&expires), "{listed}");
+    assert!(
+        listed.lines().nth(1).unwrap().ends_with("in 2 hours"),
+        "{listed}"
+    );
+
+    home.ok(&["invite", "site", "dad", "--expires", "40m"]);
+    let listed = home.ok(&["invites", "site"]);
+    let dad = listed.lines().find(|l| l.contains("dad")).expect(&listed);
+    assert!(dad.ends_with("in 40 minutes"), "{listed}");
 
     let bad = home.tooob(&["invite", "site", "mom", "--expires", "soon"]);
     assert!(!bad.status.success() && stderr(&bad).contains("bad duration"));
@@ -129,7 +131,7 @@ fn invites_lists_each_unused_invite_under_a_header_in_aligned_columns() {
         support::home::RELAY,
     );
     home.ok(&["invite", "photos", "jm"]);
-    home.ok(&["invite", "photos", "Dave's phone", "--expires", "1h"]);
+    home.ok(&["invite", "photos", "Dave's phone", "--expires", "2h"]);
 
     let listed = home.ok(&["invites", "photos"]);
     let lines: Vec<&str> = listed.lines().collect();
@@ -145,12 +147,9 @@ fn invites_lists_each_unused_invite_under_a_header_in_aligned_columns() {
         .iter()
         .find(|l| l.contains("Dave's phone"))
         .expect(&listed);
-    for row in [jm, dave] {
+    for (row, expires) in [(jm, "in 7 days"), (dave, "in 2 hours")] {
         assert_eq!(row.find(['j', 'D']), Some(label_at), "{listed}");
-        assert!(
-            row[expires_at..].starts_with(|c: char| c.is_ascii_digit()),
-            "{listed}"
-        );
+        assert_eq!(&row[expires_at..], expires, "{listed}");
         assert!(row[..label_at].trim().len() >= 8, "an id first: {listed}");
     }
 }

@@ -702,12 +702,17 @@ fn three_digits(word: &str) -> bool {
 /// `tooob invites NAME`: each unused Invite, its id, who it's for and when it expires, under a
 /// header, a column each.
 fn print_invites(invites: &[tooob::access::InviteInfo]) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
     let rows: Vec<[String; 3]> = std::iter::once(["ID".into(), "LABEL".into(), "EXPIRES".into()])
-        .chain(
-            invites
-                .iter()
-                .map(|i| [i.id.clone(), i.label.clone(), i.expires_at.to_string()]),
-        )
+        .chain(invites.iter().map(|i| {
+            [
+                i.id.clone(),
+                i.label.clone(),
+                tooob::expires(i.expires_at, now),
+            ]
+        }))
         .collect();
     // As wide as its widest, in characters: a Label can be "Mamá".
     let widest = |at: usize| rows.iter().map(|r| r[at].chars().count()).max();
