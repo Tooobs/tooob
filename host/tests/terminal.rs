@@ -287,8 +287,11 @@ fn a_host_suspended_with_ctrl_z_or_stopped_with_ctrl_c_leaves_the_terminal_as_it
     sh.expect("$ ").unwrap();
     assert_eq!(line_editing(&mut sh), before, "suspended");
     sh.send_line("fg").unwrap();
+    // bash names the job once it has read the line, before continuing it: until then readline
+    // has the terminal reading keys singly itself, and the wait below would see that (#109).
+    sh.expect("run photos\r\n").unwrap();
     let tty = tty_of(&sh);
-    until_keys_are_read(&tty); // again
+    until_keys_are_read(&tty); // again, by the Host
     sh.send(NOT_A_KEY).unwrap(); // read as a key again, not echoed
     until_read(&tty);
     sh.send("\x03").unwrap(); // Ctrl-C
