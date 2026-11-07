@@ -37,6 +37,14 @@ test("\"Save link as\" is told apart by its Fetch Metadata, and only at a page's
   assert.ok(at('handle @iroh {') < at('handle @saved {') && at('handle @saved {') < at('handle {'), "after iroh's paths, before the Bundle");
 });
 
+test("/__tooob/relay.json is tooob-relay's answer, and the Bundle's version.json stays the Bundle's", () => {
+  // #128, ADR 0030: open or enrolled, from the listener start.sh gives tooob-relay.
+  assert.deepEqual(lines(block('handle /__tooob/relay.json')), ['reverse_proxy 127.0.0.1:3341']);
+  const start = readFileSync(new URL('../relay/image/start.sh', import.meta.url), 'utf8');
+  assert.match(start, /^tooob-relay .*--status-addr 127\.0\.0\.1:3341 &$/m);
+  assert.ok(!lines(front).some((l) => l.includes('version.json')), 'version.json is left to the Bundle handler');
+});
+
 test('a saved file\'s address gets an explanation naming the file, a folder\'s naming its path, never cached', () => {
   const saved = block('handle @saved');
   assert.match(saved, /^\theader Cache-Control "no-store"$/m);

@@ -1,8 +1,10 @@
 # The root workspace: the Host's crate, and where `dist` builds Releases from (#59). bootstrap/ and
 # spike/ stay workspaces of their own: the Bootstrap's WASM wants its own size-optimized profile.
+# So does relay/ (tooob-relay, #128): the Relay image builds it from that folder alone, and no
+# Release carries it.
 [workspace]
 members = ["host"]
-exclude = ["bootstrap", "spike"]
+exclude = ["bootstrap", "relay", "spike"]
 resolver = "3"
 
 # The profile `dist` builds Releases with.

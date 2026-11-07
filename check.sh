@@ -24,6 +24,9 @@ step "cargo fmt (Host)" host cargo fmt --check
 step "cargo fmt (Bootstrap)" bootstrap cargo fmt --check
 step "cargo clippy (Host)" host cargo clippy --all-targets --quiet -- -D warnings
 step "cargo test (Host)" host cargo test --quiet
+step "cargo fmt (tooob-relay)" relay cargo fmt --check
+step "cargo clippy (tooob-relay)" relay cargo clippy --all-targets --quiet -- -D warnings
+step "cargo test (tooob-relay)" relay cargo test --quiet
 step "bootstrap/build.sh" bootstrap ./build.sh
 step "manifest tests" bootstrap/check node --test manifest.test.mjs
 step "release.sh tests" test node --test release.test.mjs

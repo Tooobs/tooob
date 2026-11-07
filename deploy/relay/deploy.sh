@@ -28,6 +28,9 @@ ctx=$(mktemp -d)
 trap 'rm -rf "$ctx"' EXIT
 cp compose.yaml "$ctx/"
 cp -R image "$ctx/image"
+# tooob-relay's source (#128), which the image builds: not its target/.
+mkdir "$ctx/image/tooob-relay"
+cp -R ../../relay/Cargo.toml ../../relay/Cargo.lock ../../relay/src ../../relay/iroh-relay "$ctx/image/tooob-relay/"
 ../bundle.sh "$ctx/image" ${release:+"$release"}
 (umask 077 && printf "RELAY_DOMAIN='%s'\nDNS_PROVIDER='%s'\nDNS_API_TOKEN='%s'\nACME_EMAIL='%s'\n" \
   "$RELAY_DOMAIN" "$DNS_PROVIDER" "$DNS_API_TOKEN" "$ACME_EMAIL" >"$ctx/.env")

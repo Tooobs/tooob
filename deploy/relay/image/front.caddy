@@ -1,5 +1,5 @@
 # What a Relay serves on its domain and on every Key Address under it (ADR 0020): iroh's paths go to
-# iroh-relay (iroh-relay.toml), and everything else is the Bootstrap Bundle: its files, and its shell
+# tooob-relay (iroh-relay.toml), and everything else is the Bootstrap Bundle: its files, and its shell
 # (index.html) at every other path, which is a page of a Site's (ADR 0023), except to a page's
 # address saved outside the page ("Save link as"), which gets an explanation instead (#99).
 # No Cookie goes on: a Relay needs none, and a Site that fills the Relay's domain with cookies would
@@ -8,6 +8,11 @@ request_header -Cookie
 @iroh path /relay /ping /generate_204 /healthz
 handle @iroh {
 	reverse_proxy 127.0.0.1:3340
+}
+# Whether this Relay is open or carries only its Enrolled Keys' traffic (ADR 0030): tooob-relay's
+# answer, not a Bundle file, so the Bundle's version.json stays as its Release made it.
+handle /__tooob/relay.json {
+	reverse_proxy 127.0.0.1:3341
 }
 # A page's address saved outside the page ("Save link as", told apart by its Fetch Metadata) never
 # reaches the Host: only the page can fetch a Site's files. The shell would save as an empty page,

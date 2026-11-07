@@ -1,4 +1,4 @@
-// The real pieces on this machine, on free ports: a Relay (stock iroh-relay behind a front that also
+// The real pieces on this machine, on free ports: a Relay (tooob-relay behind a front that also
 // serves the Bootstrap, www/), a stand-in Site, and Hosts (`tooob add` + `tooob run`) from host/.
 // Playwright's Chromium then opens real Invite Links, on Key Addresses: `<host key>.localhost`, which
 // Chromium treats as a secure context and resolves to this machine. The Hosts and Relays started
@@ -64,14 +64,40 @@ function start(cmd, args, env = process.env) {
   return { child, output: () => out };
 }
 
+/** Build tooob-relay (relay/, a workspace of its own), as buildHost builds tooob. */
+export async function buildRelay() {
+  const cargo = spawn('cargo', ['build', '-q', '--manifest-path', join(ROOT, 'relay/Cargo.toml')], { stdio: ['ignore', 'inherit', 'inherit'], detached: true });
+  children.push(cargo);
+  recordProcess(cargo, { group: true });
+  const status = await new Promise((resolve, reject) => cargo.on('error', reject).on('exit', resolve));
+  if (status !== 0) throw new Error(`cargo build of tooob-relay failed (${status})`);
+}
+
+const TOOOB_RELAY = join(ROOT, 'relay/target/debug/tooob-relay');
+let relayBuilt;
+const enrolledFiles = new Map(); // a Relay's url → its Enrolled Keys' file
+
+/** A tooob-relay in --dev mode on a free port, open (no Enrolled Keys) until `enrollOnRelay`. */
 export async function startRelay() {
+  await (relayBuilt ??= buildRelay()); // once a process: a no-op when it's up to date
   const port = await freePort();
-  const config = join(mkdtempSync(join(tmpdir(), 'relay-')), 'relay.toml');
+  const dir = mkdtempSync(join(tmpdir(), 'relay-'));
+  const config = join(dir, 'relay.toml');
   writeFileSync(config, `http_bind_addr = "127.0.0.1:${port}"\nenable_metrics = false\n`);
-  start('iroh-relay', ['--dev', '--config-path', config]);
+  const enrolled = join(dir, 'enrolled.toml');
+  start(TOOOB_RELAY, ['--dev', '--config-path', config, '--enrolled', enrolled]);
   const url = `http://127.0.0.1:${port}/`;
   await until(async () => (await fetch(url + 'healthz')).ok, 'the relay');
+  enrolledFiles.set(url, enrolled);
   return url;
+}
+
+/** Enroll `key` on the tooob-relay at `relayUrl`: from then on it forwards only traffic to or from its Enrolled Keys. */
+export async function enrollOnRelay(relayUrl, key, label = 'test') {
+  const enrolled = enrolledFiles.get(relayUrl);
+  if (!enrolled) throw new Error(`no tooob-relay started at ${relayUrl}`);
+  execFileSync(TOOOB_RELAY, ['--enrolled', enrolled, 'enroll', key, '--label', label]);
+  await new Promise((r) => setTimeout(r, 1000)); // a running Relay picks a change up within a second
 }
 
 /** Whether `path` is the Bundle's alone, never a page of a Site's (ADR 0023): its own, or missing. */

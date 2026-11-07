@@ -1,4 +1,4 @@
-# Stock iroh-relay behind Caddy, in the same container: Caddy holds the certificates and hands
+# tooob-relay (stock iroh-relay's config file) behind Caddy, in the same container: Caddy holds the certificates and hands
 # iroh's paths to this plain-HTTP listener, which nothing outside the container reaches. No [tls], so
 # no QUIC address discovery (UDP 7842): it helps native endpoints punch holes, which v1 doesn't need.
 # `access` is unset, so anyone can use this Relay: restrict it (and set `limits`) before you share it.

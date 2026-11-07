@@ -1,7 +1,8 @@
 #!/bin/sh
-# iroh-relay and Caddy, side by side. When either stops on its own, so does the other, and the
+# tooob-relay and Caddy, side by side. When either stops on its own, so does the other, and the
 # container exits as failed for its restart policy (Compose's or Fly's) to start both afresh.
-iroh-relay --config-path /etc/iroh-relay.toml &
+# Its Enrolled Keys are on the /data volume (/data/tooob-relay/enrolled.toml): none, and it's open.
+tooob-relay --config-path /etc/iroh-relay.toml --status-addr 127.0.0.1:3341 &
 relay=$!
 caddy run --config /etc/caddy/Caddyfile &
 caddy=$!

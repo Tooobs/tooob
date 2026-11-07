@@ -480,6 +480,20 @@ test("two Sites through one Relay are two origins: neither can reach the other's
   assert.notEqual(visitorKey(x), visitorKey(y), 'one Visitor Key for both Sites');
 });
 
+test('a Visitor reaches a Site through a Relay that carries only its Enrolled Host Key', async ({ browser, tooob }) => {
+  test.skip(h.olderThan('0.3.6'), 'tests #128, from 0.3.6; the Release swapped in is older');
+  // A Relay of this test's own: enrolling a key closes it to everyone else's traffic (ADR 0030).
+  const relayUrl = await h.startRelay();
+  const relay = (await h.startRelayFront(relayUrl)).url;
+  const { invite } = await hostWithSite(relay);
+  const link = invite('mom');
+  const hostKey = new URL(link).hostname.split('.')[0]; // the Key Address: as the Host logs its key
+  await h.enrollOnRelay(relayUrl, hostKey, 'site');
+  const page = await h.newVisitor(browser);
+  await page.goto(link);
+  assert.match(await h.siteText(page), /site \/ label=mom/);
+});
+
 test("a cookie a Site sets for the whole Relay domain stays with that Site", async ({ browser, irohRelay }) => {
   // Without the Public Suffix List, the browser lets a Key Address set a cookie for its whole Relay
   // domain, which every other Host's pages would then see (ADR 0021).

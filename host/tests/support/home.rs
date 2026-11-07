@@ -14,7 +14,7 @@ pub const BOOTSTRAP: &str = "https://bootstrap.example/";
 /// TestRelay: one whose Relay serves no Bootstrap won't start (ADR 0020).
 pub const RELAY: &str = "https://relay.example/";
 
-/// A real Relay on this machine (iroh-relay's own server) behind a front that serves its
+/// A real Relay on this machine (tooob-relay, open: no Enrolled Keys) behind a front that serves its
 /// Bootstrap's `/__tooob/version.json`, as a Relay does (ADR 0020), and hands everything else to
 /// iroh-relay. Stopped when dropped. It's on `localhost`, a domain, so its Hosts have Key
 /// Addresses.
@@ -61,7 +61,6 @@ impl TestRelay {
     }
 
     fn spawn(with_relay: bool) -> TestRelay {
-        use iroh_relay::server::{RelayConfig, Server, ServerConfig};
         let version_json = Arc::new(Mutex::new(Some(Some(this_version_json()))));
         let (port_tx, port_rx) = std::sync::mpsc::channel();
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
@@ -75,13 +74,19 @@ impl TestRelay {
             runtime.block_on(async {
                 let server = match with_relay {
                     true => {
-                        let mut config = ServerConfig::default();
-                        config.relay = Some(RelayConfig::new(([127, 0, 0, 1], 0)));
-                        Some(Server::spawn(config).await.unwrap())
+                        // No Enrolled Keys' file: an open Relay (ADR 0030).
+                        let enrolled = std::env::temp_dir()
+                            .join(format!("tooob-test-relay-{}", std::process::id()))
+                            .join("none.toml");
+                        Some(
+                            tooob_relay::Relay::spawn_dev(([127, 0, 0, 1], 0), enrolled)
+                                .await
+                                .unwrap(),
+                        )
                     }
                     false => None,
                 };
-                let relay = server.as_ref().map(|s| s.http_addr().unwrap());
+                let relay = server.as_ref().map(|s| s.http_addr());
                 let front = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
                 port_tx.send(front.local_addr().unwrap().port()).unwrap();
                 let fronting = async {
@@ -94,7 +99,7 @@ impl TestRelay {
                     _ = stopped => {}
                 }
                 if let Some(server) = server {
-                    let _ = server.shutdown().await;
+                    server.shutdown().await;
                 }
             });
         });

@@ -26,6 +26,9 @@ ctx=$(mktemp -d)
 trap 'rm -rf "$ctx"' EXIT
 cp -R ../relay/image/. "$ctx/"
 cp fly.toml "$ctx/"
+# tooob-relay's source (#128), which the image builds: not its target/.
+mkdir "$ctx/tooob-relay"
+cp -R ../../relay/Cargo.toml ../../relay/Cargo.lock ../../relay/src ../../relay/iroh-relay "$ctx/tooob-relay/"
 ../bundle.sh "$ctx" ${release:+"$release"}
 
 if [ $dry_run = yes ]; then
