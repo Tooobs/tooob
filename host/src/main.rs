@@ -10,6 +10,7 @@ use tooob::autostart::{self, Keeper};
 use tooob::awake::Awake;
 use tooob::bootstrap::{self, BootstrapVersion, Problem, Watch};
 use tooob::control::{Client, ControlError};
+use tooob::enrollment::{self, Enrollment};
 use tooob::host::{Host, HostConfig, Site};
 use tooob::hosts::{
     Entry, Home, NO_RELAY, RUN_YOUR_OWN, check_relay, name_char, no_invite_links, no_key_address,
@@ -169,7 +170,17 @@ async fn run() -> Result<()> {
                 }
             };
             let relay = new_host_relay(&typed, &flags).await?;
-            home.add(name, target, &relay)?;
+            let host = home.add(name, target, &relay)?;
+            // A closed Relay drops its Visitors' packets without a word: say so now (#130).
+            if let Ok(Network::Relay(url)) = host.settings.network()
+                && let Some(key) = host.host_key()
+            {
+                let found = enrollment::check(url.as_str(), &key).await;
+                enrollment::keep(&host.state_dir, found);
+                if found == Enrollment::NotEnrolled {
+                    say(&[enrollment::not_carried(url.as_str(), &key)]);
+                }
+            }
         }
         Some("run") => {
             exactly(2, &["detach"])?;
@@ -614,6 +625,10 @@ async fn ls(home: &Home, json: bool) -> Result<()> {
         serves: String,
         /// Why uploads its settings turn on are off: a Host set up before #121 on its home folder.
         uploads_off: Option<String>,
+        /// Whether its Relay carries it, as last found (#130); None with no Relay of its own.
+        enrollment: Option<Enrollment>,
+        #[serde(skip)]
+        not_carried: Option<String>,
     }
     let mut rows = Vec::new();
     for name in home.names() {
@@ -633,7 +648,19 @@ async fn ls(home: &Home, json: bool) -> Result<()> {
             ),
             false => (None, None),
         };
+        let enrollment = match host.settings.network() {
+            Ok(Network::Relay(_)) => Some(enrollment::last_found(&host.state_dir)),
+            _ => None,
+        };
+        let not_carried = match (enrollment, host.host_key()) {
+            (Some(Enrollment::NotEnrolled), Some(key)) => {
+                Some(enrollment::not_carried(&host.settings.relay, &key))
+            }
+            _ => None,
+        };
         rows.push(Row {
+            enrollment,
+            not_carried,
             name,
             state: if running { "running" } else { "stopped" },
             autostart: autostart::is_on(&host),
@@ -682,12 +709,17 @@ async fn ls(home: &Home, json: bool) -> Result<()> {
             r.serves
         );
     }
-    let off: Vec<String> = rows
-        .iter()
-        .filter_map(|r| Some(format!("{}: {}", r.name, r.uploads_off.as_ref()?)))
-        .collect();
-    if !off.is_empty() {
-        println!("\n{}", off.join("\n"));
+    for under in [
+        |r: &Row| r.uploads_off.clone(),
+        |r: &Row| r.not_carried.clone(),
+    ] {
+        let said: Vec<String> = rows
+            .iter()
+            .filter_map(|r| Some(format!("{}: {}", r.name, under(r)?)))
+            .collect();
+        if !said.is_empty() {
+            println!("\n{}", said.join("\n"));
+        }
     }
     if let Some(newer) = upgrade::newer_release_known(home.state_dir()) {
         println!("\n{}", upgrade::is_out(&newer));
@@ -1241,6 +1273,11 @@ async fn serve_here(
     let key = running.address().id.to_z32();
     let fields = tooob::fields! {"host_key" => key, "relay" => relay, "local" => local};
     log::event("host", fields, &format!("Host {key}, through {through}"));
+    // Whether its Relay carries it, asked now and on the Bootstrap's schedule (#130).
+    let _enrollment = relay.as_ref().map(|url| {
+        let watch = enrollment::Watch::new(url, &key);
+        enrollment::keep_checking(watch, host.state_dir.clone(), check_every)
+    });
     // Until this returns: the Host stops, and its checks with it.
     let _checking = bootstrap.map(|first| {
         let watch = Watch::new(&host.settings.relay, &first);

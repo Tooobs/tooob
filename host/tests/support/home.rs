@@ -24,6 +24,11 @@ pub struct TestRelay {
     pub ip_url: String,
     /// What its front answers for version.json: None hangs up, as if it couldn't be reached.
     version_json: Arc<Mutex<Option<Option<String>>>>,
+    /// Whether its front hangs up on `/__tooob/enrolled/…`, as a Relay that can't be reached would.
+    enrolled_hangs_up: Arc<Mutex<bool>>,
+    /// Its Enrolled Keys' file (ADR 0030), which its tooob-relay watches.
+    enrolled: std::path::PathBuf,
+    _dir: tempfile::TempDir,
     _stop: tokio::sync::oneshot::Sender<()>,
 }
 
@@ -60,11 +65,50 @@ impl TestRelay {
         *self.version_json.lock().unwrap() = None;
     }
 
+    /// Enroll `key` (a Host Key as `tooob show` writes it): its tooob-relay sees it within a second.
+    pub fn enroll(&self, key: &str) {
+        self.edit_enrolled(|list| list.enroll(tooob_relay::parse_key(key).unwrap(), "test"));
+    }
+
+    /// Remove `key` from its Enrolled Keys.
+    pub fn remove(&self, key: &str) {
+        self.edit_enrolled(|list| {
+            list.remove(tooob_relay::parse_key(key).unwrap());
+        });
+    }
+
+    /// Make it closed (ADR 0030): enroll someone else's key, so it carries only Enrolled Keys'
+    /// traffic.
+    pub fn close(&self) {
+        let stranger = iroh::SecretKey::from_bytes(&[7; 32]).public().to_z32();
+        self.enroll(&stranger);
+    }
+
+    /// From now on, hang up on anyone asking whether a key is enrolled, as a Relay that can't be
+    /// reached would.
+    pub fn hang_up_on_enrolled(&self) {
+        *self.enrolled_hangs_up.lock().unwrap() = true;
+    }
+
+    fn edit_enrolled(&self, change: impl FnOnce(&mut tooob_relay::List)) {
+        let mut list = tooob_relay::List::load(&self.enrolled).unwrap();
+        change(&mut list);
+        list.save(&self.enrolled).unwrap();
+        // tooob-relay looks at the file four times a second.
+        std::thread::sleep(Duration::from_millis(600));
+    }
+
     fn spawn(with_relay: bool) -> TestRelay {
         let version_json = Arc::new(Mutex::new(Some(Some(this_version_json()))));
+        let enrolled_hangs_up = Arc::new(Mutex::new(false));
+        let dir = tempfile::tempdir().unwrap();
+        // No Enrolled Keys' file yet: an open Relay (ADR 0030).
+        let enrolled = dir.path().join("enrolled.toml");
         let (port_tx, port_rx) = std::sync::mpsc::channel();
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let served = version_json.clone();
+        let hangs_up = enrolled_hangs_up.clone();
+        let list = enrolled.clone();
         // A runtime of its own, so sync and async tests alike can start one.
         std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
@@ -72,26 +116,25 @@ impl TestRelay {
                 .build()
                 .unwrap();
             runtime.block_on(async {
-                let server = match with_relay {
-                    true => {
-                        // No Enrolled Keys' file: an open Relay (ADR 0030).
-                        let enrolled = std::env::temp_dir()
-                            .join(format!("tooob-test-relay-{}", std::process::id()))
-                            .join("none.toml");
-                        Some(
-                            tooob_relay::Relay::spawn_dev(([127, 0, 0, 1], 0), enrolled)
-                                .await
-                                .unwrap(),
-                        )
-                    }
+                let mut server = match with_relay {
+                    true => Some(
+                        tooob_relay::Relay::spawn_dev(([127, 0, 0, 1], 0), list)
+                            .await
+                            .unwrap(),
+                    ),
                     false => None,
                 };
                 let relay = server.as_ref().map(|s| s.http_addr());
+                let status = match server.as_mut() {
+                    Some(s) => Some(s.serve_status(([127, 0, 0, 1], 0)).await.unwrap()),
+                    None => None,
+                };
+                let relay = relay.map(|r| (r, status.unwrap()));
                 let front = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
                 port_tx.send(front.local_addr().unwrap().port()).unwrap();
                 let fronting = async {
                     while let Ok((conn, _)) = front.accept().await {
-                        tokio::spawn(answer(conn, relay, served.clone()));
+                        tokio::spawn(answer(conn, relay, served.clone(), hangs_up.clone()));
                     }
                 };
                 tokio::select! {
@@ -108,16 +151,22 @@ impl TestRelay {
             url: format!("http://localhost:{port}/"),
             ip_url: format!("http://127.0.0.1:{port}/"),
             version_json,
+            enrolled_hangs_up,
+            enrolled,
+            _dir: dir,
             _stop: stop,
         }
     }
 }
 
-/// One connection to the front: its Bootstrap's version.json, or handed whole to iroh-relay.
+/// One connection to the front: its Bootstrap's version.json; tooob-relay's status answers
+/// (relay.json, enrolled/KEY), as the Relay image's Caddy routes them; or handed whole to
+/// iroh-relay.
 async fn answer(
     mut conn: tokio::net::TcpStream,
-    relay: Option<std::net::SocketAddr>,
+    relay: Option<(std::net::SocketAddr, std::net::SocketAddr)>,
     version_json: Arc<Mutex<Option<Option<String>>>>,
+    enrolled_hangs_up: Arc<Mutex<bool>>,
 ) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut head = Vec::new();
@@ -151,7 +200,17 @@ async fn answer(
             let _ = conn.write_all(reply.as_bytes()).await;
             return;
         }
-        (_, Some(relay)) => relay,
+        (p, Some(_))
+            if p.starts_with("/__tooob/enrolled/") && *enrolled_hangs_up.lock().unwrap() =>
+        {
+            return;
+        }
+        (p, Some((_, status)))
+            if p.starts_with("/__tooob/enrolled/") || p == "/__tooob/relay.json" =>
+        {
+            status
+        }
+        (_, Some((relay, _))) => relay,
         (_, None) => {
             let _ = conn.write_all(reply("404 Not Found", "").as_bytes()).await;
             return;

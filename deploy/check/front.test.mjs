@@ -45,6 +45,12 @@ test("/__tooob/relay.json is tooob-relay's answer, and the Bundle's version.json
   assert.ok(!lines(front).some((l) => l.includes('version.json')), 'version.json is left to the Bundle handler');
 });
 
+test('/__tooob/enrolled/<key> is tooob-relay\'s answer, before the Bundle', () => {
+  // #130: a Host asks whether its Relay carries it.
+  assert.deepEqual(lines(block('handle /__tooob/enrolled/\\*')), ['reverse_proxy 127.0.0.1:3341']);
+  assert.ok(front.indexOf('handle /__tooob/enrolled/*') < front.indexOf('handle {'), 'before the Bundle handler');
+});
+
 test('a saved file\'s address gets an explanation naming the file, a folder\'s naming its path, never cached', () => {
   const saved = block('handle @saved');
   assert.match(saved, /^\theader Cache-Control "no-store"$/m);

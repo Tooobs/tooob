@@ -14,6 +14,11 @@ handle @iroh {
 handle /__tooob/relay.json {
 	reverse_proxy 127.0.0.1:3341
 }
+# Whether a Host Key is enrolled here, which its Host asks to tell its Owner (#130): tooob-relay's
+# answer too.
+handle /__tooob/enrolled/* {
+	reverse_proxy 127.0.0.1:3341
+}
 # A page's address saved outside the page ("Save link as", told apart by its Fetch Metadata) never
 # reaches the Host: only the page can fetch a Site's files. The shell would save as an empty page,
 # so the saved file says so instead (#99). Chromium (Chrome, Brave) asks with Dest empty and Mode

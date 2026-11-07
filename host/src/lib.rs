@@ -6,6 +6,7 @@ pub mod backup;
 pub mod bootstrap;
 pub mod control;
 mod direct;
+pub mod enrollment;
 pub mod host;
 pub mod hosts;
 mod jars;

@@ -5,7 +5,7 @@ use std::{path::PathBuf, process::ExitCode};
 
 use clap::{Parser, Subcommand};
 use iroh_base::EndpointId;
-use tooob_relay::{List, Relay, config};
+use tooob_relay::{List, Relay, config, parse_key};
 use tracing_subscriber::{EnvFilter, prelude::*};
 
 #[cfg(target_env = "musl")]
@@ -139,13 +139,6 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
-}
-
-/// A key as a Host logs it (z-base-32, as in its Key Address), or as iroh writes it (hex).
-fn parse_key(s: &str) -> Result<EndpointId, String> {
-    EndpointId::from_z32(s)
-        .or_else(|_| s.parse())
-        .map_err(|_| format!("{s} isn't a key"))
 }
 
 /// A length of time such as 7d, 12h, 30m or 90s, in seconds.

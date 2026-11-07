@@ -102,8 +102,9 @@ impl Relay {
         let _ = self.server.join().await;
     }
 
-    /// Answer `GET /__tooob/relay.json` at `addr` with `{"relay_access":"open"|"enrolled"}`, for
-    /// the image's Caddy to route to. Returns where it listens.
+    /// Answer `GET /__tooob/relay.json` at `addr` with `{"relay_access":"open"|"enrolled"}`, and
+    /// `GET /__tooob/enrolled/<key>` with `{"enrolled":true|false,"relay_access":…}`, for the
+    /// image's Caddy to route to. Returns where it listens.
     pub async fn serve_status(
         &mut self,
         addr: impl Into<SocketAddr>,
@@ -125,10 +126,25 @@ impl Relay {
                     let mut line = asked.split_whitespace();
                     let method = line.next().unwrap_or("");
                     let path = line.next().unwrap_or("").split('?').next().unwrap_or("");
-                    let reply = if path == "/__tooob/relay.json"
+                    // A Host asks whether its key is enrolled (#130): nothing a Key Address
+                    // doesn't already show, and relay.json says whether the Relay is open.
+                    let enrolled = path
+                        .strip_prefix("/__tooob/enrolled/")
+                        .and_then(|key| parse_key(key).ok());
+                    let body = match (path, enrolled) {
+                        ("/__tooob/relay.json", _) => {
+                            Some(format!(r#"{{"relay_access":"{}"}}"#, rule.access()))
+                        }
+                        (_, Some(key)) => Some(format!(
+                            r#"{{"enrolled":{},"relay_access":"{}"}}"#,
+                            rule.is_enrolled(key),
+                            rule.access()
+                        )),
+                        _ => None,
+                    };
+                    let reply = if let Some(body) = body
                         && (method == "GET" || method == "HEAD")
                     {
-                        let body = format!(r#"{{"relay_access":"{}"}}"#, rule.access());
                         let head = format!(
                             "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncache-control: no-store\r\naccess-control-allow-origin: *\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
                             body.len()
@@ -154,6 +170,13 @@ impl Relay {
         drop(self._watch);
         let _ = self.server.shutdown().await;
     }
+}
+
+/// A key as z-base-32 (as Hosts and Key Addresses write it) or hex (as iroh does).
+pub fn parse_key(s: &str) -> Result<iroh_base::EndpointId, String> {
+    iroh_base::EndpointId::from_z32(s)
+        .or_else(|_| s.parse())
+        .map_err(|_| format!("{s} isn't a key"))
 }
 
 /// A task that stops when this is dropped.
