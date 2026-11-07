@@ -5,9 +5,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { brotliDecompressSync, gunzipSync } from 'node:zlib';
 
 const script = new URL('../relay/image/precompress.sh', import.meta.url).pathname;
@@ -15,7 +15,7 @@ const script = new URL('../relay/image/precompress.sh', import.meta.url).pathnam
 function bundle(files) {
   const dir = mkdtempSync(join(tmpdir(), 'precompress-'));
   for (const [path, text] of Object.entries(files)) {
-    mkdirSync(join(dir, path, '..'), { recursive: true });
+    mkdirSync(dirname(join(dir, path)), { recursive: true });
     writeFileSync(join(dir, path), text);
   }
   return dir;
@@ -36,6 +36,17 @@ test("each compressible file gets a .br and a .gz that decode to it, and the ori
       assert.equal(brotliDecompressSync(readFileSync(join(dir, `${path}.br`))).toString(), text, `${path}.br`);
       assert.equal(gunzipSync(readFileSync(join(dir, `${path}.gz`))).toString(), text, `${path}.gz`);
     }
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+});
+
+test('a copy that brotli fails to make fails the script, so the image build stops', () => {
+  const dir = bundle({ 'index.html': '<p>', 'bin/brotli': '#!/bin/sh\nexit 1\n' });
+  try {
+    chmodSync(join(dir, 'bin/brotli'), 0o755);
+    const env = { ...process.env, PATH: `${join(dir, 'bin')}:${process.env.PATH}` };
+    assert.throws(() => execFileSync(script, [dir], { env, stdio: 'ignore' }));
   } finally {
     rmSync(dir, { recursive: true });
   }
