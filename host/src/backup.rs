@@ -15,9 +15,15 @@ const VERSION: u8 = 1;
 const HEADER_LEN: usize = MAGIC.len() + 1 + 3 * 4 + SALT_LEN + NONCE_LEN;
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 24;
-/// The most memory a Backup's header may ask argon2id for, in KiB: a doctored file can't exhaust a
-/// small box.
-const MAX_MEMORY_KIB: u32 = 1024 * 1024;
+/// The most a Backup's header may ask of argon2id: 1 GiB, 16 passes, 16 lanes, so a doctored file
+/// can't exhaust or hang a small box before the cipher finds it changed.
+const MAX: Cost = Cost {
+    memory_kib: 1024 * 1024,
+    passes: 16,
+    lanes: 16,
+};
+/// The most of stdin read for a passphrase: its first line needs far less.
+const MAX_PASSPHRASE: u64 = 4096;
 
 /// How hard argon2id works on the passphrase.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -28,14 +34,15 @@ pub struct Cost {
 }
 
 impl Cost {
-    /// 64 MiB, 3 passes, 1 lane: about a second on a Raspberry Pi. `TOOOB_BACKUP_KIB` sets the
-    /// memory instead, which tests use to stay fast.
+    /// 64 MiB, 3 passes, 1 lane: about a second on a Raspberry Pi. In a debug build only,
+    /// `TOOOB_BACKUP_KIB` sets the memory instead, which tests use to stay fast: a Release ignores
+    /// it, so an exported value never weakens a real Backup.
     pub fn from_env() -> Result<Cost> {
         let memory_kib = match std::env::var("TOOOB_BACKUP_KIB") {
-            Ok(kib) => kib
+            Ok(kib) if cfg!(debug_assertions) => kib
                 .parse()
                 .context("TOOOB_BACKUP_KIB takes a number of KiB")?,
-            Err(_) => 64 * 1024,
+            _ => 64 * 1024,
         };
         Ok(Cost {
             memory_kib,
@@ -114,7 +121,7 @@ pub fn open(passphrase: &[u8], sealed: &[u8]) -> Result<Vec<u8>> {
         passes: n(1),
         lanes: n(2),
     };
-    if cost.memory_kib > MAX_MEMORY_KIB {
+    if cost.memory_kib > MAX.memory_kib || cost.passes > MAX.passes || cost.lanes > MAX.lanes {
         return Err(WontOpen.into());
     }
     let salt = &header[at + 12..at + 12 + SALT_LEN];
@@ -132,7 +139,7 @@ pub fn open(passphrase: &[u8], sealed: &[u8]) -> Result<Vec<u8>> {
 
 /// What a Backup holds: everything a Host needs to run as it did, without what's rebuilt (its
 /// cookie jars and usage).
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Contents {
     /// Its Host Key's secret half, in hex.
     pub host_key: String,
@@ -144,22 +151,37 @@ pub struct Contents {
     pub settings: String,
 }
 
+/// Everything but the Host Key's secret half, which never goes in a log or an error.
+impl std::fmt::Debug for Contents {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.debug_struct("Contents")
+            .field("host_key", &"(secret)")
+            .field("access", &self.access)
+            .field("record", &self.record)
+            .field("settings", &self.settings)
+            .finish()
+    }
+}
+
 impl Contents {
-    /// The Host Key's secret half, as `host.key` holds it.
-    pub fn key_bytes(&self) -> Result<[u8; 32]> {
-        let bad = || anyhow::anyhow!("the Backup's Host Key is damaged");
-        if self.host_key.len() != 64 {
-            return Err(bad());
+    /// What a Backup holds of the Host Key `key` (`host.key`'s 32 bytes) and the rest.
+    pub fn new(
+        key: &[u8],
+        access: Option<String>,
+        record: Option<String>,
+        settings: String,
+    ) -> Self {
+        Contents {
+            host_key: crate::hex(key),
+            access,
+            record,
+            settings,
         }
-        let mut key = [0u8; 32];
-        for (i, byte) in key.iter_mut().enumerate() {
-            *byte = u8::from_str_radix(&self.host_key[2 * i..2 * i + 2], 16).map_err(|_| bad())?;
-        }
-        Ok(key)
     }
 
-    pub fn hex(key: &[u8]) -> String {
-        key.iter().map(|b| format!("{b:02x}")).collect()
+    /// The Host Key's secret half, as `host.key` holds it.
+    pub fn key_bytes(&self) -> Result<[u8; 32]> {
+        crate::from_hex(&self.host_key).context("the Backup's Host Key is damaged")
     }
 }
 
@@ -169,7 +191,8 @@ pub fn passphrase(path: &str) -> Result<Vec<u8>> {
     let read = match path {
         "-" => {
             let mut text = Vec::new();
-            std::io::stdin().read_to_end(&mut text).map(|_| text)
+            let stdin = std::io::stdin().take(MAX_PASSPHRASE);
+            { stdin }.read_to_end(&mut text).map(|_| text)
         }
         path => std::fs::read(path),
     };
@@ -242,6 +265,19 @@ mod tests {
     }
 
     #[test]
+    fn a_header_asking_too_much_of_argon2id_is_refused_at_once() {
+        let sealed = seal(b"pass", b"secret", FAST).unwrap();
+        for (i, too_much) in [(0, MAX.memory_kib + 1), (1, u32::MAX), (2, MAX.lanes + 1)] {
+            let mut changed = sealed.clone();
+            let at = MAGIC.len() + 1 + 4 * i;
+            changed[at..at + 4].copy_from_slice(&too_much.to_le_bytes());
+            let started = std::time::Instant::now();
+            assert!(open(b"pass", &changed).unwrap_err().is::<WontOpen>());
+            assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        }
+    }
+
+    #[test]
     fn a_later_format_says_to_upgrade() {
         let mut sealed = seal(b"pass", b"secret", FAST).unwrap();
         sealed[MAGIC.len()] = 2;
@@ -251,7 +287,8 @@ mod tests {
 
     #[test]
     fn the_default_cost_is_64_mib_and_3_passes() {
-        // SAFETY of the env: only this test reads it unset; the hook is for the CLI tests.
+        // Unit tests don't set the hook (the CLI tests' `Home` does, for its `tooob`); if someone
+        // runs them with it exported, there's no default to check.
         if std::env::var_os("TOOOB_BACKUP_KIB").is_none() {
             assert_eq!(
                 Cost::from_env().unwrap(),

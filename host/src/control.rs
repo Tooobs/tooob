@@ -189,10 +189,7 @@ fn socket_path(data_dir: &Path) -> io::Result<PathBuf> {
             private.display()
         )));
     }
-    let digest: String = Sha256::digest(dir.as_os_str().as_encoded_bytes())[..8]
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    let digest = crate::hex(&Sha256::digest(dir.as_os_str().as_encoded_bytes())[..8]);
     Ok(private.join(format!("{digest}.sock")))
 }
 

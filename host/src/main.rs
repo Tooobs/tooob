@@ -258,23 +258,34 @@ fn passphrase(typed: &Typed, flags: &Flags) -> Result<Vec<u8>> {
 }
 
 /// `tooob backup NAME FILE`: write Host NAME's Backup to FILE, a new file only the Owner can read,
-/// sealed under the passphrase (ADR 0029). Never over a file already there.
+/// sealed under the passphrase (ADR 0029). A Backup already there is replaced whole: the new one
+/// is written beside it and renamed over it, so a failed write leaves the old one as it was.
 fn backup(host: &Entry, file: &str, passphrase: &[u8]) -> Result<()> {
     use std::{io::Write, os::unix::fs::OpenOptionsExt};
-    if Path::new(file).exists() {
-        bail!("{file} is already there: say another FILE, or delete it first");
-    }
     let contents = serde_json::to_vec(&host.backup_contents()?)?;
     let sealed = tooob::backup::seal(passphrase, &contents, tooob::backup::Cost::from_env()?)?;
-    let mut out = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(file)
-        .with_context(|| format!("can't write {file}"))?;
-    out.write_all(&sealed)?;
-    out.sync_all()?;
-    Ok(())
+    let path = Path::new(file);
+    let Some(base) = path.file_name() else {
+        bail!("{file} isn't a file: say where to write the Backup, `tooob backup NAME FILE`");
+    };
+    let mut tmp_name = std::ffi::OsString::from(".");
+    tmp_name.push(base);
+    tmp_name.push(format!(".{}.tmp", std::process::id()));
+    let tmp = path.with_file_name(tmp_name);
+    let written = (|| -> std::io::Result<()> {
+        let mut out = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        out.write_all(&sealed)?;
+        out.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written.with_context(|| format!("can't write {file}"))
 }
 
 /// `tooob restore NAME FILE`: bring back the Host in Backup FILE as Host NAME (ADR 0029). Never
@@ -314,6 +325,13 @@ fn restore(
     })?;
     let contents: tooob::backup::Contents =
         serde_json::from_slice(&contents).context("the Backup is damaged: nothing was restored")?;
+    if let Some(other) = home.holding(&contents.key_bytes()?) {
+        bail!(
+            "{other} here already has this Backup's Host Key, and two Hosts can't share one: \
+             `tooob rm {other}` first, then `tooob restore {name} {} --passphrase-file PATH`",
+            quote(file)
+        );
+    }
     home.restore(name, &contents)?;
     Ok(())
 }

@@ -221,10 +221,31 @@ async fn a_missing_passphrase_a_taken_name_and_a_running_host_each_say_what_to_t
     assert!(!file.exists(), "no Backup without a passphrase");
 
     home.ok(&["backup", "photos", file_arg, "--passphrase-file", pass_arg]);
-    assert_eq!(
-        fails(&["backup", "photos", file_arg, "--passphrase-file", pass_arg]),
-        format!("tooob: {file_arg} is already there: say another FILE, or delete it first\n")
+    // Again over it: replaced whole, nothing left beside it.
+    let first = std::fs::read(&file).unwrap();
+    home.ok(&["backup", "photos", file_arg, "--passphrase-file", pass_arg]);
+    assert_ne!(
+        std::fs::read(&file).unwrap(),
+        first,
+        "a new Backup, new salt"
     );
+    let beside: Vec<_> = std::fs::read_dir(home.0.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|n| n.contains(".tmp"))
+        .collect();
+    assert!(beside.is_empty(), "{beside:?}");
+    // A failed write leaves the old one as it was.
+    let kept = std::fs::read(&file).unwrap();
+    let nowhere = home.0.path().join("no-such-folder").join("b");
+    fails(&[
+        "backup",
+        "photos",
+        nowhere.to_str().unwrap(),
+        "--passphrase-file",
+        pass_arg,
+    ]);
+    assert_eq!(std::fs::read(&file).unwrap(), kept);
     assert_eq!(
         fails(&["restore", "photos", file_arg, "--passphrase-file", pass_arg]),
         format!(
@@ -241,7 +262,7 @@ async fn a_missing_passphrase_a_taken_name_and_a_running_host_each_say_what_to_t
              photos` first\n"
         )
     );
-    // Under another name, beside it, it restores: from stdin.
+    // Under another name, beside it, it won't: two Hosts can't share a Host Key.
     let mut restore = home.command(&["restore", "photos-2", file_arg, "--passphrase-file", "-"]);
     let mut child = restore
         .stdin(std::process::Stdio::piped())
@@ -256,9 +277,15 @@ async fn a_missing_passphrase_a_taken_name_and_a_running_host_each_say_what_to_t
         .write_all(b"a passphrase\n")
         .unwrap();
     let out = child.wait_with_output().unwrap();
-    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(!out.status.success());
     assert_eq!(
-        home.shown("photos-2", "Host Key"),
-        home.shown("photos", "Host Key")
+        stderr(&out),
+        format!(
+            "tooob: photos here already has this Backup's Host Key, and two Hosts can't share \
+             one: `tooob rm photos` first, then `tooob restore photos-2 {file_arg} \
+             --passphrase-file PATH`\n"
+        )
     );
+    assert!(!home.0.path().join("config/hosts/photos-2.toml").exists());
+    assert!(!home.0.path().join("state/photos-2").exists());
 }

@@ -307,6 +307,13 @@ impl Home {
         (held.l_type != libc::F_UNLCK as libc::c_short).then_some(held.l_pid as u32)
     }
 
+    /// The Host here, if any, whose Host Key is `key` (`host.key`'s 32 bytes).
+    pub fn holding(&self, key: &[u8]) -> Option<String> {
+        self.names().into_iter().find(|name| {
+            std::fs::read(self.state.join(name).join("host.key")).is_ok_and(|k| k == key)
+        })
+    }
+
     /// Whether `name` is taken by a Host here.
     pub fn taken(&self, name: &str) -> bool {
         self.settings_file(name).exists()
@@ -347,13 +354,13 @@ impl Home {
                     crate::save_privately(&state_dir.join(file), text.as_bytes())?;
                 }
             }
+            // Whole or not at all: written beside it, then linked in, which never replaces a file.
             std::fs::create_dir_all(settings_file.parent().unwrap())?;
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&settings_file)?;
-            io::Write::write_all(&mut file, contents.settings.as_bytes())?;
-            Ok(())
+            let tmp = crate::temp_path(&settings_file);
+            let linked = std::fs::write(&tmp, &contents.settings)
+                .and_then(|()| std::fs::hard_link(&tmp, &settings_file));
+            let _ = std::fs::remove_file(&tmp);
+            Ok(linked?)
         })();
         if made.is_err() {
             let _ = std::fs::remove_dir_all(&state_dir);
@@ -475,12 +482,14 @@ impl Entry {
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(anyhow!("can't read its {file}: {e}")),
         };
-        Ok(crate::backup::Contents {
-            host_key: crate::backup::Contents::hex(&key),
-            access: optional("access.json")?,
-            record: optional("host.json")?,
-            settings: std::fs::read_to_string(&self.settings_file)?,
-        })
+        let settings = std::fs::read_to_string(&self.settings_file)
+            .with_context(|| format!("can't read {}", self.settings_file.display()))?;
+        Ok(crate::backup::Contents::new(
+            &key,
+            optional("access.json")?,
+            optional("host.json")?,
+            settings,
+        ))
     }
 
     /// Its log, which it writes itself however it was started (ADR 0025).

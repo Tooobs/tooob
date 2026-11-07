@@ -498,10 +498,7 @@ pub fn typed_device_code(typed: &str) -> Option<String> {
 /// Invites are stored under a hash of their token, so the access file (and its backups) holds no
 /// usable Invite Links: a link is shown once, when it's made.
 fn invite_id(token: &str) -> String {
-    Sha256::digest(token.as_bytes())
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    crate::hex(&Sha256::digest(token.as_bytes()))
 }
 
 /// The short name the Owner sees for an Invite: enough to tell a household's Invites apart.
@@ -513,5 +510,5 @@ fn short_id(id: &str) -> String {
 fn new_token() -> io::Result<String> {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).map_err(io::Error::other)?;
-    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+    Ok(crate::hex(&bytes))
 }

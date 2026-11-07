@@ -68,6 +68,23 @@ pub(crate) fn save_privately(path: &Path, bytes: &[u8]) -> io::Result<()> {
     fs::rename(&tmp, path)
 }
 
+/// `bytes` in lowercase hex.
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The bytes `text` holds in hex, exactly `N` of them; None for anything else.
+pub(crate) fn from_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
+    if text.len() != 2 * N || !text.is_ascii() {
+        return None;
+    }
+    let mut bytes = [0u8; N];
+    for (i, byte) in bytes.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&text[2 * i..2 * i + 2], 16).ok()?;
+    }
+    Some(bytes)
+}
+
 /// Where `save_privately` writes before the rename; a crash can leave it behind.
 pub(crate) fn temp_path(path: &Path) -> PathBuf {
     path.with_extension("tmp")
