@@ -61,6 +61,7 @@ A home box serving a Site to invited Visitors in ordinary browsers, for technica
 - ✅ No default Relay: every Host's settings name one ([#50](https://github.com/Tooobs/tooob/issues/50))
 - ✅ Key Addresses: each Host is its own origin on its Relay's domain ([#66](https://github.com/Tooobs/tooob/issues/66))
 - ✅ A Relay is safe for its Owner without the Public Suffix List ([#78](https://github.com/Tooobs/tooob/issues/78))
+- ✅ A Relay sends the Bootstrap brotli or gzip compressed, made when its image is built ([#113](https://github.com/Tooobs/tooob/issues/113))
 - 🟡 A Relay serves its Bootstrap: the Relay setups, checked on Fly.io, not yet on a VPS ([#67](https://github.com/Tooobs/tooob/issues/67))
 - 🟡 tooob checks its Relay's Bootstrap: it won't start on a Bootstrap Mismatch, and warns of one while running ([#68](https://github.com/Tooobs/tooob/issues/68)); a switch of Relay is announced ([#69](https://github.com/Tooobs/tooob/issues/69))
 - ⬜ `--local` is only for tooob's own tests ([#70](https://github.com/Tooobs/tooob/issues/70))

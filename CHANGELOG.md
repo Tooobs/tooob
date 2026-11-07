@@ -16,6 +16,7 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
 - `tooob invites` shows when each Invite expires in words (`in 7 days`, `in 5 hours`, `in 40 minutes`), rounded up, instead of a Unix timestamp; `--json` still gives `expires_at` in Unix seconds (#3).
 
 ### Fixed
+- A Relay sends the Bootstrap compressed: its image makes brotli (`-q 11`) and gzip (`-9`) copies of the Bundle's WASM, JS, HTML, CSS and JSON when it's built, and Caddy (now 2.11) serves them with `precompressed br gzip`, so the WASM goes from 3.1 MB on the wire to about 0.8 MB. The Bundle and its hashes don't change; iroh's paths aren't compressed. Redeploy a Relay of your own to get it (#113).
 - A request the browser gives up on (the Visitor navigates away from a long-polling page) now ends the Host's request to the Site at once, even while the Site is sending nothing, on the Direct Path and through the Relay, so open requests no longer pile up on the Site (#2).
 
 ## 0.3.5 — 2026-11-07
