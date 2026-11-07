@@ -1022,6 +1022,70 @@ fn share_uploads_turns_uploads_on_in_its_settings_for_a_new_host_and_a_reused_on
 }
 
 #[test]
+fn share_uploads_on_the_home_folder_or_one_holding_it_is_refused_and_adds_nothing() {
+    let home = Home::new();
+    let path = home.0.path().to_str().unwrap();
+    let holder = home.0.path().parent().unwrap().to_str().unwrap();
+    for (given, said) in [
+        (path, "~ is your home folder; share a folder inside it"),
+        (holder, "holds your home folder; share a folder inside it"),
+    ] {
+        let out = home.tooob(&["share", given, "--local", "--uploads"]);
+        assert!(!out.status.success(), "{given}");
+        assert!(stderr(&out).contains(said), "{given}: {}", stderr(&out));
+    }
+    assert_eq!(home.ok(&["ls"]).lines().count(), 1, "nothing added");
+}
+
+#[test]
+fn a_host_with_uploads_on_its_home_folder_starts_read_only_and_says_why_everywhere() {
+    let home = Home::new();
+    let path = home.0.path().to_str().unwrap();
+    home.ok(&["add", "everything", path, "--local"]);
+    let file = home.shown("everything", "settings file");
+    let before = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(&file, format!("{before}uploads = true\n")).unwrap();
+    let why = "uploads are off: ~ is your home folder; share a folder inside it";
+
+    let running = home.start("everything");
+    running.until_it_says("serving");
+    assert!(running.log().contains(why), "{}", running.log());
+    assert!(
+        !running.log().contains("Visitors can add files"),
+        "{}",
+        running.log()
+    );
+    assert!(home.ok(&["logs", "everything"]).contains(why));
+    assert!(
+        home.ok(&["ls"]).contains(&format!("everything: {why}")),
+        "{}",
+        home.ok(&["ls"])
+    );
+    running.stop();
+}
+
+#[test]
+fn share_uploads_and_run_with_uploads_on_say_visitors_can_add_files_once() {
+    let home = Home::new();
+    let folder = a_folder();
+    let path = folder.path().to_str().unwrap();
+    let serves = std::fs::canonicalize(path).unwrap();
+    let line = format!(
+        "warning: Visitors can add files to any folder in {}, except hidden ones",
+        serves.display()
+    );
+    let shared = home.spawn(&["share", path, "--local", "--uploads", "--name", "drop"]);
+    shared.until_it_says("serving");
+    assert_eq!(shared.log().matches(&line).count(), 1, "{}", shared.log());
+    shared.stop();
+
+    let running = home.start("drop");
+    running.until_it_says("serving");
+    assert_eq!(running.log().matches(&line).count(), 1, "{}", running.log());
+    running.stop();
+}
+
+#[test]
 fn share_uploads_sets_the_owners_own_uploads_line_and_leaves_every_other_line_as_it_was() {
     let home = Home::new();
     let folder = a_folder();

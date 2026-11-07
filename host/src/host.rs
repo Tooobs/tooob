@@ -55,18 +55,53 @@ impl std::fmt::Display for Site {
 /// How much space is free, for a Visitor's upload, on the disk holding a folder.
 type FreeSpace = dyn Fn(&std::path::Path) -> std::io::Result<u64> + Send + Sync;
 
+/// Marks an uploaded file as from elsewhere (`com.apple.quarantine` on macOS).
+type Quarantine = dyn Fn(&std::path::Path) -> std::io::Result<()> + Send + Sync;
+
+/// Where what a Host says of its uploads goes: its log, as a warning.
+type Say = dyn Fn(&str) + Send + Sync;
+
 /// A Shared Folder whose Owner turned uploads on: its Visitors may add files to it, never change
-/// or remove one (ADR 0026). The free space it reads is a seam, so tests can make a disk full.
+/// or remove one (ADR 0026). The free space it reads, how it marks a file as from elsewhere, where
+/// it says what's wrong and which folder is the Owner's home are seams, for tests.
 #[derive(Clone)]
 pub struct Uploads {
     free_space: Arc<FreeSpace>,
+    quarantine: Arc<Quarantine>,
+    say: Arc<Say>,
+    home: Option<PathBuf>,
+    /// Whether it's said, since the Host started, that the quarantine mark can't be kept.
+    unmarked_said: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Default for Uploads {
-    /// The free space the disk itself reports.
+    /// The free space the disk itself reports, macOS's quarantine, the Host's log and `$HOME`.
     fn default() -> Uploads {
         Uploads::with_free_space(free_space)
     }
+}
+
+/// Why the Shared Folder at `path` can't take uploads, if it's `home` (the Owner's home folder) or
+/// holds it: LaunchAgents and the like aren't hidden (ADR 0026). Says how it's named and what to
+/// do: `~ is your home folder; share a folder inside it`.
+pub fn home_takes_no_uploads(path: &std::path::Path, home: &std::path::Path) -> Option<String> {
+    let path = path.canonicalize().unwrap_or_else(|_| path.into());
+    let home = home.canonicalize().unwrap_or_else(|_| home.into());
+    let what = if path == home {
+        "~ is your home folder".to_string()
+    } else if home.starts_with(&path) {
+        format!("{} holds your home folder", path.display())
+    } else {
+        return None;
+    };
+    Some(format!("{what}; share a folder inside it"))
+}
+
+/// The Owner's home folder, as `$HOME` says.
+pub fn owners_home() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .map(PathBuf::from)
 }
 
 impl std::fmt::Debug for Uploads {
@@ -82,6 +117,37 @@ impl Uploads {
     ) -> Uploads {
         Uploads {
             free_space: Arc::new(free_space),
+            quarantine: Arc::new(quarantine),
+            say: Arc::new(|text: &str| crate::log::warning(text)),
+            home: owners_home(),
+            unmarked_said: Default::default(),
+        }
+    }
+
+    /// These uploads, marking each file as from elsewhere with `quarantine`.
+    pub fn with_quarantine(
+        self,
+        quarantine: impl Fn(&std::path::Path) -> std::io::Result<()> + Send + Sync + 'static,
+    ) -> Uploads {
+        Uploads {
+            quarantine: Arc::new(quarantine),
+            ..self
+        }
+    }
+
+    /// These uploads, saying what's wrong with them to `say` rather than the Host's log.
+    pub fn with_warnings(self, say: impl Fn(&str) + Send + Sync + 'static) -> Uploads {
+        Uploads {
+            say: Arc::new(say),
+            ..self
+        }
+    }
+
+    /// These uploads, with `home` as the Owner's home folder.
+    pub fn with_home(self, home: &std::path::Path) -> Uploads {
+        Uploads {
+            home: Some(home.into()),
+            ..self
         }
     }
 
@@ -89,6 +155,68 @@ impl Uploads {
     pub(crate) fn free(&self, folder: &std::path::Path) -> std::io::Result<u64> {
         (self.free_space)(folder)
     }
+
+    /// Mark the file at `path` as from elsewhere. Where that can't be done, it's still saved, and
+    /// that's said once per Host start.
+    pub(crate) fn mark(&self, path: &std::path::Path) {
+        use std::sync::atomic::Ordering;
+        if (self.quarantine)(path).is_err() && !self.unmarked_said.swap(true, Ordering::Relaxed) {
+            (self.say)(
+                "uploads here can't be marked as from elsewhere (quarantine): the filesystem \
+                 doesn't keep it",
+            );
+        }
+    }
+
+    /// These uploads, for the Shared Folder at `root`, unless it's the Owner's home folder or holds
+    /// it: then none, saying why.
+    fn for_folder(self, root: &std::path::Path) -> Option<Uploads> {
+        let why = self
+            .home
+            .as_deref()
+            .and_then(|home| home_takes_no_uploads(root, home));
+        match why {
+            Some(why) => {
+                (self.say)(&format!("uploads are off: {why}"));
+                None
+            }
+            None => Some(self),
+        }
+    }
+}
+
+/// Mark the file at `path` as a browser marks a download, naming tooob as the app that put it
+/// there, so Gatekeeper checks it before it's opened.
+#[cfg(target_os = "macos")]
+fn quarantine(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    // Flags (downloaded, and to be checked), when, and the app.
+    let value = format!("0083;{secs:08x};tooob;");
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+    let name = c"com.apple.quarantine";
+    let set = unsafe {
+        libc::setxattr(
+            path.as_ptr(),
+            name.as_ptr(),
+            value.as_ptr().cast(),
+            value.len(),
+            0,
+            0,
+        )
+    };
+    if set != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Linux has no mark like macOS's: nothing to do.
+#[cfg(not(target_os = "macos"))]
+fn quarantine(_: &std::path::Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 /// The free space statvfs reports on the disk holding `path`.
@@ -145,6 +273,11 @@ impl Host {
                     .with_context(|| format!("can't share {}", path.display()))?,
             ),
             site => site,
+        };
+        // A Host set up before #121 with uploads on its home folder still starts, read-only.
+        let uploads = match &site {
+            Site::SharedFolder(root) => uploads.and_then(|u| u.for_folder(root)),
+            Site::WebApp(_) => uploads,
         };
         Record::keep(&config.data_dir, &site, &config.network)?;
         let access = Access::open(config.data_dir.join("access.json"))?;

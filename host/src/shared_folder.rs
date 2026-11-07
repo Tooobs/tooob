@@ -124,7 +124,12 @@ async fn serve(
                     let resp = ServeFile::new(page).oneshot(req).await?;
                     reply(send, uploads, resp).await
                 }
-                None => match listing(root, &folder, &path, uploads) {
+                None => match listing(
+                    root,
+                    &folder,
+                    &path,
+                    uploads && !hidden(root, &path, &folder),
+                ) {
                     Ok(page) => reply(send, false, page).await,
                     Err(_) => status(send, 404).await, // unreadable: as for a file
                 },
@@ -542,6 +547,33 @@ async fn refuse(send: &mut (impl AsyncWrite + Unpin + Send), code: u16, text: &s
 
 const DISK_FULL: &str = "the disk is full";
 
+const HIDDEN: &str = "nothing hidden can be uploaded: no name or folder starting with .";
+
+/// Whether the folder a request path names (`asked`, as it came) is hidden, or within one, below
+/// the Shared Folder at `root`: as asked for, or where `real`ly is after symlinks (ADR 0026).
+/// Counted from `root` itself, so a Shared Folder that lives under a dotfolder isn't.
+fn hidden(root: &Path, asked: &str, real: &Path) -> bool {
+    let dotted = |name: &std::ffi::OsStr| name.as_encoded_bytes().starts_with(b".");
+    let as_asked = percent_decode_str(asked)
+        .decode_utf8()
+        .map(|p| {
+            Path::new(p.trim_start_matches('/'))
+                .components()
+                .any(|c| matches!(c, Component::Normal(n) if dotted(n)))
+        })
+        .unwrap_or(true);
+    let really = root
+        .canonicalize()
+        .ok()
+        .and_then(|root| real.strip_prefix(root).ok().map(Path::to_path_buf))
+        .is_none_or(|below| {
+            below
+                .components()
+                .any(|c| matches!(c, Component::Normal(n) if dotted(n)))
+        });
+    as_asked || really
+}
+
 impl SharedFolder<'_> {
     /// Add one file, `put`, into the folder its path names: whole or not at all, never over another
     /// file, and never so the disk is left with less than 1 GiB free (ADR 0026).
@@ -562,9 +594,15 @@ impl SharedFolder<'_> {
         if let Some(why) = refused_name(&name) {
             return refuse(send, 400, why).await;
         }
+        if name.starts_with('.') {
+            return refuse(send, 403, HIDDEN).await;
+        }
         let Some(folder) = locate(root, &format!("{parent}/")).filter(|f| f.is_dir()) else {
             return refuse(send, 404, "no such folder").await;
         };
+        if hidden(root, parent, &folder) {
+            return refuse(send, 403, HIDDEN).await;
+        }
         if inside(root, &folder.join("index.html")).is_some_and(|p| p.is_file()) {
             return refuse(
                 send,
@@ -589,11 +627,19 @@ impl SharedFolder<'_> {
         getrandom::fill(&mut id)?;
         let id: String = id.iter().map(|b| format!("{b:02x}")).collect();
         let partial = Partial(folder.join(format!("{PARTIAL}-{id}")));
+        // Never executable, whatever the Visitor's browser or the folder's defaults (ADR 0026).
         let mut file = tokio::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
+            .mode(0o644)
             .open(&partial.0)
             .await?;
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = file.metadata().await?.permissions().mode() & 0o644;
+            file.set_permissions(fs::Permissions::from_mode(mode))
+                .await?;
+        }
         let mut written = 0u64;
         let mut checked = 0u64;
         let mut chunk = rest;
@@ -625,6 +671,8 @@ impl SharedFolder<'_> {
         if length.is_some_and(|l| l != written) {
             return refuse(send, 400, "the upload ended short").await;
         }
+        // Before it's in place, so it never shows unmarked.
+        uploads.mark(&partial.0);
         // A hard link never replaces what's there, even when two uploads of one name land at once.
         let saved = (0..)
             .map(|n| numbered(&name, n))

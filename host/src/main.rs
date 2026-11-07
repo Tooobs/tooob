@@ -276,6 +276,11 @@ async fn share(
     };
     let path = std::fs::canonicalize(given).with_context(|| format!("can't share {given}"))?;
     let serves = path.to_string_lossy();
+    if flags.contains_key("uploads")
+        && let Some(why) = uploads_off(&path)
+    {
+        bail!("{given} can't take uploads: {why}");
+    }
     let expires_in = match flags.get("expires").cloned().flatten() {
         Some(expires) => seconds(&expires)?,
         None => 7 * 86_400,
@@ -324,6 +329,12 @@ async fn share(
     for warning in warnings(given, &path) {
         eprintln!("tooob: warning: {warning}");
     }
+    // Served here, it says so as it starts, as `tooob run` does.
+    if (keeper.is_some() || autostart::is_on(&host))
+        && let Some(warning) = uploads_warning(&host)
+    {
+        eprintln!("tooob: warning: {warning}");
+    }
     // Kept running before any Invite is made: when its service manager refuses, nothing is added.
     let said = match &keeper {
         Some(keeper) => match keeper.keep_running(&host) {
@@ -355,6 +366,20 @@ fn in_the_background(host: &Entry) -> String {
             host.name
         ),
     }
+}
+
+/// Why the folder or file at `path` can't take uploads: it's the Owner's home folder, or holds it
+/// (ADR 0026).
+fn uploads_off(path: &Path) -> Option<String> {
+    tooob::host::home_takes_no_uploads(path, &tooob::host::owners_home()?)
+}
+
+/// What a Host with uploads on says as it starts: who can add files where. Never a question
+/// (ADR 0022).
+fn uploads_warning(host: &Entry) -> Option<String> {
+    let serves = &host.settings.serves;
+    (host.settings.uploads && uploads_off(Path::new(serves)).is_none())
+        .then(|| format!("Visitors can add files to any folder in {serves}, except hidden ones"))
 }
 
 /// How many folders and files `share` looks through for what an Owner may not mean to hand out: a
@@ -453,6 +478,8 @@ async fn ls(home: &Home, json: bool) -> Result<()> {
         /// Its Relay's Bootstrap won't do for this tooob (ADR 0020): only a running Host knows.
         bootstrap_mismatch: bool,
         serves: String,
+        /// Why uploads its settings turn on are off: a Host set up before #121 on its home folder.
+        uploads_off: Option<String>,
     }
     let mut rows = Vec::new();
     for name in home.names() {
@@ -479,6 +506,12 @@ async fn ls(home: &Home, json: bool) -> Result<()> {
             kept_stopped: !autostart::is_on(&host) && autostart::is_kept_stopped(&host),
             visitors: visitors.map(|v| v.len()),
             bootstrap_mismatch: bootstrap.is_some_and(|b| b.is_mismatch()),
+            uploads_off: host
+                .settings
+                .uploads
+                .then(|| uploads_off(Path::new(&host.settings.serves)))
+                .flatten()
+                .map(|why| format!("uploads are off: {why}")),
             serves: host.settings.serves,
         });
     }
@@ -514,6 +547,13 @@ async fn ls(home: &Home, json: bool) -> Result<()> {
             state(r),
             r.serves
         );
+    }
+    let off: Vec<String> = rows
+        .iter()
+        .filter_map(|r| Some(format!("{}: {}", r.name, r.uploads_off.as_ref()?)))
+        .collect();
+    if !off.is_empty() {
+        println!("\n{}", off.join("\n"));
     }
     if let Some(newer) = upgrade::newer_release_known(home.state_dir()) {
         println!("\n{}", upgrade::is_out(&newer));
@@ -1051,6 +1091,9 @@ async fn serve_here(
         ));
     }
     let uploads = host.settings.uploads.then(tooob::host::Uploads::default);
+    if let Some(warning) = uploads_warning(host) {
+        log::warning(&warning);
+    }
     let config = HostConfig {
         site,
         data_dir: host.state_dir.clone(),

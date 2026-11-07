@@ -475,9 +475,6 @@ async fn with_uploads_on_a_visitor_adds_files_to_the_folder_they_are_looking_at(
         serde_json::from_slice::<serde_json::Value>(&sent.body).unwrap()["saved"],
         "café.jpg"
     );
-    let dotfile = put(&shared, "/.notes", b"fine").await;
-    assert_eq!(dotfile.status, 201, "other dotfiles are fine");
-
     assert_eq!(
         std::fs::read(folder.path().join("Holiday photos/café.jpg")).unwrap(),
         b"jpeg bytes"
@@ -801,4 +798,165 @@ async fn with_uploads_on_every_file_is_served_sandboxed() {
         None,
         "only with uploads on"
     );
+}
+
+#[tokio::test]
+async fn an_upload_into_a_hidden_folder_or_with_a_hidden_name_is_refused_and_nothing_is_written() {
+    let folder = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(folder.path().join(".git/hooks")).unwrap();
+    std::fs::create_dir_all(folder.path().join("a/.b/c")).unwrap();
+    let shared = share_uploads(folder.path()).await;
+
+    for path in [
+        "/.git/hooks/pre-commit",
+        "/%2Egit/hooks/pre-commit",
+        "/a/.b/c/x.txt",
+        "/a/.b/x.txt",
+        "/.zshrc",
+        "/a/.envrc",
+    ] {
+        let reply = put(&shared, path, b"x").await;
+        assert_eq!(reply.status, 403, "{path}");
+        let said = String::from_utf8_lossy(&reply.body);
+        assert!(said.contains("hidden"), "{path}: {said}");
+    }
+    assert_eq!(names(folder.path()), [".git", "a"]);
+    assert!(names(&folder.path().join(".git/hooks")).is_empty());
+    assert_eq!(names(&folder.path().join("a")), [".b"]);
+    assert_eq!(names(&folder.path().join("a/.b")), ["c"]);
+    assert!(names(&folder.path().join("a/.b/c")).is_empty());
+}
+
+#[tokio::test]
+async fn an_upload_through_a_symlink_into_a_hidden_folder_is_refused() {
+    let folder = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(folder.path().join(".git/hooks")).unwrap();
+    std::os::unix::fs::symlink(
+        folder.path().join(".git/hooks"),
+        folder.path().join("photos"),
+    )
+    .unwrap();
+    let shared = share_uploads(folder.path()).await;
+
+    let reply = put(&shared, "/photos/pre-commit", b"x").await;
+    assert_eq!(reply.status, 403);
+    assert!(String::from_utf8_lossy(&reply.body).contains("hidden"));
+    assert!(names(&folder.path().join(".git/hooks")).is_empty());
+    let listing = shared.visit.get("/photos/").await.unwrap();
+    assert!(!String::from_utf8_lossy(&listing.body).contains("Upload"));
+}
+
+#[tokio::test]
+async fn a_shared_folder_under_a_dotfolder_takes_uploads_into_its_own_folders() {
+    let parent = tempfile::tempdir().unwrap();
+    let root = parent.path().join(".cache/drop");
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    let shared = share_uploads(&root).await;
+
+    assert_eq!(put(&shared, "/a.txt", b"a").await.status, 201);
+    assert_eq!(put(&shared, "/sub/b.txt", b"b").await.status, 201);
+    assert_eq!(names(&root), ["a.txt", "sub"]);
+    assert_eq!(names(&root.join("sub")), ["b.txt"]);
+    let listing = shared.visit.get("/sub/").await.unwrap();
+    assert!(String::from_utf8_lossy(&listing.body).contains("Upload"));
+}
+
+#[tokio::test]
+async fn a_hidden_folders_listing_has_no_upload_button() {
+    let folder = tempfile::tempdir().unwrap();
+    write(folder.path().join(".git/HEAD"), "ref");
+    let shared = share_uploads(folder.path()).await;
+
+    let hidden = shared.visit.get("/.git/").await.unwrap();
+    assert_eq!(hidden.status, 200);
+    assert!(!String::from_utf8_lossy(&hidden.body).contains("Upload"));
+    let top = shared.visit.get("/").await.unwrap();
+    assert!(String::from_utf8_lossy(&top.body).contains("Upload"));
+}
+
+#[tokio::test]
+async fn an_uploaded_file_is_never_executable() {
+    use std::os::unix::fs::PermissionsExt;
+    let folder = tempfile::tempdir().unwrap();
+    // A folder whose files anyone could run, were they made as its defaults say.
+    std::fs::set_permissions(folder.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
+    let shared = share_uploads(folder.path()).await;
+
+    assert_eq!(
+        put(&shared, "/run.command", b"#!/bin/sh\n").await.status,
+        201
+    );
+    let mode = std::fs::metadata(folder.path().join("run.command"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o7133, 0, "{mode:o}");
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn on_macos_an_uploaded_file_is_quarantined_as_from_tooob() {
+    let folder = tempfile::tempdir().unwrap();
+    let shared = share_uploads(folder.path()).await;
+
+    assert_eq!(put(&shared, "/app.pkg", b"pkg").await.status, 201);
+    let mark = std::process::Command::new("/usr/bin/xattr")
+        .args(["-p", "com.apple.quarantine"])
+        .arg(folder.path().join("app.pkg"))
+        .output()
+        .unwrap();
+    assert!(mark.status.success(), "{mark:?}");
+    let mark = String::from_utf8_lossy(&mark.stdout);
+    assert!(mark.split(';').nth(2) == Some("tooob"), "{mark}");
+}
+
+#[tokio::test]
+async fn where_the_quarantine_mark_cant_be_set_the_upload_is_saved_and_it_is_said_once() {
+    let folder = tempfile::tempdir().unwrap();
+    let said = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let heard = said.clone();
+    let uploads = Uploads::default()
+        .with_quarantine(|_: &Path| Err(std::io::ErrorKind::Unsupported.into()))
+        .with_warnings(move |text: &str| heard.lock().unwrap().push(text.into()));
+    let shared = share_with(folder.path(), Some(uploads)).await;
+
+    assert_eq!(put(&shared, "/one.txt", b"1").await.status, 201);
+    assert_eq!(put(&shared, "/two.txt", b"2").await.status, 201);
+    assert_eq!(names(folder.path()), ["one.txt", "two.txt"]);
+    assert_eq!(
+        *said.lock().unwrap(),
+        [
+            "uploads here can't be marked as from elsewhere (quarantine): the filesystem doesn't keep it"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_host_with_uploads_on_its_home_folder_serves_read_only_and_says_why() {
+    let home = tempfile::tempdir().unwrap();
+    let said = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let heard = said.clone();
+    for root in [
+        home.path().to_path_buf(),
+        home.path().parent().unwrap().into(),
+    ] {
+        said.lock().unwrap().clear();
+        let heard = heard.clone();
+        let uploads = Uploads::default()
+            .with_home(home.path())
+            .with_warnings(move |text: &str| heard.lock().unwrap().push(text.into()));
+        let shared = share_with(&root, Some(uploads)).await;
+        assert_eq!(put(&shared, "/new.txt", b"x").await.status, 405);
+        let listing = shared.visit.get("/").await.unwrap();
+        assert_eq!(listing.status, 200);
+        assert!(!String::from_utf8_lossy(&listing.body).contains("Upload"));
+        let said = said.lock().unwrap();
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(
+            said[0].starts_with("uploads are off: ")
+                && said[0].ends_with("; share a folder inside it"),
+            "{said:?}"
+        );
+    }
+    assert!(!home.path().join("new.txt").exists());
 }

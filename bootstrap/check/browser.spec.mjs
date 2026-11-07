@@ -1473,6 +1473,25 @@ test("an uploaded web page's script never runs, and a refused name says why", as
   assert.equal(shown, 'plain', 'its script was sandboxed');
 });
 
+test("a hidden folder's listing has no Upload button, and a hidden name is refused with why", async ({ browser, relay }) => {
+  test.skip(h.olderThan('0.3.5'), 'tests #121, from 0.3.5; the Release swapped in is older');
+  const root = aFolder();
+  mkdirSync(join(root, '.git', 'hooks'), { recursive: true });
+  const { frame } = await visitSharedFolder(root, { browser, relay }, { uploads: true });
+  await frame.waitForSelector('#pick', { timeout: 20000 });
+  await frame.setInputFiles('#files', [
+    { name: '.zshrc', mimeType: 'text/plain', buffer: Buffer.from('echo hi') },
+  ]);
+  await frame.waitForSelector('#uploads li.failed', { timeout: 20000 });
+  assert.match(await frame.textContent('#uploads li.failed'), /^\.zshrc: not uploaded: nothing hidden can be uploaded/);
+  assert.equal(existsSync(join(root, '.zshrc')), false);
+
+  await Promise.all([frame.waitForNavigation(), frame.click('a[href=".git/"]')]);
+  await frame.waitForSelector('a[href="hooks/"]', { timeout: 20000 });
+  assert.equal(await frame.$('#pick'), null);
+  assert.equal(await frame.$('#files'), null);
+});
+
 test('a Shared Folder without uploads has no Upload button', async ({ browser, relay }) => {
   test.skip(h.olderThan('0.3.4'), 'tests #116, from 0.3.4; the Release swapped in is older');
   const { frame } = await visitSharedFolder(aFolder(), { browser, relay });
