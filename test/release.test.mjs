@@ -358,7 +358,7 @@ test('a Host test that fails on Linux stops the Release before the browser suite
   const { work, bare } = aClone(t, { linuxTests: 'exit 101' });
   const result = release(work, '0.2.0');
   assert.notEqual(result.status, 0);
-  assert.match(result.stdout, /test\/linux\/run\.sh: stub/);
+  assert.match(result.stdout, /check\.sh: stub[\s\S]*test\/linux\/run\.sh: stub/, 'run.sh runs after check.sh');
   assert.match(result.stderr, /the Host's tests failed on Linux/, result.stderr);
   assert.doesNotMatch(result.stdout, /the browser suite/, 'the suite ran');
   assert.equal(git(bare, 'tag', '-l'), '');
@@ -369,7 +369,7 @@ test("a Release is refused when podman isn't running, saying how to start it", (
   const { work, bare } = aClone(t);
   const result = release(work, '0.2.0', {}, { podman: PODMAN_DOWN });
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /podman machine start/, result.stderr);
+  assert.match(result.stderr, /podman isn't running.*: podman machine start/, result.stderr);
   assert.doesNotMatch(result.stdout, /test\/linux\/run\.sh: stub/, 'the Linux tests ran');
   assert.equal(git(bare, 'tag', '-l'), '');
 });

@@ -11,10 +11,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: linux-tests-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   cargo-test:
     name: cargo test (${{ matrix.target }})
@@ -23,10 +19,10 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-musl
-            runner: ubuntu-24.04
+            runner: ubuntu-22.04 # the release workflow's
           # Native arm64, free for public repos: musl test binaries run as built, no emulation.
           - target: aarch64-unknown-linux-musl
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-22.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:
