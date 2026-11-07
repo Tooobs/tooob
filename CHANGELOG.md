@@ -10,6 +10,9 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
 ### Changed
 - `./release.sh` runs the Host's tests on Linux (`test/linux/run.sh`, in podman) before it tags, and refuses when podman isn't running; CI runs `cargo test` on both musl targets on every push to `main` (#108).
 
+### Fixed
+- A request the browser gives up on (the Visitor navigates away from a long-polling page) now ends the Host's request to the Site at once, even while the Site is sending nothing, on the Direct Path and through the Relay, so open requests no longer pile up on the Site (#2).
+
 ## 0.3.5 — 2026-11-07
 
 Protocol Version: `tooob/0`. Tested with iroh-relay 1.3.0.
