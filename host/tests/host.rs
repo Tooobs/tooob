@@ -809,6 +809,43 @@ async fn the_host_stops_promptly_even_with_a_request_stuck_on_the_site() {
 }
 
 #[tokio::test]
+async fn a_cancelled_long_poll_ends_on_the_site_while_the_site_is_idle() {
+    let site = TestSite::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let host = start_host(&site, &dir).await;
+    let invite = host
+        .control()
+        .invite("mom", InviteOptions::default())
+        .unwrap();
+    let visit = Visit::connect(host.address(), new_visitor_key(), Network::LocalOnly)
+        .await
+        .unwrap();
+    visit.redeem(&invite.token).await.unwrap();
+    let waited = std::time::Duration::from_secs(3);
+    // Again and again, as a Visitor navigating around a long-polling Site would.
+    for _ in 0..3 {
+        let mut poll = Box::pin(visit.get("/poll"));
+        while site.open_polls() == 0 {
+            tokio::select! {
+                _ = &mut poll => panic!("the Site answered /poll"),
+                _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => {}
+            }
+        }
+        // The Visitor cancels: the request is dropped, its stream with it.
+        drop(poll);
+        let start = std::time::Instant::now();
+        while site.open_polls() > 0 {
+            assert!(
+                start.elapsed() < waited,
+                "the cancelled long-poll is still open on the Site"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+    host.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_host_only_ever_serves_the_site_it_was_made_for() {
     let site = TestSite::start().await;
     let other = TestSite::start().await;

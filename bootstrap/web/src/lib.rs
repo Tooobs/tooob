@@ -4,6 +4,7 @@ use iroh::{
     Endpoint, EndpointAddr, EndpointId, RelayMode, RelayUrl, SecretKey,
     endpoint::{Connection, RecvStream, SendStream, presets},
 };
+use std::{cell::Cell, rc::Rc, task::Poll, task::Waker};
 use wasm_bindgen::prelude::*;
 
 /// The Protocol Version this Bootstrap speaks: a Host must speak the same one (ADR 0017).
@@ -92,7 +93,10 @@ impl Bi {
         self.send.take().map(|s| Writer { s })
     }
     pub fn reader(&mut self) -> Option<Reader> {
-        self.recv.take().map(|r| Reader { r })
+        self.recv.take().map(|r| Reader {
+            r,
+            stop: Rc::default(),
+        })
     }
 }
 
@@ -118,13 +122,62 @@ impl Writer {
 #[wasm_bindgen]
 pub struct Reader {
     r: RecvStream,
+    stop: Rc<Stop>,
+}
+
+/// Whether a Reader's been stopped, and the read waiting on it.
+#[derive(Default)]
+struct Stop {
+    stopped: Cell<bool>,
+    waiting: Cell<Option<Waker>>,
+}
+
+/// Stops its Reader, even while a read is waiting on a quiet stream: a pending read holds the
+/// Reader itself, so the stop is a handle of its own (#2).
+#[wasm_bindgen]
+pub struct Stopper {
+    stop: Rc<Stop>,
+}
+
+#[wasm_bindgen]
+impl Stopper {
+    /// The waiting read (or the next) fails, and the Host is told to stop sending.
+    pub fn stop(&self) {
+        self.stop.stopped.set(true);
+        if let Some(waker) = self.stop.waiting.take() {
+            waker.wake();
+        }
+    }
 }
 
 #[wasm_bindgen]
 impl Reader {
+    pub fn stopper(&self) -> Stopper {
+        Stopper {
+            stop: self.stop.clone(),
+        }
+    }
+
     /// Next chunk of bytes, or undefined at end of stream.
     pub async fn read(&mut self) -> Result<Option<Vec<u8>>, JsError> {
-        let chunk = self.r.read_chunk(64 * 1024).await.map_err(err)?;
-        Ok(chunk.map(|c| c.to_vec()))
+        let stop = self.stop.clone();
+        let got = {
+            let mut chunk = std::pin::pin!(self.r.read_chunk(64 * 1024));
+            std::future::poll_fn(|cx| {
+                if stop.stopped.get() {
+                    return Poll::Ready(None);
+                }
+                stop.waiting.set(Some(cx.waker().clone()));
+                chunk.as_mut().poll(cx).map(Some)
+            })
+            .await
+        };
+        match got {
+            Some(chunk) => Ok(chunk.map_err(err)?.map(|c| c.to_vec())),
+            None => {
+                let _ = self.r.stop(0u32.into());
+                Err(err("stopped"))
+            }
+        }
     }
 }

@@ -23,6 +23,23 @@ pub struct TestSite {
     requests: Arc<AtomicUsize>,
     uploads: Arc<AtomicUsize>,
     refused: Arc<AtomicUsize>,
+    polls: Arc<AtomicUsize>,
+}
+
+/// One open long-poll, counted while its handler lives.
+struct OpenPoll(Arc<AtomicUsize>);
+
+impl OpenPoll {
+    fn new(open: Arc<AtomicUsize>) -> OpenPoll {
+        open.fetch_add(1, Ordering::SeqCst);
+        OpenPoll(open)
+    }
+}
+
+impl Drop for OpenPoll {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl TestSite {
@@ -34,6 +51,8 @@ impl TestSite {
         let upload_counter = uploads.clone();
         let refused = Arc::new(AtomicUsize::new(0));
         let refused_counter = refused.clone();
+        let polls = Arc::new(AtomicUsize::new(0));
+        let poll_counter = polls.clone();
         let app = Router::new()
             // A Site refusing an upload too big for it: it answers at once, then reads and drops
             // whatever more comes, as Node's servers and nginx do.
@@ -85,6 +104,17 @@ impl TestSite {
                 any(move || {
                     hang_counter.fetch_add(1, Ordering::SeqCst);
                     std::future::pending::<&'static str>()
+                }),
+            )
+            // A long-poll: open until the request is dropped, and never a byte meanwhile.
+            .route(
+                "/poll",
+                any(move || {
+                    let open = OpenPoll::new(poll_counter.clone());
+                    async move {
+                        let _open = open;
+                        std::future::pending::<&'static str>().await
+                    }
                 }),
             )
             // A live connection like Home Assistant's: echoes each text message, tagged with the Visitor.
@@ -157,7 +187,13 @@ impl TestSite {
             requests,
             uploads,
             refused,
+            polls,
         }
+    }
+
+    /// Long-polls to `/poll` the Site still has open.
+    pub fn open_polls(&self) -> usize {
+        self.polls.load(Ordering::SeqCst)
     }
 
     /// How much of the uploads it refused reached `/refuse` anyway, in bytes.

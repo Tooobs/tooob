@@ -194,9 +194,14 @@ export async function wake(page) {
  * they arrive, never held whole. */
 export async function startSite() {
   // uploads: bodies that reached /sha256 whole; refused: bytes that reached /refuse after its answer
-  const site = { requests: 0, uploads: 0, refused: 0 };
+  // polls: long-polls to /poll still open on the Site
+  const site = { requests: 0, uploads: 0, refused: 0, polls: 0 };
   const server = createServer((req, res) => {
     site.requests++;
+    if (req.url === '/poll') { // a long-poll: never a byte, until the request goes away
+      site.polls++;
+      return res.on('close', () => site.polls--);
+    }
     const size = /^\/bytes\/(\d+)/.exec(req.url)?.[1]; // a big response, like a photo
     if (size) return res.end(Buffer.alloc(Number(size), 7));
     if (req.method === 'POST' && req.url === '/sha256') { // an upload, answered with its size and hash

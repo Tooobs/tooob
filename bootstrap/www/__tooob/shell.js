@@ -177,11 +177,15 @@ async function connect() {
   return conn;
 }
 
-// A stream is {via, writer: {write, finish, reset}, reader: {read, free}}, on the Relayed Path (the iroh
-// connection; browsers are relay-only) or on the Direct Path once it's up.
+// A stream is {via, writer: {write, finish, reset}, reader: {read, free}, stop}, on the Relayed Path
+// (the iroh connection; browsers are relay-only) or on the Direct Path once it's up. `stop()`
+// abandons the reply even while a read waits on a quiet stream: the read fails, and the Host stops
+// its request to the Site (#2).
 const viaRelay = async () => {
   const bi = await openRelay();
-  return { via: 'relay', writer: bi.writer(), reader: bi.reader() };
+  const reader = bi.reader();
+  const stopper = reader.stopper();
+  return { via: 'relay', writer: bi.writer(), reader, stop: () => stopper.stop() };
 };
 
 // The iroh connection is lost when the Host stops or restarts, or the device sleeps past iroh's
@@ -435,6 +439,9 @@ function muxTransport(dc, credit = Infinity) {
         free() {
           if (streams.delete(id) && dc.readyState === 'open') send(RESET, id);
         },
+      },
+      stop() {
+        this.writer.reset(); // one RESET abandons both ways; a waiting read fails
       },
     };
   };
@@ -702,15 +709,15 @@ async function sendBody({ writer, via }, req, { pull }) {
 // HTTP: one stream per request.
 navigator.serviceWorker.onmessage = async ({ data: req, ports: [port] }) => {
   if (req === 'ping') return port.postMessage('pong'); // the service worker asking who's ready
-  // Browser cancelled (e.g. video seek): stop reading, then drop the stream so the host stops sending.
-  // ponytail: only noticed when the next chunk arrives, so a quiet stream (long-poll, SSE) stays open
-  // after a cancel; needs a stoppable read here and the Host watching for the stop.
-  let reader, cancelled = false;
+  // Browser cancelled (navigated away, a video seek): stop the stream there and then, even while
+  // the Site sends nothing (a long-poll, SSE), so the Host stops its request to the Site (#2).
+  let reader, s, cancelled = false;
   const body = upload(port);
-  port.onmessage = ({ data }) => (data.cancel ? (cancelled = true) : body.got(data));
+  port.onmessage = ({ data }) => (data.cancel ? ((cancelled = true), s?.stop()) : body.got(data));
   try {
-    const s = await openStream();
+    s = await openStream();
     reader = s.reader;
+    if (cancelled) return s.stop(); // before it opened: never sent
     await s.writer.write(enc.encode(JSON.stringify({ t: 'http', method: req.method, path: req.path, headers: req.headers }) + '\n'));
     // The body goes up while the reply is awaited: a Site may answer before it has taken it all.
     sendBody(s, req, body);

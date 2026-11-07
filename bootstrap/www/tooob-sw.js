@@ -10,7 +10,7 @@ self.addEventListener('fetch', (e) => {
   // A page load, at any of the Site's paths, is the shell, which opens that page (ADR 0023): fetched
   // as /, so the Relay never sees which page, and a Bundle upgrade arrives with the next load.
   if (e.request.destination === 'document') return e.respondWith(fetch('/'));
-  e.respondWith(shellFor(e).then((shell) => tunnel(e.request, shell)));
+  e.respondWith(shellFor(e).then((shell) => tunnel(e.request, shell, e.clientId)));
 });
 
 // Several shell tabs can be open, each with a connection of its own, so every request goes to the
@@ -76,7 +76,7 @@ async function anyReadyShell() {
   });
 }
 
-async function tunnel(req, shellId) {
+async function tunnel(req, shellId, pageId) {
   const shell = (shellId && (await self.clients.get(shellId))) ?? (await anyReadyShell());
   if (!shell) return new Response('tooob shell is not open', { status: 503 });
   // Tunneled responses never reach the HTTP cache, so keep fresh ones here: one cache, since this
@@ -121,10 +121,18 @@ async function tunnel(req, shellId) {
     else if (m.error) ctrl.error(new Error(m.error));
   };
   // The tab can close mid-request and would never answer: check it's still there while waiting.
+  // The page that asked can go too (the Visitor navigated away from a long-poll): Chrome never
+  // tells a service worker a request was given up before its answer (req.signal stays quiet), so
+  // check for the page as well, and have the shell stop the stream, so the Host stops its request
+  // to the Site (#2).
   const gone = new Promise((resolve) => {
     const check = setInterval(async () => {
       if (!(await self.clients.get(shell.id))) resolve({ error: 'the tooob tab was closed' });
-    }, 2000);
+      else if (pageId && !(await self.clients.get(pageId))) {
+        port1.postMessage({ cancel: true });
+        resolve({ error: 'the page went away' });
+      }
+    }, 1000);
     headP.finally(() => clearInterval(check));
   });
   const head = await Promise.race([headP, gone]);

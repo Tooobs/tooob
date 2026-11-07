@@ -1061,6 +1061,27 @@ for (const path of ['direct', 'relay']) {
   });
 }
 
+for (const path of ['direct', 'relay']) {
+  test(`navigating away from a long-polling page over the ${path} path ends its long-poll on the Site, and they never pile up`, async ({ browser, relay }) => {
+    test.skip(h.olderThan('0.3.6'), 'tests #2, from 0.3.6; the Release swapped in is older');
+    const { site, page } = await visitOver(browser, relay, path);
+    const until = async (cond, ms, why) => {
+      for (const end = Date.now() + ms; !cond(); await new Promise((r) => setTimeout(r, 50))) {
+        assert.ok(Date.now() < end, why());
+      }
+    };
+    for (let i = 1; i <= 3; i++) {
+      const frame = await (await page.$('iframe')).contentFrame();
+      // As a chat or a dashboard does: a request the Site holds open, sending nothing.
+      await frame.evaluate(() => void fetch('/poll').catch(() => {}));
+      await until(() => site.polls > 0, 10000, () => 'the long-poll never reached the Site');
+      await frame.evaluate((i) => (location.href = `/next-${i}`), i);
+      await page.waitForFunction((i) => document.querySelector('iframe')?.contentDocument?.body?.textContent.includes(`/next-${i}`), i);
+      await until(() => site.polls === 0, 3000, () => `${site.polls} long-poll(s) still open on the Site after navigating away`);
+    }
+  });
+}
+
 test('a Site that refuses an upload early gets its answer to the page, and the browser stops sending the rest', async ({ browser, relay }) => {
   const file = bigFile(200 << 20);
   try {

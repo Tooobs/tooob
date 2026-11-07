@@ -604,11 +604,15 @@ impl Admission {
         let (head, rest) = wire::read_line(&mut tally).await?;
         if head["t"] != "rtc" {
             presence.received(tally.read());
+            // The Visitor stopping the reply (a cancelled request: they navigated away) ends the
+            // request on the Site there and then, even while the Site sends nothing (#2).
+            let stopped = send.stopped();
             let send = Counted::new(send, presence.clone());
             let recv = Counted::new(recv, presence.clone());
-            return self
-                .serve(head, rest, send, recv, visitor, Some(presence))
-                .await;
+            return tokio::select! {
+                served = self.serve(head, rest, send, recv, visitor, Some(presence)) => served,
+                _ = stopped => Ok(()),
+            };
         }
         // Only for a Visitor who's in: a Direct Path costs the home box a peer connection and its
         // UDP sockets. Its requests still go through the access check one by one.
