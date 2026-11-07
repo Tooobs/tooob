@@ -52,6 +52,15 @@ impl Code {
     }
 }
 
+/// An Enrollment Code that can still enroll a Host, as `tooob-relay codes` lists it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveCode<'a> {
+    pub label: &'a str,
+    pub uses_left: u32,
+    /// Unix seconds.
+    pub expires: u64,
+}
+
 /// Why a code enrolled nothing. Its `Display` is the reason the client is sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refusal {
@@ -148,6 +157,30 @@ impl List {
         Ok(list)
     }
 
+    /// Load the list at `path`, `change` it and save it, holding a lock on `<path>.lock` all the
+    /// while, which every editor takes (the CLI's commands and the running Relay's redemptions),
+    /// so none loses another's change. Nothing is saved if `change` fails.
+    pub fn edit<T>(
+        path: &Path,
+        change: impl FnOnce(&mut List) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let fail = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| fail(&e))?;
+        }
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(path.with_extension("toml.lock"))
+            .map_err(|e| fail(&e))?;
+        lock.lock().map_err(|e| fail(&e))?;
+        let mut list = List::load(path)?;
+        let done = change(&mut list)?;
+        list.save(path)?;
+        Ok(done)
+    }
+
     /// Write the list to `path`, whole (a reader never sees half of it), making its folder.
     pub fn save(&self, path: &Path) -> Result<(), String> {
         let fail = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
@@ -162,7 +195,10 @@ impl List {
             "{HEADER}\n{}",
             toml::to_string(&file).map_err(|e| fail(&e))?
         );
-        let temp = path.with_extension("toml.new");
+        // A temp file of each writer's own, so two never write into one.
+        static SAVES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = SAVES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let temp = path.with_extension(format!("toml.{}.{n}.new", std::process::id()));
         std::fs::write(&temp, text).map_err(|e| fail(&e))?;
         std::fs::rename(&temp, path).map_err(|e| fail(&e))
     }
@@ -210,12 +246,16 @@ impl List {
         secret
     }
 
-    /// The codes that can still enroll a Host at `now`: label, uses left, expiry.
-    pub fn live_codes(&self, now: u64) -> impl Iterator<Item = (&str, u32, u64)> {
+    /// The codes that can still enroll a Host at `now`.
+    pub fn live_codes(&self, now: u64) -> impl Iterator<Item = LiveCode<'_>> {
         self.codes
             .iter()
             .filter(move |c| c.live(now))
-            .map(|c| (c.label.as_str(), c.uses_left, c.expires))
+            .map(|c| LiveCode {
+                label: &c.label,
+                uses_left: c.uses_left,
+                expires: c.expires,
+            })
     }
 
     /// Cancel the live code that is `code_or_label`, or every live one so labelled; how many.

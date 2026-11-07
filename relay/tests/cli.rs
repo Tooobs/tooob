@@ -138,6 +138,32 @@ fn code_prints_one_naming_its_relay_and_codes_lists_it_until_cancelled() {
 }
 
 #[test]
+fn edits_made_at_once_from_many_processes_all_stick() {
+    let dir = tempfile::tempdir().unwrap();
+    let list = dir.path().join("enrolled.toml");
+    let running: Vec<_> = (0..12)
+        .map(|i| {
+            Command::new(env!("CARGO_BIN_EXE_tooob-relay"))
+                .arg("--enrolled")
+                .arg(&list)
+                .args(["--domain", "relay.example.com", "code", "--label"])
+                .arg(format!("h{i}"))
+                .stdout(Stdio::null())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    for mut each in running {
+        assert!(each.wait().unwrap().success());
+    }
+    let codes = List::load(&list)
+        .unwrap()
+        .live_codes(tooob_relay::now())
+        .count();
+    assert_eq!(codes, 12);
+}
+
+#[test]
 fn code_needs_the_relays_domain() {
     let dir = tempfile::tempdir().unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_tooob-relay"))

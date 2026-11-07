@@ -10,7 +10,7 @@ pub mod config;
 mod enrolled;
 mod gate;
 
-pub use enrolled::{DEFAULT_PATH, List, Refusal, Rule, access, now};
+pub use enrolled::{DEFAULT_PATH, List, LiveCode, Refusal, Rule, access, now};
 pub use gate::{WRONG_CODES_ALLOWED, WRONG_WINDOW};
 
 /// How often a running Relay looks at its Enrolled Keys' file for a change.

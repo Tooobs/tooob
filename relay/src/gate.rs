@@ -18,71 +18,100 @@ use tracing::{info, warn};
 
 use crate::enrolled::{List, Refusal, Rule, now};
 
-/// How many wrong codes an address may present in a `WRONG_WINDOW` before it's refused.
+/// How many wrong codes an address may present before it's refused.
 pub const WRONG_CODES_ALLOWED: u32 = 5;
-/// How long an address's wrong codes count against it, and so how long it's refused.
+/// How long an address is refused after its last allowed wrong code; wrong codes older than this
+/// no longer count against it.
 pub const WRONG_WINDOW: Duration = Duration::from_secs(15 * 60);
+
+/// Each address's wrong codes: an address that gets `allowed` wrong, each within `window` of the
+/// one before, is refused until `window` after the last of them.
+#[derive(Debug)]
+pub(crate) struct WrongCodes {
+    allowed: u32,
+    window: Duration,
+    /// How many wrong in a row, and when the last was.
+    seen: HashMap<Option<IpAddr>, (u32, Instant)>,
+}
+
+impl WrongCodes {
+    pub(crate) fn new(allowed: u32, window: Duration) -> WrongCodes {
+        WrongCodes {
+            allowed,
+            window,
+            seen: HashMap::new(),
+        }
+    }
+
+    /// Whether `from` is refused at `now`.
+    pub(crate) fn refused(&self, from: Option<IpAddr>, now: Instant) -> bool {
+        matches!(self.seen.get(&from), Some((n, last))
+            if *n >= self.allowed && now.duration_since(*last) < self.window)
+    }
+
+    /// Count a wrong code from `from` at `now`.
+    pub(crate) fn count(&mut self, from: Option<IpAddr>, now: Instant) {
+        let window = self.window;
+        self.seen
+            .retain(|_, (_, last)| now.duration_since(*last) < window);
+        let entry = self.seen.entry(from).or_insert((0, now));
+        entry.0 += 1;
+        entry.1 = now;
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct Gate {
     path: PathBuf,
     rule: Rule,
     /// The check the config file asks for (stock iroh-relay's `access`), applied after this one.
-    then: Arc<dyn DynAccessControl>,
-    /// The file is edited here and by the CLI; this keeps two redemptions here from racing.
-    file: Mutex<()>,
-    /// Each address's wrong codes: how many, since when.
-    wrong: Mutex<HashMap<Option<IpAddr>, (u32, Instant)>>,
+    next: Arc<dyn DynAccessControl>,
+    wrong: Mutex<WrongCodes>,
 }
 
 impl Gate {
-    pub(crate) fn new(path: PathBuf, rule: Rule, then: Arc<dyn DynAccessControl>) -> Gate {
+    pub(crate) fn new(path: PathBuf, rule: Rule, next: Arc<dyn DynAccessControl>) -> Gate {
         Gate {
             path,
             rule,
-            then,
-            file: Mutex::new(()),
-            wrong: Mutex::default(),
+            next,
+            wrong: Mutex::new(WrongCodes::new(WRONG_CODES_ALLOWED, WRONG_WINDOW)),
         }
     }
 
     /// Redeem `code` for `key`, from `from`: the code's label, or why not.
     fn redeem(&self, code: &str, key: EndpointId, from: Option<IpAddr>) -> Result<String, String> {
-        if self.refused(from) {
+        if self.wrong.lock().unwrap().refused(from, Instant::now()) {
             return Err(format!(
                 "too many wrong Enrollment Codes from this address: try again in {} minutes",
                 WRONG_WINDOW.as_secs() / 60
             ));
         }
-        let _file = self.file.lock().unwrap();
-        let mut list = List::load(&self.path)?;
-        match list.redeem(code, key, now()) {
+        // Locked against the CLI's edits too, which run in processes of their own.
+        let mut refusal = None;
+        let mut list_after = None;
+        List::edit(&self.path, |list| match list.redeem(code, key, now()) {
             Ok(label) => {
-                list.save(&self.path)?;
-                self.rule.follow(&list);
-                info!("tooob-relay: enrolled {key} as {label} with an Enrollment Code");
+                list_after = Some(list.clone());
                 Ok(label)
             }
-            Err(refusal) => {
-                if refusal == Refusal::Wrong {
-                    self.count_wrong(from);
-                }
-                Err(refusal.to_string())
+            Err(r) => {
+                refusal = Some(r);
+                Err(r.to_string())
             }
-        }
-    }
-
-    fn refused(&self, from: Option<IpAddr>) -> bool {
-        let wrong = self.wrong.lock().unwrap();
-        matches!(wrong.get(&from), Some((n, since))
-            if *n >= WRONG_CODES_ALLOWED && since.elapsed() < WRONG_WINDOW)
-    }
-
-    fn count_wrong(&self, from: Option<IpAddr>) {
-        let mut wrong = self.wrong.lock().unwrap();
-        wrong.retain(|_, (_, since)| since.elapsed() < WRONG_WINDOW);
-        let entry = wrong.entry(from).or_insert((0, Instant::now()));
-        entry.0 += 1;
+        })
+        .map(|label| {
+            if let Some(list) = &list_after {
+                self.rule.follow(list);
+            }
+            info!("tooob-relay: enrolled {key} as {label} with an Enrollment Code");
+            label
+        })
+        .inspect_err(|_| {
+            if refusal == Some(Refusal::Wrong) {
+                self.wrong.lock().unwrap().count(from, Instant::now());
+            }
+        })
     }
 }
 
@@ -119,10 +148,43 @@ impl AccessControl for Gate {
                 reason: Some(reason),
             };
         }
-        self.then.on_connect(request).await
+        self.next.on_connect(request).await
     }
 
     fn on_disconnect(&self, endpoint_id: EndpointId, connection_id: ConnectionId) {
-        self.then.on_disconnect(endpoint_id, connection_id)
+        self.next.on_disconnect(endpoint_id, connection_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MIN: Duration = Duration::from_secs(60);
+
+    #[test]
+    fn an_address_is_refused_after_its_wrong_codes_and_let_try_again_a_window_after_the_last() {
+        let mut wrong = WrongCodes::new(3, 10 * MIN);
+        let me = Some(IpAddr::from([192, 0, 2, 1]));
+        let other = Some(IpAddr::from([192, 0, 2, 2]));
+        let start = Instant::now();
+        for i in 0..3 {
+            assert!(!wrong.refused(me, start + i * 4 * MIN));
+            wrong.count(me, start + i * 4 * MIN);
+        }
+        // The third came 8 minutes in: refused until 18.
+        assert!(wrong.refused(me, start + 17 * MIN));
+        assert!(!wrong.refused(other, start + 17 * MIN));
+        assert!(!wrong.refused(me, start + 18 * MIN));
+    }
+
+    #[test]
+    fn wrong_codes_further_apart_than_the_window_dont_add_up() {
+        let mut wrong = WrongCodes::new(2, 10 * MIN);
+        let me = Some(IpAddr::from([192, 0, 2, 1]));
+        let start = Instant::now();
+        wrong.count(me, start);
+        wrong.count(me, start + 11 * MIN);
+        assert!(!wrong.refused(me, start + 11 * MIN));
     }
 }

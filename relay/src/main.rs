@@ -98,20 +98,26 @@ fn main() -> ExitCode {
         }) => match cli.domain {
             None => Err("no domain to name in the code: give --domain or set RELAY_DOMAIN".into()),
             Some(domain) => edit(&cli.enrolled, |list| {
-                let secret = list.make_code(&label, uses, tooob_relay::now() + expires);
+                let until = tooob_relay::now() + expires;
+                let secret = list.make_code(&label, uses, until);
                 Ok(format!(
                     "{domain}/{secret}  for {label}: {}, {}",
                     uses_text(uses),
-                    expiry_text(tooob_relay::now() + expires)
+                    expiry_text(until)
                 ))
             }),
         },
         Some(Command::Codes) => List::load(&cli.enrolled).map(|list| {
             let now = tooob_relay::now();
             let mut none = true;
-            for (label, uses, expires) in list.live_codes(now) {
+            for code in list.live_codes(now) {
                 none = false;
-                println!("{label}  {}, {}", uses_text(uses), expiry_text(expires));
+                println!(
+                    "{}  {}, {}",
+                    code.label,
+                    uses_text(code.uses_left),
+                    expiry_text(code.expires)
+                );
             }
             if none {
                 println!("no unused Enrollment Codes");
@@ -179,10 +185,10 @@ fn edit(
     path: &std::path::Path,
     change: impl FnOnce(&mut List) -> Result<String, String>,
 ) -> Result<(), String> {
-    let mut list = List::load(path)?;
-    let said = change(&mut list)?;
-    list.save(path)?;
-    println!("{said} ({})", tooob_relay::access(&list));
+    let said = List::edit(path, |list| {
+        change(list).map(|said| format!("{said} ({})", tooob_relay::access(list)))
+    })?;
+    println!("{said}");
     Ok(())
 }
 
