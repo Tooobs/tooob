@@ -12,6 +12,7 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
 - `tooob restore NAME FILE --serves PATH` restores a Host whose folder (or web app) is somewhere else on this machine: PATH is checked as `tooob add` checks it, and the Host's record and settings both move to it, the settings' other lines kept. `tooob run` still refuses a Host whose `serves` was edited by hand, and now says to `tooob rm` it and restore it with `--serves` (#127).
 
 ### Changed
+- A Relay runs tooob-relay, iroh-relay 1.3.0 with a forwarding rule (ADR 0030): once its Enrolled Key list (`/data/tooob-relay/enrolled.toml`, edited with `tooob-relay enroll`, `remove` and `list`) has any key, it forwards only traffic from or to one, and a removed key is disconnected at once; an empty list leaves it open. `/__tooob/relay.json` says `{"relay_access":"open"}` or `"enrolled"`, and the log says which at start and on each change. Redeploy a Relay of your own to get it (#128).
 - `./release.sh` runs the Host's tests on Linux (`test/linux/run.sh`, in podman) before it tags, and refuses when podman isn't running; CI runs `cargo test` on both musl targets on every push to `main` (#108).
 - `tooob invites` shows when each Invite expires in words (`in 7 days`, `in 5 hours`, `in 40 minutes`), rounded up, instead of a Unix timestamp; `--json` still gives `expires_at` in Unix seconds (#3).
 

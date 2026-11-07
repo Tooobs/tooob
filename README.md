@@ -10,7 +10,7 @@ It's **private, not anonymous**: a Relay still sees which keys talk, when, how m
 
 ## What you need
 
-**A Relay.** tooob names none of its own ([ADR 0015](docs/adr/0015-no-default-relay-or-bootstrap.md)), so you run one, or use one run by someone you trust. A Relay serves the Bootstrap too, so it's all a Host needs. [`deploy/`](deploy/README.md) has two setups, a VPS with Docker (`wizard.sh` walks through it) and Fly.io, and lists what a Relay needs: a domain of its own with a wildcard DNS record, an API token for that DNS, TCP 443 and generous bandwidth. As shipped, a Relay lets anyone use it: see `access` in its config before you share it.
+**A Relay.** tooob names none of its own ([ADR 0015](docs/adr/0015-no-default-relay-or-bootstrap.md)), so you run one, or use one run by someone you trust. A Relay serves the Bootstrap too, so it's all a Host needs. [`deploy/`](deploy/README.md) has two setups, a VPS with Docker (`wizard.sh` walks through it) and Fly.io, and lists what a Relay needs: a domain of its own with a wildcard DNS record, an API token for that DNS, TCP 443 and generous bandwidth. As shipped, a Relay lets anyone use it until it has Enrolled Keys: `tooob-relay enroll <host key>` in its container before you share it (#128).
 
 ## Install
 
@@ -154,6 +154,8 @@ Everything here up to #1 is in the first Release, **[0.1.0](https://github.com/T
   - Nothing new to try: it was built piece by piece (#44, #79, #96) and closed on 2026-11-07. `tooob share ~/blog --relay https://r.tooobs.net/ --invite sam` makes the Host, prints sam's link and serves; run it again with `--invite dad` and it reuses the same Host and Host Key. The guided walk-through the ticket first asked for was dropped when tooob stopped asking questions (#79).
 - **[#59](https://github.com/Tooobs/tooob/issues/59) Releases: one command cuts a Release, and CI builds and publishes it** · 2026-11-07 · 0.1.0
   - Nothing new to try: every Release since 0.1.0 came this way, and the last check, installing on a fresh Linux (Debian, arm64 and x86_64), passed on 2026-11-07. Install with the one-line installer at the top of this page; `./release.sh X.Y.Z` (under Develop) cuts one.
+- **[#128](https://github.com/Tooobs/tooob/issues/128) A Relay forwards only traffic to or from an Enrolled Key** · 2026-11-07 · the next Release (not out yet); live on r.tooobs.net now
+  - A Relay now runs tooob-relay, iroh-relay with one rule added: once it has any Enrolled Keys, it forwards a packet only if it comes from or goes to one of them, so strangers can't use it to talk to each other. With none, it's open, as before: `curl https://r.tooobs.net/__tooob/relay.json` says `{"relay_access":"open"}`. On a Relay of your own, redeploy, then `tooob-relay enroll <host key>` inside its container (`fly ssh console -C "tooob-relay enroll …"`; the key as `tooob invite` prints it before the Relay's domain): `relay.json` says `enrolled`, Visitors still reach that Host, and a Host you didn't enroll can't be reached through it. `tooob-relay list` and `remove` do the rest, and a removed key is cut off at once. Enrollment Codes, so an Owner can enroll their own Host, come next (#129).
 
 ## Still to come
 
