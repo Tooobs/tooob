@@ -4,7 +4,13 @@ use iroh::{
     Endpoint, EndpointAddr, EndpointId, RelayMode, RelayUrl, SecretKey,
     endpoint::{Connection, RecvStream, SendStream, presets},
 };
-use std::{cell::Cell, rc::Rc, task::Poll, task::Waker};
+use std::{
+    cell::Cell,
+    future::poll_fn,
+    pin::pin,
+    rc::Rc,
+    task::{Poll, Waker},
+};
 use wasm_bindgen::prelude::*;
 
 /// The Protocol Version this Bootstrap speaks: a Host must speak the same one (ADR 0017).
@@ -162,8 +168,8 @@ impl Reader {
     pub async fn read(&mut self) -> Result<Option<Vec<u8>>, JsError> {
         let stop = self.stop.clone();
         let got = {
-            let mut chunk = std::pin::pin!(self.r.read_chunk(64 * 1024));
-            std::future::poll_fn(|cx| {
+            let mut chunk = pin!(self.r.read_chunk(64 * 1024));
+            poll_fn(|cx| {
                 if stop.stopped.get() {
                     return Poll::Ready(None);
                 }
@@ -172,6 +178,7 @@ impl Reader {
             })
             .await
         };
+        stop.waiting.take(); // no read waits now
         match got {
             Some(chunk) => Ok(chunk.map_err(err)?.map(|c| c.to_vec())),
             None => {

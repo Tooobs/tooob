@@ -124,11 +124,15 @@ async function tunnel(req, shellId, pageId) {
   // The page that asked can go too (the Visitor navigated away from a long-poll): Chrome never
   // tells a service worker a request was given up before its answer (req.signal stays quiet), so
   // check for the page as well, and have the shell stop the stream, so the Host stops its request
-  // to the Site (#2).
-  const gone = new Promise((resolve) => {
+  // to the Site (#2). Only a page seen here at least once counts as gone (a client this worker
+  // can't look up never is), and never for a keepalive request, which is meant to outlive its page.
+  const watched = pageId && !req.keepalive ? pageId : null;
+  const seen = watched && !!(await self.clients.get(watched));
+  const gone = new Promise((settle) => {
+    const resolve = (v) => (clearInterval(check), settle(v));
     const check = setInterval(async () => {
       if (!(await self.clients.get(shell.id))) resolve({ error: 'the tooob tab was closed' });
-      else if (pageId && !(await self.clients.get(pageId))) {
+      else if (seen && !(await self.clients.get(watched))) {
         port1.postMessage({ cancel: true });
         resolve({ error: 'the page went away' });
       }

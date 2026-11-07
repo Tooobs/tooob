@@ -44,7 +44,8 @@ async function freePort() {
   return port;
 }
 
-async function until(check, what, ms = 15000) {
+/** Wait until `check()` (async) holds, polling every 100 ms; throws naming `what` after `ms`. */
+export async function until(check, what, ms = 15000) {
   const start = Date.now();
   for (;;) {
     if (await check().catch(() => false)) return;

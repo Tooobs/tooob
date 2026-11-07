@@ -183,9 +183,19 @@ async function connect() {
 // its request to the Site (#2).
 const viaRelay = async () => {
   const bi = await openRelay();
-  const reader = bi.reader();
+  const [writer, reader] = [bi.writer(), bi.reader()];
   const stopper = reader.stopper();
-  return { via: 'relay', writer: bi.writer(), reader, stop: () => stopper.stop() };
+  let stopped = false;
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    stopper.stop();
+    stopper.free(); // the Reader keeps what it shares with it
+    // Abandon the request too, so the Host never waits on one that was never sent. Throws while
+    // an upload's write is under way: that write then fails on the stopped stream.
+    try { writer.reset(); } catch {}
+  };
+  return { via: 'relay', writer, reader, stop };
 };
 
 // The iroh connection is lost when the Host stops or restarts, or the device sleeps past iroh's
@@ -717,7 +727,10 @@ navigator.serviceWorker.onmessage = async ({ data: req, ports: [port] }) => {
   try {
     s = await openStream();
     reader = s.reader;
-    if (cancelled) return s.stop(); // before it opened: never sent
+    if (cancelled) {
+      s.stop();
+      throw new Error('cancelled before it was sent');
+    }
     await s.writer.write(enc.encode(JSON.stringify({ t: 'http', method: req.method, path: req.path, headers: req.headers }) + '\n'));
     // The body goes up while the reply is awaited: a Site may answer before it has taken it all.
     sendBody(s, req, body);
