@@ -97,20 +97,26 @@ pub fn lasting(duration: std::time::Duration) -> String {
         s if s % 60 == 0 => (s / 60, "minute"),
         s => (s, "second"),
     };
+    count(n, unit)
+}
+
+/// "1 day", "6 days".
+fn count(n: u64, unit: &str) -> String {
     format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
 }
 
 /// When something expiring at `expires_at` (Unix seconds) expires, as seen at `now`, in words:
-/// "in 40 minutes" (rounded up) within the hour, "in 5 hours" within the day, "in 6 days" after
-/// (each to the nearest), or "expired".
+/// "in 40 minutes", "in 5 hours", "in 6 days", or "expired". Always rounded up, so it never says
+/// less than is left, in minutes up to 59, then hours up to 23, then days: 59 m 1 s left is
+/// "in 1 hour", never "in 60 minutes".
 pub fn expires(expires_at: u64, now: u64) -> String {
     let (n, unit) = match expires_at.saturating_sub(now) {
         0 => return "expired".into(),
-        s if s < 3600 => (s.div_ceil(60), "minute"),
-        s if s < 86_400 => ((s + 1800) / 3600, "hour"),
-        s => ((s + 43_200) / 86_400, "day"),
+        s if s.div_ceil(60) < 60 => (s.div_ceil(60), "minute"),
+        s if s.div_ceil(3600) < 24 => (s.div_ceil(3600), "hour"),
+        s => (s.div_ceil(86_400), "day"),
     };
-    format!("in {n} {unit}{}", if n == 1 { "" } else { "s" })
+    format!("in {}", count(n, unit))
 }
 
 /// `0 B`, `512 B`, `4.1 KB`, `2.3 MB`, `456 MB`: in thousands, as file sizes are shown on a Mac.
@@ -149,12 +155,16 @@ mod tests {
             (60, "in 1 minute"),
             (61, "in 2 minutes"),
             (40 * 60, "in 40 minutes"),
-            (3599, "in 60 minutes"),
+            (59 * 60, "in 59 minutes"),
+            (59 * 60 + 1, "in 1 hour"),
             (3600, "in 1 hour"),
-            (5 * 3600 + 1700, "in 5 hours"),
-            (5 * 3600 + 1800, "in 6 hours"),
-            (86_399, "in 24 hours"),
+            (3601, "in 2 hours"),
+            (3600 + 29 * 60, "in 2 hours"),
+            (5 * 3600, "in 5 hours"),
+            (23 * 3600, "in 23 hours"),
+            (23 * 3600 + 1, "in 1 day"),
             (86_400, "in 1 day"),
+            (86_401, "in 2 days"),
             (6 * 86_400, "in 6 days"),
             (7 * 86_400 - 1, "in 7 days"),
         ] {
