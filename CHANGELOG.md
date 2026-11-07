@@ -7,6 +7,12 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
 
 ## Unreleased
 
+### Changed
+- `tooob share --uploads`, and `tooob run` of a Host with uploads on, say "Visitors can add files to any folder in ~/drop, except hidden ones". `tooob ls` says when a Host's uploads are off and why, and `--json` adds `uploads_off` (#121).
+
+### Fixed
+- Uploads can no longer plant a file the Owner's machine runs. The Host refuses any upload that is hidden or goes into a hidden folder, asked for or reached through a symlink (`.git/hooks/pre-commit`, `.zshrc`, `.ssh/…`), and a hidden folder's listing has no Upload button. A Shared Folder that is the home folder, or holds it, takes none: `share --uploads` refuses it, and a Host set up so before starts read-only, saying why. An uploaded file is written 0644 at most, never executable, and on macOS it carries `com.apple.quarantine` naming tooob, so Gatekeeper checks it before it's opened (#121).
+
 ## 0.3.4 — 2026-11-05
 
 Protocol Version: `tooob/0`. Tested with iroh-relay 1.3.0.
