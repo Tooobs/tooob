@@ -145,9 +145,14 @@ command -v iroh-relay >/dev/null || refuse "needs iroh-relay: cargo install iroh
   refuse "needs Playwright: cd bootstrap/check && npm ci && npx playwright install chromium"
 chromium=$(cd bootstrap/check && node -e 'import("@playwright/test").then(({ chromium }) => console.log(chromium.executablePath()))' 2>/dev/null) || true
 [[ -x $chromium ]] || refuse "needs Playwright's Chromium: cd bootstrap/check && npx playwright install chromium"
+# The Host's tests on Linux run in podman (#108): without it, the Release is refused, not untested.
+command -v podman >/dev/null || refuse "needs podman, for the Host's tests on Linux: install it, then podman machine init && podman machine start"
+podman info >/dev/null 2>&1 || refuse "podman isn't running, for the Host's tests on Linux: podman machine start"
 
 echo "release.sh: ./check.sh"
 ./check.sh || refuse "./check.sh failed"
+echo "release.sh: the Host's tests on Linux (test/linux/run.sh)"
+test/linux/run.sh || refuse "the Host's tests failed on Linux (test/linux/run.sh)"
 browser_suite "the browser suite"
 cross_release_check
 
@@ -169,6 +174,6 @@ git push -q origin "v$RELEASE" ||
 cat <<MSG
 release.sh: pushed Release $RELEASE (tag v$RELEASE). The release workflow builds and publishes it:
   https://github.com/Tooobs/tooob/actions
-It's the first place Linux is tested. If it fails, fix it on main and cut the next patch Release:
+It builds and tests every target again. If it fails, fix it on main and cut the next patch Release:
 never move a pushed tag.
 MSG

@@ -1,6 +1,7 @@
 #!/bin/sh
-# The Host's cargo tests on Linux (musl), in a podman container, before a Release is cut: the
-# release workflow is otherwise the first place they run on Linux. Arguments go to cargo test,
+# The Host's cargo tests on Linux (musl, arm64 on a Mac), in a podman container: release.sh runs
+# it before it tags (#108), so a Linux failure stops the Release instead of spending its tag. CI's
+# linux-tests workflow runs them on every push to main too. Arguments go to cargo test,
 #   test/linux/run.sh                   # all of them
 #   test/linux/run.sh --test terminal   # one file
 # Runs as a user, not root: root ignores the read-only files some tests set up.

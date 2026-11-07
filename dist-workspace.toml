@@ -14,7 +14,8 @@ targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-musl", "x86_64-unknown
 install-path = "~/.local/bin"
 install-updater = false
 install-success-msg = "tooob installed. Open a new terminal (or run: source ~/.local/bin/env), then check it with: tooob --version"
-# CI runs only for a tagged Release: checks on every push are local (#58).
+# This workflow runs only for a tagged Release. Checks on every push are local (#58), except the
+# Host's tests on Linux, which .github/workflows/linux-tests.yml runs on every push to main (#108).
 pr-run-mode = "skip"
 # cargo test for each target, before it's built.
 github-build-setup = "../build-setup.yml"

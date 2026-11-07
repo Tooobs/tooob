@@ -1,0 +1,39 @@
+# The Host's cargo tests on Linux, on every push to main (#108): on both targets the Linux
+# Releases build, set up as .github/build-setup.yml sets up each Release build job, so Linux
+# breakage shows within minutes of the push that caused it, not at the next Release's tag. Tests
+# only: no build, no publish. A workflow of its own, since `dist generate` rewrites release.yml.
+name: Linux tests
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cargo-test:
+    name: cargo test (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+          # Native arm64, free for public repos: musl test binaries run as built, no emulation.
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - name: cargo test
+        shell: bash
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+          rustup target add "${{ matrix.target }}"
+          cargo test --locked --target "${{ matrix.target }}"

@@ -22,7 +22,7 @@ const git = (dir, ...args) => execFileSync('git', ['-C', dir, ...args], { encodi
  */
 const STUB_CONFIG = "export default { testDir: '.', testMatch: 'stub.spec.mjs', workers: 1 };\n";
 
-function aClone(t, { changelog = UNRELEASED, browserTest = "test('stub', () => {});", browserConfig = STUB_CONFIG, nodeModules } = {}) {
+function aClone(t, { changelog = UNRELEASED, browserTest = "test('stub', () => {});", browserConfig = STUB_CONFIG, nodeModules, linuxTests = 'exit 0' } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'tooob-release-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const [bare, work] = [join(dir, 'origin.git'), join(dir, 'work')];
@@ -32,6 +32,7 @@ function aClone(t, { changelog = UNRELEASED, browserTest = "test('stub', () => {
   git(work, 'config', 'user.name', 'release test');
   copyFileSync(join(REPO, 'release.sh'), join(work, 'release.sh'));
   writeFileSync(join(work, 'check.sh'), '#!/bin/sh\necho "check.sh: stub"\n', { mode: 0o755 });
+  writeFileSync(join(work, 'test/linux/run.sh'), `#!/bin/sh\necho "test/linux/run.sh: stub"\n${linuxTests}\n`, { mode: 0o755 });
   const check = join(work, 'bootstrap/check');
   for (const f of readdirSync(check).filter((f) => f.endsWith('.spec.mjs'))) rmSync(join(check, f));
   writeFileSync(join(check, 'stub.spec.mjs'), `import { test } from '@playwright/test';\n${browserTest}\n`);
@@ -60,10 +61,22 @@ writeFileSync(chromium, '#!/bin/sh\nexit 1\n', { mode: 0o755 }); // never launch
 
 /** ./release.sh VERSION in the clone. Without NODE_TEST_CONTEXT, which this test runner passes to
  *  its children: release.sh's own tools should see the environment a person's shell gives them. */
-function release(work, version, extraEnv = {}) {
+function release(work, version, extraEnv = {}, { podman = PODMAN_UP } = {}) {
   const { NODE_TEST_CONTEXT, ...env } = process.env;
-  return spawnSync('./release.sh', [version], { cwd: work, encoding: 'utf8', env: { ...env, PLAYWRIGHT_BROWSERS_PATH: BROWSERS, ...extraEnv } });
+  const path = `${podman}:${extraEnv.PATH ?? env.PATH}`;
+  return spawnSync('./release.sh', [version], { cwd: work, encoding: 'utf8', env: { ...env, PLAYWRIGHT_BROWSERS_PATH: BROWSERS, ...extraEnv, PATH: path } });
 }
+
+/** Directories holding a stand-in `podman`, for PATH: one whose machine is running, one whose isn't.
+ *  The clone's test/linux/run.sh is a stub, so neither runs a container. */
+function aPodman(script) {
+  const bin = mkdtempSync(join(tmpdir(), 'tooob-podman-'));
+  after(() => rmSync(bin, { recursive: true, force: true }));
+  writeFileSync(join(bin, 'podman'), `#!/bin/sh\n${script}\n`, { mode: 0o755 });
+  return bin;
+}
+const PODMAN_UP = aPodman('exit 0');
+const PODMAN_DOWN = aPodman('echo "Cannot connect to Podman." >&2\nexit 125');
 
 /** A PATH whose `gh` says `tag` is a published GitHub Release and nothing else is: GitHub can't see
  *  the clone's throwaway origin. */
@@ -338,5 +351,25 @@ test('a first run refused because another run of the suite is going stops the Re
   const result = release(work, '0.2.0');
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /the browser suite: another run of the browser suite is going/, result.stderr);
+  assert.equal(git(bare, 'tag', '-l'), '');
+});
+
+test('a Host test that fails on Linux stops the Release before the browser suite', (t) => {
+  const { work, bare } = aClone(t, { linuxTests: 'exit 101' });
+  const result = release(work, '0.2.0');
+  assert.notEqual(result.status, 0);
+  assert.match(result.stdout, /test\/linux\/run\.sh: stub/);
+  assert.match(result.stderr, /the Host's tests failed on Linux/, result.stderr);
+  assert.doesNotMatch(result.stdout, /the browser suite/, 'the suite ran');
+  assert.equal(git(bare, 'tag', '-l'), '');
+  assert.equal(git(work, 'status', '--porcelain'), '');
+});
+
+test("a Release is refused when podman isn't running, saying how to start it", (t) => {
+  const { work, bare } = aClone(t);
+  const result = release(work, '0.2.0', {}, { podman: PODMAN_DOWN });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /podman machine start/, result.stderr);
+  assert.doesNotMatch(result.stdout, /test\/linux\/run\.sh: stub/, 'the Linux tests ran');
   assert.equal(git(bare, 'tag', '-l'), '');
 });
