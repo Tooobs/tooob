@@ -1083,6 +1083,26 @@ fn share_uploads_and_run_with_uploads_on_say_visitors_can_add_files_once() {
     running.until_it_says("serving");
     assert_eq!(running.log().matches(&line).count(), 1, "{}", running.log());
     running.stop();
+
+    // Under the home folder, it's said as from `~`.
+    let inside = home.0.path().join("inbox");
+    std::fs::create_dir(&inside).unwrap();
+    let shared = home.spawn(&["share", inside.to_str().unwrap(), "--local", "--uploads"]);
+    shared.until_it_says("serving");
+    let line = "warning: Visitors can add files to any folder in ~/inbox, except hidden ones";
+    assert!(shared.log().contains(line), "{}", shared.log());
+    shared.stop();
+
+    // A single file takes no uploads, so nothing's said of them.
+    let file = folder.path().join("notes.txt");
+    let shared = home.spawn(&["share", file.to_str().unwrap(), "--local", "--uploads"]);
+    shared.until_it_says("serving");
+    assert!(
+        !shared.log().contains("Visitors can add files"),
+        "{}",
+        shared.log()
+    );
+    shared.stop();
 }
 
 #[test]

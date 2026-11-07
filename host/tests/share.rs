@@ -813,6 +813,7 @@ async fn an_upload_into_a_hidden_folder_or_with_a_hidden_name_is_refused_and_not
         "/a/.b/c/x.txt",
         "/a/.b/x.txt",
         "/.zshrc",
+        "/%2Ezshrc",
         "/a/.envrc",
     ] {
         let reply = put(&shared, path, b"x").await;
@@ -878,14 +879,13 @@ async fn a_hidden_folders_listing_has_no_upload_button() {
 async fn an_uploaded_file_is_never_executable() {
     use std::os::unix::fs::PermissionsExt;
     let folder = tempfile::tempdir().unwrap();
-    // A folder whose files anyone could run, were they made as its defaults say.
-    std::fs::set_permissions(folder.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
     let shared = share_uploads(folder.path()).await;
 
-    assert_eq!(
-        put(&shared, "/run.command", b"#!/bin/sh\n").await.status,
-        201
-    );
+    // No umask to take anything off: the Host itself must ask for 0644 at most.
+    let was = unsafe { libc::umask(0) };
+    let sent = put(&shared, "/run.command", b"#!/bin/sh\n").await;
+    unsafe { libc::umask(was) };
+    assert_eq!(sent.status, 201);
     let mode = std::fs::metadata(folder.path().join("run.command"))
         .unwrap()
         .permissions()
@@ -907,7 +907,7 @@ async fn on_macos_an_uploaded_file_is_quarantined_as_from_tooob() {
         .unwrap();
     assert!(mark.status.success(), "{mark:?}");
     let mark = String::from_utf8_lossy(&mark.stdout);
-    assert!(mark.split(';').nth(2) == Some("tooob"), "{mark}");
+    assert_eq!(mark.split(';').nth(2), Some("tooob"), "{mark}");
 }
 
 #[tokio::test]
@@ -916,7 +916,12 @@ async fn where_the_quarantine_mark_cant_be_set_the_upload_is_saved_and_it_is_sai
     let said = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let heard = said.clone();
     let uploads = Uploads::default()
-        .with_quarantine(|_: &Path| Err(std::io::ErrorKind::Unsupported.into()))
+        .with_quarantine(|path: &Path| {
+            // Marked before it's renamed into place, so it never shows unmarked.
+            let name = path.file_name().unwrap().to_string_lossy();
+            assert!(name.starts_with(".tooob-partial"), "{name}");
+            Err(std::io::ErrorKind::Unsupported.into())
+        })
         .with_warnings(move |text: &str| heard.lock().unwrap().push(text.into()));
     let shared = share_with(folder.path(), Some(uploads)).await;
 

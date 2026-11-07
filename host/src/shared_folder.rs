@@ -634,12 +634,6 @@ impl SharedFolder<'_> {
             .mode(0o644)
             .open(&partial.0)
             .await?;
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = file.metadata().await?.permissions().mode() & 0o644;
-            file.set_permissions(fs::Permissions::from_mode(mode))
-                .await?;
-        }
         let mut written = 0u64;
         let mut checked = 0u64;
         let mut chunk = rest;

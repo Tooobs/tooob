@@ -97,6 +97,29 @@ pub fn home_takes_no_uploads(path: &std::path::Path, home: &std::path::Path) -> 
     Some(format!("{what}; share a folder inside it"))
 }
 
+/// Why the Shared Folder at `path` can't take uploads, given the Owner's `home` folder: it's
+/// `home` or holds it, or there's no `home` to tell it apart from, which is refused rather than
+/// risked.
+pub fn no_uploads_with(path: &std::path::Path, home: Option<&std::path::Path>) -> Option<String> {
+    match home {
+        Some(home) => home_takes_no_uploads(path, home),
+        None => Some("HOME isn't set, so your home folder can't be kept out; set it".into()),
+    }
+}
+
+/// `path` with the Owner's home folder at its start said as `~`: `~/drop`.
+pub fn tilde(path: &std::path::Path) -> String {
+    match owners_home().and_then(|h| {
+        path.strip_prefix(h.canonicalize().ok()?)
+            .ok()
+            .map(PathBuf::from)
+    }) {
+        Some(below) if below.as_os_str().is_empty() => "~".into(),
+        Some(below) => format!("~/{}", below.display()),
+        None => path.display().to_string(),
+    }
+}
+
 /// The Owner's home folder, as `$HOME` says.
 pub fn owners_home() -> Option<PathBuf> {
     std::env::var_os("HOME")
@@ -111,7 +134,9 @@ impl std::fmt::Debug for Uploads {
 }
 
 impl Uploads {
-    /// Uploads that read the free space on the disk holding a folder from `free_space`.
+    /// Uploads that read the free space on the disk holding a folder from `free_space`, and
+    /// otherwise as `default`'s: macOS's quarantine mark, the Host's log, and `$HOME` as the
+    /// Owner's home folder.
     pub fn with_free_space(
         free_space: impl Fn(&std::path::Path) -> std::io::Result<u64> + Send + Sync + 'static,
     ) -> Uploads {
@@ -171,10 +196,7 @@ impl Uploads {
     /// These uploads, for the Shared Folder at `root`, unless it's the Owner's home folder or holds
     /// it: then none, saying why.
     fn for_folder(self, root: &std::path::Path) -> Option<Uploads> {
-        let why = self
-            .home
-            .as_deref()
-            .and_then(|home| home_takes_no_uploads(root, home));
+        let why = no_uploads_with(root, self.home.as_deref());
         match why {
             Some(why) => {
                 (self.say)(&format!("uploads are off: {why}"));

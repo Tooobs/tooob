@@ -371,15 +371,19 @@ fn in_the_background(host: &Entry) -> String {
 /// Why the folder or file at `path` can't take uploads: it's the Owner's home folder, or holds it
 /// (ADR 0026).
 fn uploads_off(path: &Path) -> Option<String> {
-    tooob::host::home_takes_no_uploads(path, &tooob::host::owners_home()?)
+    tooob::host::no_uploads_with(path, tooob::host::owners_home().as_deref())
 }
 
 /// What a Host with uploads on says as it starts: who can add files where. Never a question
-/// (ADR 0022).
+/// (ADR 0022). A single file takes none, so it says nothing.
 fn uploads_warning(host: &Entry) -> Option<String> {
-    let serves = &host.settings.serves;
-    (host.settings.uploads && uploads_off(Path::new(serves)).is_none())
-        .then(|| format!("Visitors can add files to any folder in {serves}, except hidden ones"))
+    let serves = Path::new(&host.settings.serves);
+    (host.settings.uploads && serves.is_dir() && uploads_off(serves).is_none()).then(|| {
+        format!(
+            "Visitors can add files to any folder in {}, except hidden ones",
+            tooob::host::tilde(serves)
+        )
+    })
 }
 
 /// How many folders and files `share` looks through for what an Owner may not mean to hand out: a
