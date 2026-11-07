@@ -125,10 +125,9 @@ fn web_app(address: &str) -> Result<SocketAddr> {
         .with_context(bad)
 }
 
-/// Letters, digits, `-` and `_`: safe as a file name, and in a shell, as it is.
 /// What a Host serves, from a TARGET as `add` takes one: a folder or file, made absolute, or a
 /// web app's `HOST:PORT` / `http://HOST:PORT`.
-fn serves(target: &str) -> Result<String> {
+fn serving(target: &str) -> Result<String> {
     Ok(match Path::new(target).canonicalize() {
         Ok(path) => path
             .to_str()
@@ -141,21 +140,33 @@ fn serves(target: &str) -> Result<String> {
     })
 }
 
-/// Settings file `text` with its `serves` line saying `serves`, the Owner's other lines kept.
+/// Settings file `text` with its `serves` line saying `serves`, the Owner's other lines kept,
+/// and a `# comment` after the value too.
 fn moved(text: &str, serves: &str) -> String {
     let set = |l: &str| {
         l.trim_start()
             .strip_prefix("serves")
             .is_some_and(|rest| rest.trim_start().starts_with('='))
     };
-    let line = format!("serves = {}", toml::Value::from(serves));
+    // The comment starts at the first `#` that isn't inside the value.
+    let comment = |l: &str| {
+        l.match_indices('#')
+            .find(|(i, _)| toml::from_str::<toml::Table>(&l[..*i]).is_ok())
+            .map(|(i, _)| format!(" {}", &l[i..]))
+            .unwrap_or_default()
+    };
+    let value = toml::Value::from(serves);
     text.lines()
-        .map(|l| if set(l) { line.as_str() } else { l })
+        .map(|l| match set(l) {
+            true => format!("serves = {value}{}", comment(l)),
+            false => l.to_string(),
+        })
         .collect::<Vec<_>>()
         .join("\n")
         + "\n"
 }
 
+/// Letters, digits, `-` and `_`: safe as a file name, and in a shell, as it is.
 pub fn valid_name(name: &str) -> bool {
     !name.is_empty() && name.chars().all(name_char)
 }
@@ -295,7 +306,7 @@ impl Home {
                 state_dir.display()
             );
         }
-        let serves = serves(target)?;
+        let serves = serving(target)?;
         let settings = Settings {
             serves,
             relay: relay.to_string(),
@@ -371,9 +382,16 @@ impl Home {
         let mut settings_text = contents.settings.clone();
         let mut record = contents.record.clone();
         if let Some(target) = serves {
-            settings_text = moved(&settings_text, &self::serves(target)?);
+            let site = serving(target)?;
+            settings_text = moved(&settings_text, &site);
             settings =
                 toml::from_str(&settings_text).context("the Backup's settings are damaged")?;
+            if settings.serves != site {
+                bail!(
+                    "the Backup's settings have no `serves = …` line to change: nothing was \
+                     restored"
+                );
+            }
             // A Host that never ran has no record yet: its first run makes one.
             if let Some(text) = &record {
                 let mut was: crate::host::Record =
@@ -382,7 +400,6 @@ impl Home {
                 record = Some(serde_json::to_string_pretty(&was)?);
             }
         }
-        let (contents_access, contents_settings) = (&contents.access, &settings_text);
         let key = contents.key_bytes()?;
         let made = (|| -> Result<()> {
             std::fs::DirBuilder::new()
@@ -390,7 +407,7 @@ impl Home {
                 .mode(0o700)
                 .create(&state_dir)?;
             crate::save_privately(&state_dir.join("host.key"), &key)?;
-            for (file, text) in [("access.json", contents_access), ("host.json", &record)] {
+            for (file, text) in [("access.json", &contents.access), ("host.json", &record)] {
                 if let Some(text) = text {
                     crate::save_privately(&state_dir.join(file), text.as_bytes())?;
                 }
@@ -398,7 +415,7 @@ impl Home {
             // Whole or not at all: written beside it, then linked in, which never replaces a file.
             std::fs::create_dir_all(settings_file.parent().unwrap())?;
             let tmp = crate::temp_path(&settings_file);
-            let linked = std::fs::write(&tmp, contents_settings)
+            let linked = std::fs::write(&tmp, &settings_text)
                 .and_then(|()| std::fs::hard_link(&tmp, &settings_file));
             let _ = std::fs::remove_file(&tmp);
             Ok(linked?)

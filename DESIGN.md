@@ -45,7 +45,7 @@ Turn home infrastructure into web infrastructure for normal people. Run somethin
 - **Invites**: single-use, accepted on first visit, expire after 7 days, one per device (`--approve` optional). Device linking later.
 - **Blocking**: always enforced on the host. Optionally the host also pushes a signed deny upstream so the relay drops that key's traffic (flood protection). **The relay can only take access away, never grant it.**
 - **Visitor identity is passed to the app** (`X-Tooob-Visitor: mom`) so apps can personalize without a login system.
-- **Host key backup**: `tooob backup NAME FILE` / `tooob restore NAME FILE` in v1: one Host per Backup, its Host Key, Allowlist (Invites, Blocks) and settings, sealed under a passphrase (argon2id, XChaCha20-Poly1305; ADR 0029). SD cards die.
+- **Host key backup**: `tooob backup NAME FILE` / `tooob restore NAME FILE [--serves PATH]` in v1: one Host per Backup, its Host Key, Allowlist (Invites, Blocks) and settings, sealed under a passphrase (argon2id, XChaCha20-Poly1305; ADR 0029). `--serves` moves the Site to where it is on the new box, the only time a Site can move. SD cards die.
 
 ### Abuse and legal
 - No public ingress, no exit to the open internet, invite-only. Useless for phishing.

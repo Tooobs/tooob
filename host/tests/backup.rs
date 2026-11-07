@@ -145,6 +145,149 @@ async fn a_host_restored_with_serves_runs_its_site_at_the_new_path_with_its_visi
     let _running = new.start("photos");
 }
 
+/// Host `photos`, added for `folder` and never run (so no record of its Site), backed up: the
+/// Backup file and the passphrase file.
+fn a_backup_never_run(
+    old: &Home,
+    new: &Home,
+    relay: &TestRelay,
+    folder: &Path,
+) -> (String, String) {
+    old.ok(&[
+        "add",
+        "photos",
+        folder.to_str().unwrap(),
+        "--relay",
+        &relay.url,
+    ]);
+    let pass = passphrase_file(new.0.path(), "hunter22");
+    let file = new.0.path().join("photos.tooob-backup");
+    let (file, pass) = (file.to_str().unwrap(), pass.to_str().unwrap());
+    old.ok(&["backup", "photos", file, "--passphrase-file", pass]);
+    (file.to_string(), pass.to_string())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_that_never_ran_restored_with_serves_records_the_new_site_when_it_first_runs() {
+    let (old, new) = (Home::new(), Home::new());
+    let relay = TestRelay::start();
+    let (folder, moved) = (a_folder(), a_folder());
+    let (file, pass) = a_backup_never_run(&old, &new, &relay, folder.path());
+    let moved_arg = moved.path().to_str().unwrap();
+
+    new.ok(&[
+        "restore",
+        "photos",
+        &file,
+        "--passphrase-file",
+        &pass,
+        "--serves",
+        moved_arg,
+    ]);
+
+    let state = PathBuf::from(new.shown("photos", "state folder"));
+    assert!(!state.join("host.json").exists());
+    new.start("photos").stop();
+    let record = std::fs::read_to_string(state.join("host.json")).unwrap();
+    let moved_path = moved.path().canonicalize().unwrap();
+    assert!(record.contains(moved_path.to_str().unwrap()), "{record}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn restore_can_move_a_site_to_a_web_app() {
+    let (old, new) = (Home::new(), Home::new());
+    let relay = TestRelay::start();
+    let folder = a_folder();
+    let (file, pass) = a_backup_never_run(&old, &new, &relay, folder.path());
+
+    new.ok(&[
+        "restore",
+        "photos",
+        &file,
+        "--passphrase-file",
+        &pass,
+        "--serves",
+        "127.0.0.1:8123",
+    ]);
+
+    assert_eq!(new.shown("photos", "serves"), "127.0.0.1:8123");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn restore_keeps_a_comment_on_the_serves_line_and_refuses_one_it_cant_find() {
+    let (old, new) = (Home::new(), Home::new());
+    let relay = TestRelay::start();
+    let (folder, moved) = (a_folder(), a_folder());
+    old.ok(&[
+        "add",
+        "photos",
+        folder.path().to_str().unwrap(),
+        "--relay",
+        &relay.url,
+    ]);
+    let settings_file = old.shown("photos", "settings file");
+    let settings = std::fs::read_to_string(&settings_file).unwrap();
+    let pass = passphrase_file(new.0.path(), "hunter22");
+    let pass = pass.to_str().unwrap();
+    let backup = |text: &str, file: &str| {
+        std::fs::write(&settings_file, text).unwrap();
+        let file = new.0.path().join(file);
+        old.ok(&[
+            "backup",
+            "photos",
+            file.to_str().unwrap(),
+            "--passphrase-file",
+            pass,
+        ]);
+        file.to_str().unwrap().to_string()
+    };
+    let commented = backup(
+        &settings.replace("serves = ", "serves= ").replace(
+            &format!("{:?}\n", old.shown("photos", "serves")),
+            &format!("{:?} # my #1 folder\n", old.shown("photos", "serves")),
+        ),
+        "commented",
+    );
+    let quoted = backup(&settings.replace("serves = ", "\"serves\" = "), "quoted");
+    let moved_arg = moved.path().to_str().unwrap();
+
+    let out = new.tooob(&[
+        "restore",
+        "photos",
+        &quoted,
+        "--passphrase-file",
+        pass,
+        "--serves",
+        moved_arg,
+    ]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("nothing was restored"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!new.tooob(&["show", "photos"]).status.success());
+
+    new.ok(&[
+        "restore",
+        "photos",
+        &commented,
+        "--passphrase-file",
+        pass,
+        "--serves",
+        moved_arg,
+    ]);
+    let restored = std::fs::read_to_string(new.shown("photos", "settings file")).unwrap();
+    let moved_path = moved.path().canonicalize().unwrap();
+    assert!(
+        restored.contains(&format!(
+            "serves = {:?} # my #1 folder\n",
+            moved_path.to_str().unwrap()
+        )),
+        "{restored}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn restore_refuses_a_serves_that_add_would_refuse() {
     let (old, new) = (Home::new(), Home::new());
@@ -212,9 +355,9 @@ async fn a_restored_host_whose_serves_was_hand_edited_wont_run_and_says_how() {
     assert!(!out.status.success());
     assert!(
         stderr(&out).contains(&format!(
-            "share {} as a new Host, or, restored from elsewhere? restore it again with \
-             --serves PATH",
-            now.display()
+            "share {now} as a new Host; or, if it was restored from a Backup, `tooob rm \
+             photos`, then `tooob restore photos FILE --passphrase-file PATH --serves {now}`",
+            now = now.display()
         )),
         "{}",
         stderr(&out)

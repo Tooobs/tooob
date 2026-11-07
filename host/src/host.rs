@@ -393,9 +393,11 @@ impl Record {
         {
             let name = data_dir.file_name().unwrap_or_default().to_string_lossy();
             bail!(
-                "this Host ({name}) serves {}, not {site}: share {site} as a new Host, or, \
-                 restored from elsewhere? restore it again with --serves PATH",
-                record.site
+                "this Host ({name}) serves {}, not {site}: share {site} as a new Host; or, if it \
+                 was restored from a Backup, `tooob rm {name}`, then `tooob restore {name} FILE \
+                 --passphrase-file PATH --serves {}`",
+                record.site,
+                crate::hosts::quote(&site.to_string())
             );
         }
         let record = Record {
