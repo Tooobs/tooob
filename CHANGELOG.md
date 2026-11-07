@@ -7,6 +7,10 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
 
 ## Unreleased
 
+## 0.3.5 — 2026-11-07
+
+Protocol Version: `tooob/0`. Tested with iroh-relay 1.3.0.
+
 ### Changed
 - `tooob share --uploads`, and `tooob run` of a Host with uploads on, say "Visitors can add files to any folder in ~/drop, except hidden ones". `tooob ls` says when a Host's uploads are off and why, and `--json` adds `uploads_off` (#121).
 
