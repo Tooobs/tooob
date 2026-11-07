@@ -8,8 +8,10 @@ use tracing::{info, warn};
 
 pub mod config;
 mod enrolled;
+mod gate;
 
-pub use enrolled::{DEFAULT_PATH, List, Rule, access};
+pub use enrolled::{DEFAULT_PATH, List, Refusal, Rule, access, now};
+pub use gate::{WRONG_CODES_ALLOWED, WRONG_WINDOW};
 
 /// How often a running Relay looks at its Enrolled Keys' file for a change.
 const WATCH_EVERY: Duration = Duration::from_millis(250);
@@ -32,6 +34,11 @@ impl Relay {
         say_access(&list, &enrolled);
         if let Some(relay) = config.relay.as_mut() {
             relay.forward = Arc::new(rule.clone());
+            relay.access = Arc::new(gate::Gate::new(
+                enrolled.clone(),
+                rule.clone(),
+                relay.access.clone(),
+            ));
         }
         let server = Server::spawn(config).await.map_err(|e| e.to_string())?;
         let clients = server.relay_service().map(|s| s.clients().clone());
@@ -55,7 +62,7 @@ impl Relay {
                     }
                 };
                 unreadable = None;
-                if list != seen {
+                if !list.same_keys(&seen) {
                     for key in rule.follow(&list) {
                         info!("tooob-relay: {key} is no longer enrolled: disconnecting it");
                         if let Some(clients) = &clients {

@@ -207,6 +207,12 @@ impl ConnectionId {
     }
 }
 
+/// The address a request's TCP connection came from, put in its extensions by the HTTP server.
+///
+/// tooob: added for tooob-relay; see [`ClientRequest::peer_addr`].
+#[derive(Debug, Clone, Copy)]
+pub struct PeerAddr(pub std::net::SocketAddr);
+
 /// Details about an incoming relay client connection.
 ///
 /// Passed to [`AccessControl::on_connect`] to decide whether to admit the connection.
@@ -254,6 +260,13 @@ impl ClientRequest {
     /// the TLS session or a challenge issued by the server.
     pub fn endpoint_id(&self) -> EndpointId {
         self.endpoint_id
+    }
+
+    /// Returns the address the client's TCP connection came from, if the server knows it.
+    ///
+    /// tooob: added for tooob-relay, which limits wrong Enrollment Codes by address.
+    pub fn peer_addr(&self) -> Option<std::net::SocketAddr> {
+        self.request.extensions.get::<PeerAddr>().map(|p| p.0)
     }
 
     /// Returns the URI of the HTTP request with which the client connected.

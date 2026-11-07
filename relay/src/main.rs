@@ -29,6 +29,9 @@ struct Cli {
     /// Where to answer `GET /__tooob/relay.json` (open or enrolled), if anywhere.
     #[clap(long, env = "TOOOB_RELAY_STATUS_ADDR")]
     status_addr: Option<std::net::SocketAddr>,
+    /// This Relay's domain, which an Enrollment Code names (the Relay image's RELAY_DOMAIN).
+    #[clap(long, env = "RELAY_DOMAIN")]
+    domain: Option<String>,
     #[clap(subcommand)]
     command: Option<Command>,
 }
@@ -51,6 +54,22 @@ enum Command {
     },
     /// List the Enrolled Keys, with their labels.
     List,
+    /// Make an Enrollment Code: a Host presenting it is enrolled under its label.
+    Code {
+        /// Whose it is: the Host Key it enrolls gets this label.
+        #[clap(long)]
+        label: String,
+        /// How many Hosts it can enroll.
+        #[clap(long, default_value_t = 1)]
+        uses: u32,
+        /// How long it stays good unused: such as 7d, 12h or 30m.
+        #[clap(long, default_value = "7d", value_parser = parse_duration)]
+        expires: u64,
+    },
+    /// List the Enrollment Codes that can still enroll a Host.
+    Codes,
+    /// Cancel an Enrollment Code, given as itself or by its label.
+    Cancel { code_or_label: String },
 }
 
 fn main() -> ExitCode {
@@ -72,6 +91,39 @@ fn main() -> ExitCode {
                 println!("{key}  {label}");
             }
         }),
+        Some(Command::Code {
+            label,
+            uses,
+            expires,
+        }) => match cli.domain {
+            None => Err("no domain to name in the code: give --domain or set RELAY_DOMAIN".into()),
+            Some(domain) => edit(&cli.enrolled, |list| {
+                let secret = list.make_code(&label, uses, tooob_relay::now() + expires);
+                Ok(format!(
+                    "{domain}/{secret}  for {label}: {}, {}",
+                    uses_text(uses),
+                    expiry_text(tooob_relay::now() + expires)
+                ))
+            }),
+        },
+        Some(Command::Codes) => List::load(&cli.enrolled).map(|list| {
+            let now = tooob_relay::now();
+            let mut none = true;
+            for (label, uses, expires) in list.live_codes(now) {
+                none = false;
+                println!("{label}  {}, {}", uses_text(uses), expiry_text(expires));
+            }
+            if none {
+                println!("no unused Enrollment Codes");
+            }
+        }),
+        Some(Command::Cancel { code_or_label }) => edit(&cli.enrolled, |list| {
+            match list.cancel(&code_or_label, tooob_relay::now()) {
+                0 => Err(format!("no unused Enrollment Code is {code_or_label}")),
+                1 => Ok("cancelled 1 Enrollment Code".to_string()),
+                n => Ok(format!("cancelled {n} Enrollment Codes")),
+            }
+        }),
         None => serve(cli.dev, cli.config_path, cli.enrolled, cli.status_addr),
     };
     match done {
@@ -88,6 +140,38 @@ fn parse_key(s: &str) -> Result<EndpointId, String> {
     EndpointId::from_z32(s)
         .or_else(|_| s.parse())
         .map_err(|_| format!("{s} isn't a key"))
+}
+
+/// A length of time such as 7d, 12h, 30m or 90s, in seconds.
+fn parse_duration(s: &str) -> Result<u64, String> {
+    let bad = || format!("{s} isn't a length of time such as 7d, 12h or 30m");
+    let (n, unit) = s.split_at(s.len().saturating_sub(1));
+    let n: u64 = n.parse().map_err(|_| bad())?;
+    let per = match unit {
+        "d" => 86_400,
+        "h" => 3_600,
+        "m" => 60,
+        "s" => 1,
+        _ => return Err(bad()),
+    };
+    n.checked_mul(per).ok_or_else(bad)
+}
+
+fn uses_text(uses: u32) -> String {
+    match uses {
+        1 => "1 use left".to_string(),
+        n => format!("{n} uses left"),
+    }
+}
+
+fn expiry_text(expires: u64) -> String {
+    let left = expires.saturating_sub(tooob_relay::now());
+    match left {
+        0 => "expired".to_string(),
+        s if s >= 86_400 => format!("expires in {} days", s.div_ceil(86_400)),
+        s if s >= 3_600 => format!("expires in {} hours", s.div_ceil(3_600)),
+        s => format!("expires in {} minutes", s.div_ceil(60)),
+    }
 }
 
 /// Change the list in the file at `path` and save it, saying what changed.

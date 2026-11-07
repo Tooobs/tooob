@@ -2887,6 +2887,7 @@ name = "tooob-relay"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "getrandom 0.4.3",
  "http",
  "iroh-base",
  "iroh-dns",
@@ -2899,6 +2900,7 @@ dependencies = [
  "rustls",
  "rustls-pki-types",
  "serde",
+ "sha2",
  "tempfile",
  "tokio",
  "toml",

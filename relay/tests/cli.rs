@@ -70,6 +70,86 @@ fn enroll_remove_and_list_edit_the_file() {
     );
 }
 
+/// The code in what `tooob-relay code` printed: the line's last word.
+fn printed_code(output: &Output) -> String {
+    stdout(output)
+        .split_whitespace()
+        .find(|w| w.starts_with("relay.example.com/"))
+        .unwrap_or_else(|| panic!("no code in {output:?}"))
+        .to_string()
+}
+
+#[test]
+fn code_prints_one_naming_its_relay_and_codes_lists_it_until_cancelled() {
+    let dir = tempfile::tempdir().unwrap();
+    let list = dir.path().join("enrolled.toml");
+    let made = tooob_relay(
+        &list,
+        &["--domain", "relay.example.com", "code", "--label", "sam"],
+    );
+    assert!(made.status.success(), "{made:?}");
+    let code = printed_code(&made);
+    let secret = code.strip_prefix("relay.example.com/").unwrap();
+    // Four groups of four letters and digits: 16 characters of 5 bits, 80 bits.
+    let groups: Vec<_> = secret.split('-').collect();
+    assert_eq!(groups.len(), 4, "{code}");
+    assert!(groups.iter().all(|g| {
+        g.len() == 4
+            && g.chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+    }));
+
+    let other = printed_code(&tooob_relay(
+        &list,
+        &[
+            "--domain",
+            "relay.example.com",
+            "code",
+            "--label",
+            "kim",
+            "--uses",
+            "3",
+            "--expires",
+            "2d",
+        ],
+    ));
+    assert_ne!(code, other);
+
+    let listed = stdout(&tooob_relay(&list, &["codes"]));
+    let sam = listed.lines().find(|l| l.contains("sam")).expect(&listed);
+    assert!(sam.contains("1 use"), "{sam}");
+    let kim = listed.lines().find(|l| l.contains("kim")).expect(&listed);
+    assert!(kim.contains("3 uses"), "{kim}");
+
+    // The file holds no code in the clear.
+    let file = std::fs::read_to_string(&list).unwrap();
+    assert!(!file.contains(secret), "{file}");
+    assert!(!file.contains(&secret.replace('-', "")), "{file}");
+
+    // Cancelled by label, or by the code itself.
+    assert!(tooob_relay(&list, &["cancel", "sam"]).status.success());
+    assert!(tooob_relay(&list, &["cancel", &other]).status.success());
+    let listed = stdout(&tooob_relay(&list, &["codes"]));
+    assert!(
+        !listed.contains("sam") && !listed.contains("kim"),
+        "{listed}"
+    );
+    assert!(!tooob_relay(&list, &["cancel", "nobody"]).status.success());
+}
+
+#[test]
+fn code_needs_the_relays_domain() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_tooob-relay"))
+        .env_remove("RELAY_DOMAIN")
+        .arg("--enrolled")
+        .arg(dir.path().join("enrolled.toml"))
+        .args(["code", "--label", "sam"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+}
+
 #[test]
 fn a_host_key_as_its_host_logs_it_can_be_enrolled() {
     let dir = tempfile::tempdir().unwrap();

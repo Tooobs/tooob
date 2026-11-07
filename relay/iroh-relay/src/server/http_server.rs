@@ -734,6 +734,8 @@ impl RelayServiceWithNotify {
 pub struct RelayServiceWithNotify {
     service: RelayService,
     on_establish: Arc<Notify>,
+    /// tooob: where the connection came from, given to each request as a [`super::PeerAddr`].
+    peer: Option<SocketAddr>,
 }
 
 impl RelayServiceWithNotify {
@@ -745,6 +747,7 @@ impl RelayServiceWithNotify {
         Self {
             service,
             on_establish,
+            peer: None,
         }
     }
 }
@@ -754,7 +757,10 @@ impl Service<Request<Incoming>> for RelayServiceWithNotify {
     type Error = HyperError;
     type Future = std::future::Ready<Result<Self::Response, Self::Error>>;
 
-    fn call(&self, req: Request<Incoming>) -> Self::Future {
+    fn call(&self, mut req: Request<Incoming>) -> Self::Future {
+        if let Some(peer) = self.peer {
+            req.extensions_mut().insert(super::PeerAddr(peer));
+        }
         // Create a client if the request hits the relay endpoint.
         if matches!(
             (req.method(), req.uri().path()),
@@ -1045,7 +1051,8 @@ impl RelayService {
         // We create a notification token to be triggered once the connection is fully established
         // and passed to the relay server.
         let on_establish = Arc::new(Notify::new());
-        let service = RelayServiceWithNotify::new(self, on_establish.clone());
+        let mut service = RelayServiceWithNotify::new(self, on_establish.clone());
+        service.peer = stream.peer_addr().ok();
 
         // This is the main connection future, driving the connection to completion.
         let serve_fut = async move {
