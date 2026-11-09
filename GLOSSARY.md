@@ -162,6 +162,14 @@ _Avoid_: allowlisted key (the Allowlist is the Host's), registered host, member
 A one-time code a Relay Operator makes so an Owner can enroll a Host on that Relay. It names its Relay, and the Host redeems it as it first connects, proving its Host Key. One Host per code and unused after 7 days it expires, unless the Relay Operator made it for more Hosts or longer.
 _Avoid_: invite (an Invite is a Visitor's), token, pass, voucher
 
+**Sign-up Page**:
+A page a Relay Operator runs, outside tooob, where an Owner gets a Host enrolled on their Relay by whatever the Relay Operator asks: a payment, a membership, an invite list. The Relay names it, and tooob sends the Owner there with only the Host Key; the page enrolls that key itself, so there's nothing to paste back. Keeping or ending an enrollment is the Sign-up Page's business, not tooob's.
+_Avoid_: join page, checkout, registration
+
+**Operator Token**:
+A secret a Relay Operator makes on their Relay so a service of their own, such as their Sign-up Page, can enroll and remove keys there. Unlike an Enrollment Code, it's never given to an Owner.
+_Avoid_: API key, admin password, token (unqualified)
+
 **Relayed Path**:
 Traffic between a Visitor and a Host that goes through a Relay.
 _Avoid_: tunnel, fallback (as a noun)
