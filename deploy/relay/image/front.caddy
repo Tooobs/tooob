@@ -19,6 +19,12 @@ handle /__tooob/relay.json {
 handle /__tooob/enrolled/* {
 	reverse_proxy 127.0.0.1:3341
 }
+# The enroll API (ADR 0031, #140): a Relay Operator's Sign-up Page enrolls and removes keys with an
+# Operator Token. tooob-relay checks the token and limits failed attempts by the X-Forwarded-For
+# this sets.
+handle /__tooob/api/* {
+	reverse_proxy 127.0.0.1:3341
+}
 # A page's address saved outside the page ("Save link as", told apart by its Fetch Metadata) never
 # reaches the Host: only the page can fetch a Site's files. The shell would save as an empty page,
 # so the saved file says so instead (#99). Chromium (Chrome, Brave) asks with Dest empty and Mode

@@ -164,6 +164,60 @@ fn edits_made_at_once_from_many_processes_all_stick() {
 }
 
 #[test]
+fn token_new_prints_it_once_the_file_keeps_its_hash_and_list_shows_only_labels() {
+    // #140, ADR 0031.
+    let dir = tempfile::tempdir().unwrap();
+    let list = dir.path().join("enrolled.toml");
+    let made = tooob_relay(&list, &["token", "new", "patreon"]);
+    assert!(made.status.success(), "{made:?}");
+    let token = stdout(&made)
+        .split_whitespace()
+        .find(|w| w.len() >= 40)
+        .unwrap_or_else(|| panic!("no token in {made:?}"))
+        .to_string();
+    assert_eq!(
+        List::load(&list).unwrap().verify_operator_token(&token),
+        Some("patreon")
+    );
+    let file = std::fs::read_to_string(&list).unwrap();
+    assert!(!file.contains(&token), "{file}");
+    assert!(
+        !tooob_relay(&list, &["token", "new", "patreon"])
+            .status
+            .success()
+    );
+    assert!(
+        tooob_relay(&list, &["token", "new", "stripe"])
+            .status
+            .success()
+    );
+
+    let listed = stdout(&tooob_relay(&list, &["token", "list"]));
+    assert!(
+        listed.contains("patreon") && listed.contains("stripe"),
+        "{listed}"
+    );
+    assert!(!listed.contains(&token), "{listed}");
+
+    assert!(
+        tooob_relay(&list, &["token", "revoke", "patreon"])
+            .status
+            .success()
+    );
+    assert_eq!(
+        List::load(&list).unwrap().verify_operator_token(&token),
+        None
+    );
+    let listed = stdout(&tooob_relay(&list, &["token", "list"]));
+    assert!(!listed.contains("patreon"), "{listed}");
+    assert!(
+        !tooob_relay(&list, &["token", "revoke", "patreon"])
+            .status
+            .success()
+    );
+}
+
+#[test]
 fn code_needs_the_relays_domain() {
     let dir = tempfile::tempdir().unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_tooob-relay"))

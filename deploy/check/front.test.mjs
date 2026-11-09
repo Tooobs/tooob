@@ -51,6 +51,12 @@ test('/__tooob/enrolled/<key> is tooob-relay\'s answer, before the Bundle', () =
   assert.ok(front.indexOf('handle /__tooob/enrolled/*') < front.indexOf('handle {'), 'before the Bundle handler');
 });
 
+test('/__tooob/api/* (the enroll API) is tooob-relay\'s, before the Bundle', () => {
+  // #140, ADR 0031: a Sign-up Page's PUT and DELETE, each with an Operator Token.
+  assert.deepEqual(lines(block('handle /__tooob/api/\\*')), ['reverse_proxy 127.0.0.1:3341']);
+  assert.ok(front.indexOf('handle /__tooob/api/*') < front.indexOf('handle @saved {'), 'before the saved-page and Bundle handlers');
+});
+
 test('a saved file\'s address gets an explanation naming the file, a folder\'s naming its path, never cached', () => {
   const saved = block('handle @saved');
   assert.match(saved, /^\theader Cache-Control "no-store"$/m);

@@ -9,9 +9,11 @@ use tracing::{info, warn};
 pub mod config;
 mod enrolled;
 mod gate;
+mod status;
 
 pub use enrolled::{DEFAULT_PATH, List, LiveCode, Refusal, Rule, access, now};
-pub use gate::{WRONG_CODES_ALLOWED, WRONG_WINDOW};
+pub use gate::{WRONG_CODES_ALLOWED, WRONG_TOKENS_ALLOWED, WRONG_TOKENS_WINDOW, WRONG_WINDOW};
+pub use status::BODY_MAX;
 
 /// How often a running Relay looks at its Enrolled Keys' file for a change.
 const WATCH_EVERY: Duration = Duration::from_millis(250);
@@ -22,6 +24,8 @@ pub struct Relay {
     _watch: Aborting,
     rule: Rule,
     status: Option<Aborting>,
+    enrolled: PathBuf,
+    sign_up: Option<String>,
 }
 
 impl Relay {
@@ -43,6 +47,7 @@ impl Relay {
         let server = Server::spawn(config).await.map_err(|e| e.to_string())?;
         let clients = server.relay_service().map(|s| s.clients().clone());
         let kept = rule.clone();
+        let path = enrolled.clone();
         let watch = tokio::spawn(async move {
             // The file is small: read it each time, rather than trust a timestamp's granularity.
             let mut seen = list;
@@ -79,6 +84,8 @@ impl Relay {
             _watch: Aborting(watch),
             rule: kept,
             status: None,
+            enrolled: path,
+            sign_up: None,
         })
     }
 
@@ -102,64 +109,35 @@ impl Relay {
         let _ = self.server.join().await;
     }
 
-    /// Answer `GET /__tooob/relay.json` at `addr` with `{"relay_access":"open"|"enrolled"}`, and
-    /// `GET /__tooob/enrolled/<key>` with `{"enrolled":true|false,"relay_access":…}`, for the
-    /// image's Caddy to route to. Returns where it listens.
+    /// The Relay Operator's Sign-up Page (ADR 0031), which relay.json names as `sign_up`; set it
+    /// before `serve_status`.
+    pub fn set_sign_up_url(&mut self, url: Option<String>) {
+        self.sign_up = url;
+    }
+
+    /// Answer, at `addr`, for the image's Caddy to route to: `GET /__tooob/relay.json` with
+    /// `{"relay_access":"open"|"enrolled"}` (and `"sign_up"` if set), `GET
+    /// /__tooob/enrolled/<key>` with `{"enrolled":true|false,"relay_access":…}`, and the enroll
+    /// API, `PUT` and `DELETE /__tooob/api/enrolled/<key>` with an Operator Token (ADR 0031).
+    /// Returns where it listens.
     pub async fn serve_status(
         &mut self,
         addr: impl Into<SocketAddr>,
     ) -> Result<SocketAddr, String> {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind(addr.into())
             .await
             .map_err(|e| e.to_string())?;
         let at = listener.local_addr().map_err(|e| e.to_string())?;
-        let rule = self.rule.clone();
+        let status = status::Status::new(
+            self.rule.clone(),
+            self.enrolled.clone(),
+            self.server.relay_service().map(|s| s.clients().clone()),
+            self.sign_up.clone(),
+        );
         let task = tokio::spawn(async move {
-            while let Ok((mut stream, _)) = listener.accept().await {
-                let rule = rule.clone();
-                tokio::spawn(async move {
-                    let mut request = [0u8; 2048];
-                    let n = stream.read(&mut request).await.unwrap_or(0);
-                    let asked = String::from_utf8_lossy(&request[..n]);
-                    // "METHOD TARGET HTTP/1.1": any query on the path is ignored.
-                    let mut line = asked.split_whitespace();
-                    let method = line.next().unwrap_or("");
-                    let path = line.next().unwrap_or("").split('?').next().unwrap_or("");
-                    // A Host asks whether its key is enrolled (#130): nothing a Key Address
-                    // doesn't already show, and relay.json says whether the Relay is open.
-                    let enrolled = path
-                        .strip_prefix("/__tooob/enrolled/")
-                        .and_then(|key| parse_key(key).ok());
-                    let body = match (path, enrolled) {
-                        ("/__tooob/relay.json", _) => {
-                            Some(format!(r#"{{"relay_access":"{}"}}"#, rule.access()))
-                        }
-                        (_, Some(key)) => Some(format!(
-                            r#"{{"enrolled":{},"relay_access":"{}"}}"#,
-                            rule.is_enrolled(key),
-                            rule.access()
-                        )),
-                        _ => None,
-                    };
-                    let reply = if let Some(body) = body
-                        && (method == "GET" || method == "HEAD")
-                    {
-                        let head = format!(
-                            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncache-control: no-store\r\naccess-control-allow-origin: *\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
-                            body.len()
-                        );
-                        match method {
-                            "HEAD" => head,
-                            _ => head + &body,
-                        }
-                    } else {
-                        "HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
-                            .to_string()
-                    };
-                    let _ = stream.write_all(reply.as_bytes()).await;
-                    let _ = stream.shutdown().await;
-                });
+            while let Ok((stream, _)) = listener.accept().await {
+                let status = status.clone();
+                tokio::spawn(async move { status.answer(stream).await });
             }
         });
         self.status = Some(Aborting(task));

@@ -32,6 +32,9 @@ struct Cli {
     /// This Relay's domain, which an Enrollment Code names (the Relay image's RELAY_DOMAIN).
     #[clap(long, env = "RELAY_DOMAIN")]
     domain: Option<String>,
+    /// The Relay Operator's Sign-up Page, which `/__tooob/relay.json` names as `sign_up`.
+    #[clap(long, env = "TOOOB_RELAY_SIGN_UP_URL")]
+    sign_up_url: Option<String>,
     #[clap(subcommand)]
     command: Option<Command>,
 }
@@ -70,6 +73,24 @@ enum Command {
     Codes,
     /// Cancel an Enrollment Code, given as itself or by its label.
     Cancel { code_or_label: String },
+    /// Operator Tokens: what a Sign-up Page enrolls keys with, through the enroll API.
+    Token {
+        #[clap(subcommand)]
+        command: TokenCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum TokenCommand {
+    /// Make one for a service, and print it once: only its hash is kept.
+    New {
+        /// Which service it's for, one token each.
+        label: String,
+    },
+    /// List the tokens' labels (never the tokens).
+    List,
+    /// Revoke the token with this label: it fails at once.
+    Revoke { label: String },
 }
 
 fn main() -> ExitCode {
@@ -130,7 +151,40 @@ fn main() -> ExitCode {
                 n => Ok(format!("cancelled {n} Enrollment Codes")),
             }
         }),
-        None => serve(cli.dev, cli.config_path, cli.enrolled, cli.status_addr),
+        Some(Command::Token {
+            command: TokenCommand::New { label },
+        }) => List::edit(&cli.enrolled, |list| list.make_operator_token(&label)).map(|token| {
+            println!("{token}");
+            println!("Operator Token for {label}: copy it now, it isn't shown again");
+        }),
+        Some(Command::Token {
+            command: TokenCommand::List,
+        }) => List::load(&cli.enrolled).map(|list| {
+            let mut none = true;
+            for label in list.operator_token_labels() {
+                none = false;
+                println!("{label}");
+            }
+            if none {
+                println!("no Operator Tokens");
+            }
+        }),
+        Some(Command::Token {
+            command: TokenCommand::Revoke { label },
+        }) => List::edit(&cli.enrolled, |list| {
+            match list.revoke_operator_token(&label) {
+                true => Ok(format!("revoked the Operator Token for {label}")),
+                false => Err(format!("no Operator Token is labelled {label}")),
+            }
+        })
+        .map(|said| println!("{said}")),
+        None => serve(
+            cli.dev,
+            cli.config_path,
+            cli.enrolled,
+            cli.status_addr,
+            cli.sign_up_url,
+        ),
     };
     match done {
         Ok(()) => ExitCode::SUCCESS,
@@ -191,6 +245,7 @@ fn serve(
     config_path: Option<PathBuf>,
     enrolled: PathBuf,
     status_addr: Option<std::net::SocketAddr>,
+    sign_up_url: Option<String>,
 ) -> Result<(), String> {
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
@@ -208,6 +263,7 @@ fn serve(
             .await
             .map_err(|e| format!("{e:#}"))?;
         let mut relay = Relay::spawn(config, enrolled).await?;
+        relay.set_sign_up_url(sign_up_url.filter(|url| !url.is_empty()));
         if let Some(addr) = status_addr {
             let at = relay.serve_status(addr).await?;
             tracing::info!("tooob-relay: /__tooob/relay.json at http://{at}");

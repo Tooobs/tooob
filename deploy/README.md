@@ -27,6 +27,31 @@ Each deploy downloads a Release's Bootstrap Bundle (`deploy.sh 0.1.0`, or the ne
 
 Afterwards, `served.sh` checks that the Relay's domain and a Key Address under it both serve that Bundle.
 
+## A Sign-up Page
+
+A Relay with Enrolled Keys carries only their traffic ([ADR 0030](../docs/adr/0030-a-relay-carries-only-traffic-that-touches-an-enrolled-key.md)). To let Owners enroll themselves, after a payment, a membership or an invite list, run a Sign-up Page of your own: tooob ships none ([ADR 0031](../docs/adr/0031-a-relays-sign-up-is-its-operators-own-service-enrolling-through-a-token-api.md)). It checks whatever you like, then enrolls the Host Key through the Relay's enroll API.
+
+- **Name it:** set `TOOOB_RELAY_SIGN_UP_URL=https://join.example.com/` on the Relay (or `tooob-relay --sign-up-url`). `https://relay.example.com/__tooob/relay.json` then says `"sign_up": "https://join.example.com/"`.
+- **Make an Operator Token** for the service, inside the Relay's container: `tooob-relay token new sign-up`. It prints the token once; the Enrolled Keys' file keeps only its hash. Make one for each service. `tooob-relay token list` shows their labels, never the tokens, and `tooob-relay token revoke sign-up` makes one fail at once.
+- **Enroll a key**, or relabel it if it's enrolled already:
+
+  ```sh
+  curl -X PUT https://relay.example.com/__tooob/api/enrolled/<host key> \
+    -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d '{"label": "sam@example.com"}'
+  ```
+
+- **Remove a key**, which disconnects it at once:
+
+  ```sh
+  curl -X DELETE https://relay.example.com/__tooob/api/enrolled/<host key> \
+    -H "Authorization: Bearer $TOKEN"
+  ```
+
+Each answers 200 and `{"enrolled":…,"relay_access":…}`; 401 with no valid token (nothing changes), 400 for what isn't a key or a body without a `label` (at most 4 KiB), 404 for removing a key that isn't enrolled. After 10 failed tokens from one address, each within a minute of the last, that address gets 429 until a minute has passed. Anyone may still read `GET /__tooob/enrolled/<host key>`.
+
+**Don't remove a key another account still pays for.** A key has one label, and enrolling it again relabels it, so if two of your accounts can enroll the same key, your service tracks that itself and removes it only when none of them still has it.
+
 ## Checks
 
 `cd check && node --test bundle.test.mjs` tests `bundle.sh`. The Relay image itself is checked live, on a real domain with its certificates: deploy it, run `served.sh`, and open an Invite Link through it.

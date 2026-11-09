@@ -23,6 +23,10 @@ pub const WRONG_CODES_ALLOWED: u32 = 5;
 /// How long an address is refused after its last allowed wrong code; wrong codes older than this
 /// no longer count against it.
 pub const WRONG_WINDOW: Duration = Duration::from_secs(15 * 60);
+/// How many failed attempts at the enroll API an address may make (ADR 0031)...
+pub const WRONG_TOKENS_ALLOWED: u32 = 10;
+/// ...each within this of the one before, before it gets 429s until this after the last.
+pub const WRONG_TOKENS_WINDOW: Duration = Duration::from_secs(60);
 
 /// Each address's wrong codes: an address that gets `allowed` wrong, each within `window` of the
 /// one before, is refused until `window` after the last of them.
@@ -119,19 +123,26 @@ impl Gate {
 /// says in `X-Forwarded-For` (it sets the header itself, ignoring a client's); otherwise the
 /// connection's own.
 fn client_addr(request: &ClientRequest) -> Option<IpAddr> {
-    let peer = request.peer_addr().map(|a| a.ip());
-    let forwarded = || {
-        request
-            .headers()
-            .get_all("x-forwarded-for")
-            .iter()
-            .filter_map(|v| v.to_str().ok())
-            .flat_map(|v| v.split(','))
-            .next_back()
-            .and_then(|a| a.trim().parse().ok())
-    };
+    let forwarded = request
+        .headers()
+        .get_all("x-forwarded-for")
+        .iter()
+        .filter_map(|v| v.to_str().ok());
+    client_ip(request.peer_addr().map(|a| a.ip()), forwarded)
+}
+
+/// The client's address, given the connection's (`peer`) and its `X-Forwarded-For` values: the
+/// last one these name if the connection is from this machine (the image's Caddy), else `peer`.
+pub(crate) fn client_ip<'a>(
+    peer: Option<IpAddr>,
+    forwarded: impl Iterator<Item = &'a str>,
+) -> Option<IpAddr> {
     match peer {
-        Some(ip) if ip.is_loopback() => forwarded().or(peer),
+        Some(ip) if ip.is_loopback() => forwarded
+            .flat_map(|v| v.split(','))
+            .last()
+            .and_then(|a| a.trim().parse().ok())
+            .or(peer),
         _ => peer,
     }
 }

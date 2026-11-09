@@ -87,6 +87,21 @@ async fn enrolled_is_a_404_for_what_isnt_a_key() {
 }
 
 #[tokio::test]
+async fn relay_json_names_its_sign_up_page_only_when_it_has_one() {
+    // #140, ADR 0031.
+    let dir = tempfile::tempdir().unwrap();
+    let mut relay = Relay::spawn_dev(([127, 0, 0, 1], 0), dir.path().join("enrolled.toml"))
+        .await
+        .unwrap();
+    relay.set_sign_up_url(Some("https://join.example.com/\"x\"".to_string()));
+    let at = relay.serve_status(([127, 0, 0, 1], 0)).await.unwrap();
+    assert_eq!(
+        relay_json(at).await,
+        r#"{"relay_access":"open","sign_up":"https://join.example.com/\"x\""}"#
+    );
+}
+
+#[tokio::test]
 async fn relay_json_answers_a_cache_busting_query_and_a_head() {
     let dir = tempfile::tempdir().unwrap();
     let mut relay = Relay::spawn_dev(([127, 0, 0, 1], 0), dir.path().join("enrolled.toml"))

@@ -18,13 +18,22 @@ pub const DEFAULT_PATH: &str = "/data/tooob-relay/enrolled.toml";
 const HEADER: &str = "# This Relay's Enrolled Keys (ADR 0030): it forwards a packet only if its sender or its\n\
 # receiver is one of them, and everything while there are none. Edited by `tooob-relay enroll`,\n\
 # `remove` and `list`; a running tooob-relay picks up a change within a second. Its Enrollment\n\
-# Codes are kept only as hashes (`tooob-relay code`, `codes`, `cancel`).\n";
+# Codes are kept only as hashes (`tooob-relay code`, `codes`, `cancel`), and so are its Operator\n\
+# Tokens (`tooob-relay token new`, `list`, `revoke`).\n";
 
 /// The Enrolled Keys, each with its label, as the file holds them.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct List {
     keys: BTreeMap<String, Entry>,
     codes: Vec<Code>,
+    tokens: Vec<Token>,
+}
+
+/// An Operator Token as the file keeps it (ADR 0031): only its hash, under its label.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct Token {
+    sha256: String,
+    label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,8 +106,12 @@ fn normalize(code: &str) -> String {
 }
 
 fn sha256(code: &str) -> String {
+    hex_sha256(&normalize(code))
+}
+
+fn hex_sha256(text: &str) -> String {
     use sha2::Digest;
-    sha2::Sha256::digest(normalize(code).as_bytes())
+    sha2::Sha256::digest(text.as_bytes())
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
@@ -136,6 +149,8 @@ struct File {
     enrolled: Vec<Entry>,
     #[serde(default, rename = "code")]
     codes: Vec<Code>,
+    #[serde(default, rename = "operator_token")]
+    tokens: Vec<Token>,
 }
 
 impl List {
@@ -149,6 +164,7 @@ impl List {
         let file: File = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
         let mut list = List {
             codes: file.codes,
+            tokens: file.tokens,
             ..List::default()
         };
         for entry in file.enrolled {
@@ -190,6 +206,7 @@ impl List {
         let file = File {
             enrolled: self.keys.values().cloned().collect(),
             codes: self.codes.clone(),
+            tokens: self.tokens.clone(),
         };
         let text = format!(
             "{HEADER}\n{}",
@@ -293,6 +310,49 @@ impl List {
         let label = found.label.clone();
         self.enroll(key, &label);
         Ok(label)
+    }
+
+    /// Make an Operator Token for the service `label` names, one per label. Returns the token,
+    /// which only the caller ever sees: the list keeps its hash.
+    pub fn make_operator_token(&mut self, label: &str) -> Result<String, String> {
+        if self.tokens.iter().any(|t| t.label == label) {
+            return Err(format!(
+                "an Operator Token is labelled {label} already: revoke it first"
+            ));
+        }
+        let mut bytes = [0u8; 32];
+        getrandom::fill(&mut bytes).expect("no randomness");
+        let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        self.tokens.push(Token {
+            sha256: hex_sha256(&token),
+            label: label.to_string(),
+        });
+        Ok(token)
+    }
+
+    /// The label of the Operator Token `presented` is, or None if it's none of this Relay's: the
+    /// check the enroll API makes, and the admin page's login (#133).
+    pub fn verify_operator_token(&self, presented: &str) -> Option<&str> {
+        if presented.is_empty() {
+            return None;
+        }
+        let hash = hex_sha256(presented);
+        self.tokens
+            .iter()
+            .find(|t| t.sha256 == hash)
+            .map(|t| t.label.as_str())
+    }
+
+    /// The Operator Tokens' labels; never the tokens, which the list doesn't have.
+    pub fn operator_token_labels(&self) -> impl Iterator<Item = &str> {
+        self.tokens.iter().map(|t| t.label.as_str())
+    }
+
+    /// Revoke the Operator Token labelled `label`; false if there's none.
+    pub fn revoke_operator_token(&mut self, label: &str) -> bool {
+        let before = self.tokens.len();
+        self.tokens.retain(|t| t.label != label);
+        self.tokens.len() < before
     }
 
     fn key_set(&self) -> HashSet<EndpointId> {
