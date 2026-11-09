@@ -171,6 +171,17 @@ async fn a_bad_key_or_body_is_a_400() {
     );
     assert_eq!(send(at, &no_label, "{}").await.0, 400);
     assert_eq!(send(at, &no_label, "not json").await.0, 400);
+    // The scheme's name is matched in any case (RFC 7235).
+    let lower = no_label.replace("Bearer", "bearer");
+    assert_eq!(send(at, &lower, r#"{"label":"x"}"#).await.0, 200);
+    List::edit(&list, |keys| {
+        let all: Vec<_> = keys.entries().map(|(k, _)| k).collect();
+        for k in all {
+            keys.remove(k);
+        }
+        Ok(())
+    })
+    .unwrap();
     assert!(enrolled(&list).is_empty());
 }
 
@@ -198,6 +209,11 @@ fn a_presented_operator_token_is_checked_and_named_by_its_label() {
     assert_eq!(list.verify_operator_token(&token), Some("sign-up"));
     assert_eq!(list.verify_operator_token("nope"), None);
     assert_eq!(list.verify_operator_token(""), None);
+    assert_eq!(
+        list.verify_operator_token(&format!(" {token} ")),
+        Some("sign-up")
+    );
+    assert!(list.make_operator_token(" ").is_err(), "a label is needed");
     assert!(
         list.make_operator_token("sign-up").is_err(),
         "one per label"

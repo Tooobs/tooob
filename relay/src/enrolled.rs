@@ -315,6 +315,9 @@ impl List {
     /// Make an Operator Token for the service `label` names, one per label. Returns the token,
     /// which only the caller ever sees: the list keeps its hash.
     pub fn make_operator_token(&mut self, label: &str) -> Result<String, String> {
+        if label.trim().is_empty() {
+            return Err("an Operator Token needs a label: which service it's for".into());
+        }
         if self.tokens.iter().any(|t| t.label == label) {
             return Err(format!(
                 "an Operator Token is labelled {label} already: revoke it first"
@@ -331,8 +334,10 @@ impl List {
     }
 
     /// The label of the Operator Token `presented` is, or None if it's none of this Relay's: the
-    /// check the enroll API makes, and the admin page's login (#133).
+    /// check the enroll API makes, and the admin page's login (#133). Surrounding space is ignored.
+    /// Only as current as the list: load it from the file just before, so a revoked token fails.
     pub fn verify_operator_token(&self, presented: &str) -> Option<&str> {
+        let presented = presented.trim();
         if presented.is_empty() {
             return None;
         }

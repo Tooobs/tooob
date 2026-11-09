@@ -21,6 +21,8 @@ use crate::{
 const HEAD_MAX: usize = 8 * 1024;
 /// The most an enroll API body may be: `{"label": "…"}`.
 pub const BODY_MAX: usize = 4 * 1024;
+/// How long a client has to send its whole request.
+const READ_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// What every connection to the listener shares.
 pub(crate) struct Status {
@@ -50,9 +52,11 @@ impl Status {
     /// Answer the one request on `stream`, then close it.
     pub(crate) async fn answer(&self, mut stream: tokio::net::TcpStream) {
         let peer = stream.peer_addr().ok().map(|a| a.ip());
-        let reply = match read_request(&mut stream).await {
-            Ok(request) => self.reply(&request, peer),
-            Err(status) => Reply::empty(status),
+        // A client too slow to send its request doesn't hold a task for ever.
+        let reply = match tokio::time::timeout(READ_WITHIN, read_request(&mut stream)).await {
+            Ok(Ok(request)) => self.reply(&request, peer),
+            Ok(Err(status)) => Reply::empty(status),
+            Err(_) => Reply::empty(408),
         };
         let _ = stream.write_all(&reply.bytes()).await;
         let _ = stream.shutdown().await;
@@ -113,8 +117,9 @@ impl Status {
         let presented = request
             .headers("authorization")
             .next()
-            .and_then(|v| v.trim().strip_prefix("Bearer "))
-            .map(str::trim)
+            .and_then(|v| v.trim().split_once(' '))
+            .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("Bearer"))
+            .map(|(_, token)| token)
             .unwrap_or("");
         // Read now, not as last watched, so a revoked token fails at once.
         let service = match List::load(&self.path) {
@@ -143,13 +148,15 @@ impl Status {
                 }
                 None => list.remove(key),
             };
-            Ok((changed, list.clone()))
+            // Applied now, not at the watcher's next look, and under the lock, so no older edit's
+            // keys are followed after a newer one's (as Gate::redeem does).
+            Ok((changed, self.rule.follow(list)))
         });
-        let Ok((changed, list)) = edited else {
+        let Ok((changed, gone)) = edited else {
             return Reply::empty(500);
         };
-        // Applied now, not at the watcher's next look: a removed key is disconnected at once.
-        for gone in self.rule.follow(&list) {
+        // A removed key is disconnected at once.
+        for gone in gone {
             if let Some(clients) = &self.clients {
                 clients.disconnect(gone, None);
             }
@@ -268,6 +275,7 @@ impl Reply {
             401 => "Unauthorized",
             404 => "Not Found",
             405 => "Method Not Allowed",
+            408 => "Request Timeout",
             413 => "Content Too Large",
             429 => "Too Many Requests",
             431 => "Request Header Fields Too Large",
