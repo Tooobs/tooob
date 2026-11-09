@@ -77,7 +77,7 @@ fn add_needs_a_relay_and_a_bootstrap_is_refused() {
     );
     for command in [
         "tooob run NAME [-d]",
-        "[--relay URL | --local] [--uploads] [-d]",
+        "[--relay URL | --local | --relay-code CODE] [--uploads] [-d]",
         "tooob stop NAME",
         "tooob logs NAME [-n N|all] [-f] [--json]",
     ] {

@@ -10,7 +10,7 @@ use tooob::autostart::{self, Keeper};
 use tooob::awake::Awake;
 use tooob::bootstrap::{self, BootstrapVersion, Problem, Watch};
 use tooob::control::{Client, ControlError};
-use tooob::enrollment::{self, Enrollment};
+use tooob::enrollment::{self, Code, Enrollment};
 use tooob::host::{Host, HostConfig, Site};
 use tooob::hosts::{
     Entry, Home, NO_RELAY, RUN_YOUR_OWN, check_relay, name_char, no_invite_links, no_key_address,
@@ -28,15 +28,18 @@ use tooob::{Network, amount, lasting, seconds};
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 const USAGE: &str = "usage:
-  tooob add NAME TARGET (--relay URL | --local)
+  tooob add NAME TARGET (--relay URL | --local | --relay-code CODE)
                                                   make a Host; TARGET is a folder or file to share
-                                                  read-only, or HOST:PORT for a web app
+                                                  read-only, or HOST:PORT for a web app;
+                                                  --relay-code: enrolled with an Enrollment Code
+                                                  (RELAY/CODE) on its Relay, or not made at all
+  tooob enroll NAME CODE                          enroll it with an Enrollment Code for its Relay
   tooob run NAME [-d]                             serve it here, until Ctrl-C or q; d there, or
                                                   -d (--detach), keeps it running instead, now and
                                                   after logins, reboots and crashes: launchd or
                                                   systemd runs it
   tooob share PATH [--invite LABEL]... [--expires 7d] [--approve] [--name NAME]
-                   [--relay URL | --local] [--uploads] [-d]
+                   [--relay URL | --local | --relay-code CODE] [--uploads] [-d]
                                                   add a Host for PATH (or reuse its Host), invite
                                                   each LABEL, then run it (-d as for run); it
                                                   warns when PATH holds .git, .env or .ssh;
@@ -90,6 +93,7 @@ Running Hosts look for a newer Release once a day, and say when one is out.";
 
 const VALUE_FLAGS: &[&str] = &[
     "relay",
+    "relay-code",
     "expires",
     "name",
     "lines",
@@ -156,7 +160,7 @@ async fn run() -> Result<()> {
 
     match words.first().map(String::as_str) {
         Some("add") => {
-            exactly(3, &["relay", "local"])?;
+            exactly(3, &["relay", "local", "relay-code"])?;
             let (name, target) = match (words.get(1), words.get(2)) {
                 (Some(name), Some(target)) => (name, target),
                 (Some(name), None) => {
@@ -169,9 +173,19 @@ async fn run() -> Result<()> {
                     return Err(typed.missing(what, "NAME TARGET"));
                 }
             };
-            let relay = new_host_relay(&typed, &flags).await?;
-            let host = home.add(name, target, &relay)?;
-            say_if_not_carried(&host).await;
+            let (relay, code) = new_host_relay(&typed, &flags).await?;
+            added(home.add(name, target, &relay)?, code.as_ref()).await?;
+        }
+        Some("enroll") => {
+            exactly(3, &[])?;
+            let host = named(&home, &typed, "enroll", words.get(1))?;
+            let Some(text) = words.get(2) else {
+                return Err(typed.missing("say the Enrollment Code", "CODE"));
+            };
+            let code = Code::parse(text).map_err(|e| anyhow::anyhow!("{e}"))?;
+            if let Err(why) = redeem(&host, &code).await {
+                bail!("{} isn't enrolled: {why}", host.name);
+            }
         }
         Some("run") => {
             exactly(2, &["detach"])?;
@@ -381,8 +395,29 @@ async fn say_if_not_carried(host: &Entry) {
 /// A new Host's Relay, as `--relay URL` (or `--local`) says: never a guess (ADR 0015), and never
 /// asked for (ADR 0022). A Relay whose Bootstrap won't do for this tooob is refused before the Host
 /// is made (ADR 0020).
-async fn new_host_relay(typed: &Typed, flags: &Flags) -> Result<String> {
-    let Some(relay) = relay(flags)? else {
+async fn new_host_relay(typed: &Typed, flags: &Flags) -> Result<(String, Option<Code>)> {
+    // The code names its Relay, so `--relay` isn't needed with it; given both, they agree, and
+    // that's settled before anything reaches the network.
+    let code = match flags.get("relay-code") {
+        Some(Some(text)) => {
+            Some(Code::parse(text).map_err(|e| anyhow::anyhow!("no Host added: {e}"))?)
+        }
+        Some(None) => {
+            return Err(typed.missing("say the Enrollment Code", "--relay-code RELAY/CODE"));
+        }
+        None => None,
+    };
+    let relay = match (relay(flags)?, &code) {
+        (Some(relay), Some(_)) if relay == NO_RELAY => {
+            bail!("no Host added: --relay-code enrolls a Host on a Relay, and --local uses none")
+        }
+        (Some(relay), Some(code)) if !code.is_for(&relay) => {
+            bail!("no Host added: {}, as --relay says", code.not_for(&relay))
+        }
+        (None, Some(code)) => Some(code.relay_url()),
+        (relay, _) => relay,
+    };
+    let Some(relay) = relay else {
         return Err(typed.missing(
             &format!(
                 "say which Relay its Visitors reach it through (or --local for this network \
@@ -397,7 +432,40 @@ async fn new_host_relay(typed: &Typed, flags: &Flags) -> Result<String> {
     {
         bail!("no Host added: {}", problem.at(&relay));
     }
-    Ok(relay)
+    Ok((relay, code))
+}
+
+/// Redeem `code` for `host`, on the Relay it uses, and say it's enrolled; the reason, if refused.
+async fn redeem(host: &Entry, code: &Code) -> Result<(), String> {
+    let Ok(Network::Relay(url)) = host.settings.network() else {
+        return Err("it uses no Relay, so there's nothing to enroll it on".into());
+    };
+    if !code.is_for(url.as_str()) {
+        return Err(code.not_for(url.as_str()));
+    }
+    let key = tooob::host::load_host_key(&host.state_dir).map_err(|e| format!("{e:#}"))?;
+    enrollment::redeem(&url, key, code).await?;
+    enrollment::keep(&host.state_dir, Enrollment::Enrolled);
+    say(&[format!(
+        "{} is enrolled on {} ({})",
+        host.name,
+        code.relay,
+        code.shown()
+    )]);
+    Ok(())
+}
+
+/// A Host just made by `add` or `share`: enrolled with its code, if given, or removed, so a
+/// refused code leaves nothing behind; then told whether its Relay carries it.
+async fn added(host: Entry, code: Option<&Code>) -> Result<Entry> {
+    if let Some(code) = code
+        && let Err(why) = redeem(&host, code).await
+    {
+        host.remove()?;
+        bail!("no Host added: {why}");
+    }
+    say_if_not_carried(&host).await;
+    Ok(host)
 }
 
 /// Someone `share` invites once it's serving, as `--invite LABEL`, `--expires` and `--approve`
@@ -457,18 +525,24 @@ async fn share(
     };
     let (mut host, added) = match found {
         Some(host) => {
+            if flags.contains_key("relay-code") {
+                bail!(
+                    "{0} already serves {given}, on its own Relay: enroll it with `tooob enroll \
+                     {0} CODE`, then share again without --relay-code",
+                    host.name
+                );
+            }
             if !who.is_empty() {
                 host.key_address()?;
             }
             (host, false)
         }
         None => {
-            let relay = new_host_relay(typed, flags).await?;
+            let (relay, code) = new_host_relay(typed, flags).await?;
             if let Some(why) = no_key_address(&relay).filter(|_| !who.is_empty()) {
                 bail!(no_invite_links("the new Host", why));
             }
-            let host = home.add(&name, &serves, &relay)?;
-            say_if_not_carried(&host).await;
+            let host = added(home.add(&name, &serves, &relay)?, code.as_ref()).await?;
             (host, true)
         }
     };

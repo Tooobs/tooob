@@ -87,6 +87,105 @@ pub fn not_carried(relay: &str, key: &str) -> String {
     )
 }
 
+/// An Enrollment Code as its Relay Operator gives it: `r.tooobs.net/7Q4K-M2XD-9PHT-WB3C`, the
+/// Relay it's for, then its secret (ADR 0030, #132).
+#[derive(Debug, PartialEq, Eq)]
+pub struct Code {
+    /// The Relay as `named` writes it: its host and any port.
+    pub relay: String,
+    secret: String,
+}
+
+impl Code {
+    pub fn parse(text: &str) -> Result<Code, String> {
+        let bad = || {
+            "an Enrollment Code reads RELAY/CODE, such as r.tooobs.net/7Q4K-M2XD-9PHT-WB3C: give it as \
+             its Relay Operator gave it"
+                .to_string()
+        };
+        let (relay, secret) = text.trim().rsplit_once('/').ok_or_else(bad)?;
+        if relay.is_empty() || relay.contains('/') || secret.is_empty() {
+            return Err(bad());
+        }
+        let relay = named(&format!("https://{relay}/"));
+        Ok(Code {
+            relay,
+            secret: secret.to_string(),
+        })
+    }
+
+    /// The Relay it's for, as a URL: the Relay a Host made with it alone uses.
+    pub fn relay_url(&self) -> String {
+        format!("https://{}/", self.relay)
+    }
+
+    /// Whether it's for the Relay at `relay` (a URL).
+    pub fn is_for(&self, relay: &str) -> bool {
+        named(relay).eq_ignore_ascii_case(&self.relay)
+    }
+
+    /// What's said of it: its Relay and the first group of its secret, never all of it.
+    pub fn shown(&self) -> String {
+        let start: String = self.secret.chars().take(4).collect();
+        format!("{}/{start}-…", self.relay)
+    }
+
+    /// Why it isn't for the Relay at `relay`.
+    pub fn not_for(&self, relay: &str) -> String {
+        format!(
+            "that Enrollment Code is for {}, not {}",
+            self.relay,
+            named(relay)
+        )
+    }
+}
+
+/// How long redeeming a code waits for the Relay's answer.
+const REDEEM_WAIT: Duration = Duration::from_secs(20);
+
+/// Redeem `code` at the Relay at `relay` for the Host Key `key`: connect once with it as iroh's
+/// auth token, and wait for the Relay to let the Host in, enrolled, or say why not.
+pub async fn redeem(
+    relay: &iroh::RelayUrl,
+    key: iroh::SecretKey,
+    code: &Code,
+) -> Result<(), String> {
+    use iroh::{Endpoint, RelayConfig, RelayMap, RelayMode, Watcher, endpoint::presets};
+    let map: RelayMap = RelayConfig::new(relay.clone(), None)
+        .with_auth_token(code.secret.clone())
+        .into();
+    let endpoint = Endpoint::builder(presets::N0)
+        .relay_mode(RelayMode::Custom(map))
+        .secret_key(key)
+        .bind()
+        .await
+        .map_err(|e| format!("can't redeem the Enrollment Code: {e}"))?;
+    let mut status = endpoint.home_relay_status();
+    let answer = tokio::time::timeout(REDEEM_WAIT, async {
+        loop {
+            for relay in status.get() {
+                if let Some(reason) = relay.auth_denied_reason() {
+                    return Err(reason.to_string());
+                }
+                if relay.is_connected() {
+                    return Ok(());
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        Err(format!(
+            "{} didn't answer within {} seconds: the Enrollment Code wasn't redeemed",
+            code.relay,
+            REDEEM_WAIT.as_secs()
+        ))
+    });
+    endpoint.close().await;
+    answer
+}
+
 fn file(state_dir: &Path) -> PathBuf {
     state_dir.join("enrollment.json")
 }
@@ -178,5 +277,21 @@ pub struct Checking(tokio::task::JoinHandle<()>);
 impl Drop for Checking {
     fn drop(&mut self) {
         self.0.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Code;
+
+    #[test]
+    fn a_code_names_its_relay_and_is_never_shown_whole() {
+        let code = Code::parse("r.tooobs.net/7Q4K-M2XD-9PHT-WB3C").unwrap();
+        assert_eq!(code.relay_url(), "https://r.tooobs.net/");
+        assert!(code.is_for("https://R.tooobs.net/"));
+        assert!(!code.is_for("https://r.example.net/"));
+        assert_eq!(code.shown(), "r.tooobs.net/7Q4K-…");
+        assert!(Code::parse("7Q4K-M2XD-9PHT-WB3C").is_err());
+        assert!(Code::parse("https://r.tooobs.net/7Q4K").is_err());
     }
 }

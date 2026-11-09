@@ -423,7 +423,7 @@ pub fn host_key(data_dir: &std::path::Path) -> Option<String> {
 }
 
 /// The Host Key, kept across restarts so the Key Address and Invite Links stay valid.
-pub(crate) fn load_host_key(data_dir: &std::path::Path) -> Result<SecretKey> {
+pub fn load_host_key(data_dir: &std::path::Path) -> Result<SecretKey> {
     let path = data_dir.join("host.key");
     if let Ok(bytes) = std::fs::read(&path) {
         let bytes: [u8; 32] = bytes.try_into().ok().context("bad host key file")?;

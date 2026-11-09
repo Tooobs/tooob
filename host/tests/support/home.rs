@@ -70,6 +70,24 @@ impl TestRelay {
         self.edit_enrolled(|list| list.enroll(tooob_relay::parse_key(key).unwrap(), "test"));
     }
 
+    /// Make an Enrollment Code good for `uses` Hosts for `lasts` seconds, named as a Relay names
+    /// it: `localhost:<port>/SECRET`.
+    pub fn code(&self, uses: u32, lasts: u64) -> String {
+        let mut secret = String::new();
+        self.edit_enrolled(|list| {
+            secret = list.make_code("test", uses, tooob_relay::now() + lasts);
+        });
+        let at = self.url.trim_start_matches("http://").trim_end_matches('/');
+        format!("{at}/{secret}")
+    }
+
+    /// Cancel the code `code`.
+    pub fn cancel(&self, code: &str) {
+        self.edit_enrolled(|list| {
+            list.cancel(code, tooob_relay::now());
+        });
+    }
+
     /// Remove `key` from its Enrolled Keys.
     pub fn remove(&self, key: &str) {
         self.edit_enrolled(|list| {
