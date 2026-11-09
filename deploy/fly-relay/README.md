@@ -27,4 +27,24 @@ FLY_APP=… RELAY_DOMAIN=relay.example.com ACME_EMAIL=you@example.com ./deploy.s
 
 It builds the Relay image with that Release's Bootstrap Bundle (`DNS_PROVIDER` picks the caddy-dns module; the default is `cloudflare`), deploys it, then waits until `https://relay.example.com/` and a Key Address under it serve that Bundle. Upgrading the Relay's Bootstrap is running it again with a newer Release.
 
-Point Hosts at it with `tooob add … --relay https://relay.example.com/`. As shipped, anyone can use it: before you share it, set `access` and `limits` in `../relay/image/iroh-relay.toml`.
+`deploy.sh` never enrolls a key or closes the Relay, so every redeploy leaves its Enrolled Keys (on the volume) as they are.
+
+## Close it
+
+A new Relay is open: it carries anyone's traffic. It closes when you enroll its first Host Key ([ADR 0030](../../docs/adr/0030-a-relay-carries-only-traffic-that-touches-an-enrolled-key.md)), and then carries only traffic to or from an Enrolled Key; Visitors need nothing enrolled. Once, after the first deploy, either:
+
+- **A Host you already made**: `tooob show NAME` prints its Host Key. Enroll it:
+
+  ```sh
+  fly ssh console -a "$FLY_APP" -C "tooob-relay enroll <host key> --label <name>"
+  ```
+
+- **A Host you'll make next**: print an Enrollment Code, then `tooob add NAME TARGET --relay-code <code>` on the home box. The Relay stays open until that Host redeems it.
+
+  ```sh
+  fly ssh console -a "$FLY_APP" -C "tooob-relay code --label <name>"
+  ```
+
+`fly ssh console -a "$FLY_APP" -C "tooob-relay list"` shows the Enrolled Keys. A Relay that's open today, with Hosts already on it: see [../README.md](../README.md#closing-an-open-relay) before enrolling the first.
+
+Point other Hosts at it with `tooob add … --relay https://relay.example.com/` and enroll each Host Key the same way, or give each its own Enrollment Code for `--relay-code`.

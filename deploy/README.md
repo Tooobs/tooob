@@ -4,7 +4,7 @@ tooob names no Relay of its own ([ADR 0015](../docs/adr/0015-no-default-relay-or
 
 Both setups here run the same container (`relay/image/`): stock [iroh-relay](https://github.com/n0-computer/iroh) 1.3.0 behind [Caddy](https://caddyserver.com). Caddy hands iroh's paths (`/relay`, `/ping`, `/generate_204`, `/healthz`) to iroh-relay. Everything else gets a Release's Bootstrap Bundle, on the Relay's domain and on every Key Address under it (`<host key>.<relay domain>`).
 
-- **`relay/`**: a VPS with Docker. `wizard.sh` walks through it all, Hetzner, DNS, firewall and the first deploy, and `deploy.sh` upgrades it.
+- **`relay/`**: a VPS with Docker. `wizard.sh` walks through it all, Hetzner, DNS, firewall, the first deploy and enrolling your first Host, and `deploy.sh` upgrades it.
 - **`fly-relay/`**: Fly.io. See its README.
 
 ## What a Relay needs
@@ -26,6 +26,19 @@ A Relay for your own Hosts doesn't need to be on the [Public Suffix List](https:
 Each deploy downloads a Release's Bootstrap Bundle (`deploy.sh 0.1.0`, or the newest Release by default), checks it against the Release's checksum (`bundle.sh`), and prints its hash to compare with the Release's notes. Upgrading a Relay's Bootstrap means deploying it again with a newer Release. `--local` serves `bootstrap/www` as built here instead.
 
 Afterwards, `served.sh` checks that the Relay's domain and a Key Address under it both serve that Bundle.
+
+## Closing an open Relay
+
+A Relay with no Enrolled Keys is open: it carries anyone's traffic ([ADR 0030](../docs/adr/0030-a-relay-carries-only-traffic-that-touches-an-enrolled-key.md)). A new Relay closes in its first-time steps (the VPS wizard's "Close the Relay" stage, the Fly README's "Close it"). A Relay deployed before then is still open, and a redeploy never closes it: `deploy.sh` never enrolls anything. Until its first enrollment, `https://relay.example.com/__tooob/relay.json` says `"relay_access":"open"`, and after it `"enrolled"`.
+
+The first enrollment closes it at once (the Relay rereads its Enrolled Keys every quarter second). From then on a Host whose key isn't enrolled loses the Relayed Path, and its Visitors can't reach it through this Relay, until its key is enrolled too. So close it without cutting anyone off:
+
+1. **Collect every Host Key first.** Each Owner of a Host on the Relay runs `tooob show NAME` and sends you the Host Key it prints. A Host Key isn't secret.
+2. **Enroll them all at once**, one `tooob-relay enroll <host key> --label <name>` each, back to back, inside the Relay's container. On a VPS: `ssh root@<server>`, then `cd tooob-relay && docker compose exec relay sh`. On Fly.io: `fly ssh console -a <app>`. Then `tooob-relay list` to check.
+3. **Owners of those Hosts do nothing.** A running Host carries on; it rechecks its Relay every 10 minutes and finds itself enrolled.
+4. **A Host you missed** gets its key enrolled the same way, or its Owner gets an Enrollment Code (`tooob-relay code --label <name>`) and runs `tooob enroll NAME <code>`. Until then it's cut off from this Relay.
+
+Don't hand out Enrollment Codes to close an open Relay: the first one redeemed closes it while the other Hosts still wait to redeem theirs. Codes are for Hosts added once it's closed.
 
 ## A Sign-up Page
 

@@ -202,7 +202,7 @@ run_wizard() {
 
 # Run from deploy/relay so .env and deploy.sh resolve here.
 cd "$(dirname "$0")"
-TOTAL_STAGES=8
+TOTAL_STAGES=9
 
 # ssh to the VPS without an interactive host-key prompt on first contact (fresh server: trust on first use).
 SSH_OPTS=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10)
@@ -333,6 +333,46 @@ fi
 pause
 
 # ── 7 ─────────────────────────────────────────────────────────────────────
+# Enrolling closes the Relay (ADR 0030), so it's this stage's alone: deploy.sh never does it.
+stage "Close the Relay: enroll your first Host"
+relay_cli() { vps "cd tooob-relay && docker compose exec -T relay tooob-relay $*"; }
+RELAY_CODE=""
+if ! relay_cli list | grep -q '^no Enrolled Keys'; then
+  printf '  %s✓ the Relay is closed already; its Enrolled Keys:%s\n' "$GREEN" "$RESET"
+  relay_cli list | sed 's/^/    /'
+  note "Enroll more with: ssh $SSH_USER@$VPS_IP 'cd tooob-relay && docker compose exec relay tooob-relay enroll <key> --label <name>'"
+else
+  say "The Relay is open: it carries anyone's traffic. It closes when you enroll its first Host Key,"
+  say "and then carries only traffic to or from an Enrolled Key. Visitors need nothing enrolled."
+  say "  1  a Host you already made: paste its Host Key (tooob show NAME prints it)"
+  say "  2  a Host you'll make next: print an Enrollment Code for tooob add --relay-code"
+  say "  3  leave it open for now"
+  ask ENROLL_HOW "1, 2 or 3:"
+  case "$ENROLL_HOW" in
+    1)
+      ask HOST_KEY "Host Key:"
+      ask HOST_LABEL "A label for it (its Host Name, or whose it is):"
+      if relay_cli enroll "$(printf %q "$HOST_KEY")" --label "$(printf %q "$HOST_LABEL")"; then
+        printf '  %s✓ enrolled; the Relay is closed%s\n' "$GREEN" "$RESET"
+      else
+        SKIPPED+=("enroll your first Host Key (the Relay is still open)")
+      fi ;;
+    2)
+      ask HOST_LABEL "Whose it is (the Host it enrolls gets this label):"
+      if RELAY_CODE=$(relay_cli code --label "$(printf %q "$HOST_LABEL")"); then
+        RELAY_CODE="${RELAY_CODE%% *}"
+        printf '  %s✓ Enrollment Code: %s%s\n' "$GREEN" "$RELAY_CODE" "$RESET"
+        note "One Host, good for 7 days. The Relay stays open until a Host redeems it."
+      else
+        SKIPPED+=("make an Enrollment Code for your first Host (the Relay is still open)")
+      fi ;;
+    *)
+      SKIPPED+=("close the Relay: enroll a Host Key (see ../README.md, 'Closing an open Relay')") ;;
+  esac
+fi
+pause
+
+# ── 8 ─────────────────────────────────────────────────────────────────────
 stage "Public Suffix List"
 say "A Relay for your own Hosts doesn't need the Public Suffix List: skip this stage."
 say "If people who don't trust each other will run Hosts through it, put $RELAY_DOMAIN on the"
@@ -343,11 +383,15 @@ note "Their guidelines (https://github.com/publicsuffix/list/wiki/Guidelines) as
 note "record on $RELAY_DOMAIN that links to your pull request."
 pause
 
-# ── 8 ─────────────────────────────────────────────────────────────────────
+# ── 9 ─────────────────────────────────────────────────────────────────────
 stage "Try it"
 say "On your home box, share something through your Relay and open the Invite on a phone:"
 say ""
-say "  tooob add photos ~/Pictures --relay https://$RELAY_DOMAIN/"
+if [[ -n "$RELAY_CODE" ]]; then
+  say "  tooob add photos ~/Pictures --relay-code $RELAY_CODE"
+else
+  say "  tooob add photos ~/Pictures --relay https://$RELAY_DOMAIN/"
+fi
 say "  tooob run photos             # leave it running"
 say "  tooob invite photos phone    # in another terminal: open this link on the phone"
 say ""
