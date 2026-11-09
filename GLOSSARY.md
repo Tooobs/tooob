@@ -167,7 +167,7 @@ A page a Relay Operator runs, outside tooob, where an Owner gets a Host enrolled
 _Avoid_: join page, checkout, registration
 
 **Operator Token**:
-A secret a Relay Operator makes on their Relay so a service of their own, such as their Sign-up Page, can enroll and remove keys there. Unlike an Enrollment Code, it's never given to an Owner.
+A secret a Relay Operator makes on their Relay so a service of their own, such as their Sign-up Page, can enroll and remove keys there; it also logs the Relay Operator in to the Relay's admin page. Unlike an Enrollment Code, it's never given to an Owner.
 _Avoid_: API key, admin password, token (unqualified)
 
 **Relayed Path**:

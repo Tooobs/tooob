@@ -30,7 +30,7 @@ pub(crate) struct Status {
     pub(crate) path: PathBuf,
     pub(crate) clients: Option<Clients>,
     pub(crate) sign_up: Option<String>,
-    /// Failed tokens, shared with the admin page's failed logins (#133).
+    /// Failed tokens, per address; the admin page counts its own (#133).
     pub(crate) wrong: Arc<Mutex<WrongCodes>>,
 }
 

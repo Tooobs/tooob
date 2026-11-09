@@ -32,8 +32,16 @@ pub struct Relay {
     sign_up: Option<String>,
     presence: presence::Presence,
     clients: Option<iroh_relay::server::clients::Clients>,
-    /// Failed Operator Tokens, per address: the enroll API's and the admin page's logins alike.
-    wrong_tokens: Arc<std::sync::Mutex<gate::WrongCodes>>,
+}
+
+/// A fresh count of failed Operator Tokens, per address. The enroll API and the admin page each
+/// have their own: on Fly every public client may look like one address (#135), and public
+/// guesses must not lock the Relay Operator out of the admin page.
+fn wrong_tokens() -> Arc<std::sync::Mutex<gate::WrongCodes>> {
+    Arc::new(std::sync::Mutex::new(gate::WrongCodes::new(
+        WRONG_TOKENS_ALLOWED,
+        WRONG_TOKENS_WINDOW,
+    )))
 }
 
 impl Relay {
@@ -100,10 +108,6 @@ impl Relay {
             sign_up: None,
             presence,
             clients: kept_clients,
-            wrong_tokens: Arc::new(std::sync::Mutex::new(gate::WrongCodes::new(
-                WRONG_TOKENS_ALLOWED,
-                WRONG_TOKENS_WINDOW,
-            ))),
         })
     }
 
@@ -125,7 +129,7 @@ impl Relay {
             self.presence.clone(),
             self.clients.clone(),
             domain,
-            self.wrong_tokens.clone(),
+            wrong_tokens(),
         );
         self.admin = Some(Aborting(tokio::spawn(page.serve(listener))));
         Ok(at)
@@ -175,7 +179,7 @@ impl Relay {
             self.enrolled.clone(),
             self.server.relay_service().map(|s| s.clients().clone()),
             self.sign_up.clone(),
-            self.wrong_tokens.clone(),
+            wrong_tokens(),
         );
         let task = tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {

@@ -230,7 +230,8 @@ async fn a_wrong_token_is_refused_and_too_many_lock_the_address_out() {
 }
 
 #[tokio::test]
-async fn wrong_tokens_at_the_enroll_api_count_against_logging_in_too() {
+async fn wrong_tokens_at_the_public_enroll_api_never_lock_the_admin_page_out() {
+    // On Fly every public client may look like one address (#135).
     let mut a = admin().await;
     let status = a.relay.serve_status(([127, 0, 0, 1], 0)).await.unwrap();
     let key = fresh_key().to_z32();
@@ -245,7 +246,20 @@ async fn wrong_tokens_at_the_enroll_api_count_against_logging_in_too() {
         assert!(reply.starts_with("HTTP/1.1 401"), "{reply}");
     }
     let reply = login_reply(a.at, &a.token).await;
-    assert!(reply.starts_with("HTTP/1.1 429"), "{reply}");
+    assert!(reply.starts_with("HTTP/1.1 303"), "{reply}");
+}
+
+#[tokio::test]
+async fn a_client_too_slow_to_send_its_request_gets_408() {
+    let a = admin().await;
+    let mut stream = tokio::net::TcpStream::connect(a.at).await.unwrap();
+    stream.write_all(b"GET / HTTP/1.1\r\n").await.unwrap();
+    let mut reply = String::new();
+    tokio::time::timeout(Duration::from_secs(15), stream.read_to_string(&mut reply))
+        .await
+        .expect("an answer within the read timeout")
+        .unwrap();
+    assert!(reply.starts_with("HTTP/1.1 408"), "{reply}");
 }
 
 #[tokio::test]

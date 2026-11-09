@@ -39,6 +39,9 @@ use crate::{
 /// The most of a request the page reads: its forms are small.
 const MOST: usize = 64 * 1024;
 
+/// How long a client has to send its whole request.
+const READ_WITHIN: Duration = Duration::from_secs(10);
+
 /// How long a session lasts after logging in.
 pub(crate) const SESSION_LASTS: Duration = Duration::from_secs(12 * 60 * 60);
 
@@ -114,8 +117,10 @@ impl Reply {
     }
 
     /// Back to the page, setting the session cookie to `value` for `max_age` seconds. Not
-    /// `Secure`: the tunnel ends in plain HTTP on localhost, where a browser would never send a
-    /// `Secure` cookie back. HttpOnly and SameSite=Strict keep it from scripts and other sites.
+    /// `Secure`: the tunnel ends in plain HTTP on localhost, and Safari never sends a `Secure`
+    /// cookie back over plain HTTP, even there (Chrome and Firefox do). HttpOnly and
+    /// SameSite=Strict keep it from scripts and other sites. Cookies ignore ports, so every
+    /// localhost server the browser visits gets it too (the deploy README says so).
     fn back_with_cookie(value: &str, max_age: u64) -> Reply {
         Reply {
             cookie: Some(format!(
@@ -161,9 +166,15 @@ impl Admin {
 
     async fn answer(&self, mut stream: TcpStream) {
         let peer = stream.peer_addr().ok().map(|a| a.ip());
-        let reply = match read(&mut stream).await {
-            Some(request) => self.reply(&request, peer),
-            None => Reply::page("400 Bad Request", "Not a request this page takes.\n".into()),
+        // A client too slow to send its request doesn't hold a task for ever, as at the status
+        // listener.
+        let reply = match tokio::time::timeout(READ_WITHIN, read(&mut stream)).await {
+            Ok(Some(request)) => self.reply(&request, peer),
+            Ok(None) => Reply::page("400 Bad Request", "Not a request this page takes.\n".into()),
+            Err(_) => Reply::page(
+                "408 Request Timeout",
+                "Too slow to send a request.\n".into(),
+            ),
         };
         let kind = match reply.body.starts_with("<!doctype html>") {
             true => "text/html; charset=utf-8",
@@ -281,7 +292,7 @@ impl Admin {
                 self.render_login(Some("That isn't one of this Relay's Operator Tokens.")),
             );
         };
-        info!("tooob-relay: logged in to the admin page with the Operator Token for {label}");
+        info!("tooob-relay: the admin page logged in the Operator Token for {label}");
         let id = random_hex();
         let mut sessions = self.sessions.lock().unwrap();
         sessions.retain(|_, s| s.since.elapsed() < SESSION_LASTS);

@@ -56,14 +56,14 @@ Each answers 200 and `{"enrolled":…,"relay_access":…}`; 401 with no valid to
 
 A Relay has an admin page: its Enrolled Keys with their labels, whether each is connected now or when it was last seen (since the Relay last started), whether the Relay is open or closed, and forms to add, relabel and remove a key (a removed key is disconnected at once) and to make, list and cancel Enrollment Codes. It edits the same file as the `tooob-relay` commands.
 
-**It logs in with an Operator Token** ([ADR 0031](../docs/adr/0031-a-relays-sign-up-is-its-operators-own-service-enrolling-through-a-token-api.md)), the same kind the enroll API takes. Make one inside the Relay's container, such as `tooob-relay token new admin`, and paste it into the page's login form. With no Operator Token made, nobody can log in. Failed logins count with the enroll API's failed tokens: after 10 from one address, each within a minute of the last, that address is refused until a minute has passed. `tooob-relay token revoke admin` ends that token's sessions at once; a session also ends after 12 hours, or when the Relay restarts.
+**It logs in with an Operator Token** ([ADR 0031](../docs/adr/0031-a-relays-sign-up-is-its-operators-own-service-enrolling-through-a-token-api.md)), the same kind the enroll API takes. Make one inside the Relay's container, such as `tooob-relay token new admin`, and paste it into the page's login form. With no Operator Token made, nobody can log in. Failed logins are counted apart from the enroll API's, so public guesses there never lock you out here: after 10 from one address, each within a minute of the last, that address is refused until a minute has passed. `tooob-relay token revoke admin` ends that token's sessions at once; a session also ends after 12 hours, or when the Relay restarts.
 
 **It is never on the Relay's public address.** tooob-relay serves it on port 8081 inside the container. Neither the front (Caddy) nor any public port reaches it. Reach it through a tunnel, then open <http://localhost:8081/>:
 
 - **Fly.io**: `fly proxy 8081 -a <app>`. The app's `fly.toml` has no `[[services]]` entry for 8081, so it isn't public.
 - **A VPS**: `ssh -L 8081:127.0.0.1:8081 <vps>`. Compose publishes the port on the VPS's own loopback only (`127.0.0.1:8081`), never on its public address.
 
-The page refuses requests that don't name `localhost`, and forms posted from any other website. Its session cookie is `HttpOnly` and `SameSite=Strict`, but not `Secure`: the tunnel ends in plain HTTP on localhost, where a browser would never send a `Secure` cookie back. A code it makes is shown once: copy it then.
+The page refuses requests that don't name `localhost`, and forms posted from any other website. Its session cookie is `HttpOnly` and `SameSite=Strict`, but not `Secure`: the tunnel ends in plain HTTP on localhost, and Safari never sends a `Secure` cookie back over plain HTTP, even there (Chrome and Firefox do). Cookies ignore ports, so while you are logged in, any other server you open on `localhost` in the same browser gets the cookie too: log out, or use a separate browser profile, when you open local servers you don't trust. A code it makes is shown once: copy it then.
 
 ## Checks
 
