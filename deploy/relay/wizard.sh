@@ -337,13 +337,18 @@ pause
 stage "Close the Relay: enroll your first Host"
 relay_cli() { vps "cd tooob-relay && docker compose exec -T relay tooob-relay $*"; }
 RELAY_CODE=""
-if ! relay_cli list | grep -q '^no Enrolled Keys'; then
+if ! ENROLLED=$(relay_cli list); then
+  warn "couldn't ask the Relay for its Enrolled Keys (ssh, or docker compose exec on the server, failed)."
+  SKIPPED+=("close the Relay: enroll a Host Key (see ../README.md, 'Closing an open Relay')")
+elif [[ "$ENROLLED" != "no Enrolled Keys"* ]]; then
   printf '  %s✓ the Relay is closed already; its Enrolled Keys:%s\n' "$GREEN" "$RESET"
-  relay_cli list | sed 's/^/    /'
-  note "Enroll more with: ssh $SSH_USER@$VPS_IP 'cd tooob-relay && docker compose exec relay tooob-relay enroll <key> --label <name>'"
+  printf '%s\n' "$ENROLLED" | sed 's/^/    /'
+  note "Enroll more with: ssh $SSH_USER@$VPS_IP 'cd tooob-relay && docker compose exec -T relay tooob-relay enroll <key> --label <name>'"
 else
   say "The Relay is open: it carries anyone's traffic. It closes when you enroll its first Host Key,"
   say "and then carries only traffic to or from an Enrolled Key. Visitors need nothing enrolled."
+  warn "if Hosts already use this Relay, the first enrollment cuts off every Host not enrolled:"
+  note "collect every Host Key first and follow ../README.md, 'Closing an open Relay' (choose 3 here)."
   say "  1  a Host you already made: paste its Host Key (tooob show NAME prints it)"
   say "  2  a Host you'll make next: print an Enrollment Code for tooob add --relay-code"
   say "  3  leave it open for now"
@@ -359,6 +364,7 @@ else
       fi ;;
     2)
       ask HOST_LABEL "Whose it is (the Host it enrolls gets this label):"
+      # `tooob-relay code` names the Relay by RELAY_DOMAIN, which compose.yaml sets.
       if RELAY_CODE=$(relay_cli code --label "$(printf %q "$HOST_LABEL")"); then
         RELAY_CODE="${RELAY_CODE%% *}"
         printf '  %s✓ Enrollment Code: %s%s\n' "$GREEN" "$RELAY_CODE" "$RESET"

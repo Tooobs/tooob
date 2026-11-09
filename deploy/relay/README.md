@@ -30,5 +30,5 @@ Point Hosts at it with `tooob add … --relay https://relay.example.com/`, or `t
 - Upgrade its Bootstrap: `./deploy.sh <newer Release>`. Caddy restarts, and Hosts and Visitors reconnect by themselves.
 - Logs: `ssh root@<server> 'cd tooob-relay && docker compose logs -f'`.
 - Stop it: `ssh root@<server> 'cd tooob-relay && docker compose down'`.
-- Enroll a Host: `ssh root@<server> 'cd tooob-relay && docker compose exec relay tooob-relay enroll <host key> --label <name>'`, or make an Enrollment Code for it with `tooob-relay code --label <name>` there. A Relay with no Enrolled Keys is open to everyone; the first one closes it. To close one that's open today, see [../README.md](../README.md#closing-an-open-relay).
+- Enroll a Host: `ssh root@<server> 'cd tooob-relay && docker compose exec -T relay tooob-relay enroll <host key> --label <name>'`, or make an Enrollment Code for it with `tooob-relay code --label <name>` there. A Relay with no Enrolled Keys is open to everyone; the first one closes it. To close one that's open today, see [../README.md](../README.md#closing-an-open-relay).
 - Watch the server's bandwidth: every byte a Visitor loads over the Relayed Path goes through here.

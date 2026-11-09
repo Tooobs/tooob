@@ -34,8 +34,8 @@ A Relay with no Enrolled Keys is open: it carries anyone's traffic ([ADR 0030](.
 The first enrollment closes it at once (the Relay rereads its Enrolled Keys every quarter second). From then on a Host whose key isn't enrolled loses the Relayed Path, and its Visitors can't reach it through this Relay, until its key is enrolled too. So close it without cutting anyone off:
 
 1. **Collect every Host Key first.** Each Owner of a Host on the Relay runs `tooob show NAME` and sends you the Host Key it prints. A Host Key isn't secret.
-2. **Enroll them all at once**, one `tooob-relay enroll <host key> --label <name>` each, back to back, inside the Relay's container. On a VPS: `ssh root@<server>`, then `cd tooob-relay && docker compose exec relay sh`. On Fly.io: `fly ssh console -a <app>`. Then `tooob-relay list` to check.
-3. **Owners of those Hosts do nothing.** A running Host carries on; it rechecks its Relay every 10 minutes and finds itself enrolled.
+2. **Enroll them all at once**, one `tooob-relay enroll <host key> --label <name>` each, back to back, inside the Relay's container. On a VPS: `ssh root@<server>`, then `cd tooob-relay && docker compose exec relay sh`. On Fly.io: `fly ssh console -a <app>`, which opens a shell in the container. Then `tooob-relay list` to check.
+3. **Owners of those Hosts do nothing.** The Relay forwards by its file of Enrolled Keys, so a running Host carries on without a break. Its own status rechecks the Relay every 10 minutes, so it can say "not carried" for up to that long.
 4. **A Host you missed** gets its key enrolled the same way, or its Owner gets an Enrollment Code (`tooob-relay code --label <name>`) and runs `tooob enroll NAME <code>`. Until then it's cut off from this Relay.
 
 Don't hand out Enrollment Codes to close an open Relay: the first one redeemed closes it while the other Hosts still wait to redeem theirs. Codes are for Hosts added once it's closed.

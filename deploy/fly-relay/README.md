@@ -36,14 +36,16 @@ A new Relay is open: it carries anyone's traffic. It closes when you enroll its 
 - **A Host you already made**: `tooob show NAME` prints its Host Key. Enroll it:
 
   ```sh
-  fly ssh console -a "$FLY_APP" -C "tooob-relay enroll <host key> --label <name>"
+  fly ssh console -a "$FLY_APP" -C "tooob-relay enroll <host key> --label photos"
   ```
 
 - **A Host you'll make next**: print an Enrollment Code, then `tooob add NAME TARGET --relay-code <code>` on the home box. The Relay stays open until that Host redeems it.
 
   ```sh
-  fly ssh console -a "$FLY_APP" -C "tooob-relay code --label <name>"
+  fly ssh console -a "$FLY_APP" -C "tooob-relay code --label sam"
   ```
+
+`-C` runs the command without a shell, so quotes don't group words: keep a label to one word here, or run `fly ssh console -a "$FLY_APP"` and type the command in its shell.
 
 `fly ssh console -a "$FLY_APP" -C "tooob-relay list"` shows the Enrolled Keys. A Relay that's open today, with Hosts already on it: see [../README.md](../README.md#closing-an-open-relay) before enrolling the first.
 
