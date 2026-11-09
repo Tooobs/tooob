@@ -178,6 +178,16 @@ async fn run() -> Result<()> {
         }
         Some("enroll") => {
             exactly(3, &[])?;
+            // `tooob enroll CODE`, the name left out: the code is never echoed whole.
+            if let (Some(only), None) = (words.get(1), words.get(2))
+                && let Ok(code) = Code::parse(only)
+                && home.find(only).is_err()
+            {
+                bail!(
+                    "say which Host to enroll:\n  tooob enroll NAME {}",
+                    code.shown()
+                );
+            }
             let host = named(&home, &typed, "enroll", words.get(1))?;
             let Some(text) = words.get(2) else {
                 return Err(typed.missing("say the Enrollment Code", "CODE"));
@@ -1761,9 +1771,39 @@ impl Typed {
     /// quoted so it can be pasted back: `tooob share PATH --invite sam`.
     fn missing(&self, what: &str, gap: &str) -> anyhow::Error {
         let at = self.words_at.last().map_or(0, |&i| i + 1);
-        let mut shown: Vec<String> = self.args.iter().map(|a| quote(a)).collect();
+        let mut shown: Vec<String> = self
+            .args
+            .iter()
+            .enumerate()
+            .map(|(i, a)| match self.is_code(i) {
+                true => hide_code(a),
+                false => quote(a),
+            })
+            .collect();
         shown.insert(at.min(shown.len()), gap.to_string());
         anyhow::anyhow!("{what}:\n  tooob {}", shown.join(" "))
+    }
+
+    /// Whether `args[i]` is an Enrollment Code: `--relay-code`'s value, or a word after
+    /// `enroll`'s first.
+    fn is_code(&self, i: usize) -> bool {
+        if i > 0 && flag_name(&self.args[i - 1]) == Some("relay-code") {
+            return true;
+        }
+        let words: Vec<&str> = self
+            .words_at
+            .iter()
+            .map(|&w| self.args[w].as_str())
+            .collect();
+        words.first() == Some(&"enroll") && self.words_at.iter().skip(2).any(|&w| w == i)
+    }
+}
+
+/// An Enrollment Code as it may be shown: never whole (ADR 0022, #132).
+fn hide_code(text: &str) -> String {
+    match Code::parse(text) {
+        Ok(code) => code.shown(),
+        Err(_) => "CODE".into(),
     }
 }
 

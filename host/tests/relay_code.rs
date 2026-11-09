@@ -53,6 +53,45 @@ fn add_with_a_relay_code_makes_a_host_enrolled_on_its_relay() {
     assert_eq!(enrollment(&home, "photos"), "enrolled");
 }
 
+/// A TestRelay speaks http, and a code alone names an https Relay, so the Host it would make
+/// can't reach it: what shows the code named the Relay is the one it tried.
+#[test]
+fn add_with_a_relay_code_alone_uses_the_relay_the_code_names() {
+    let home = Home::new();
+    let folder = a_folder();
+    let relay = TestRelay::start();
+    let code = relay.code(1, 3600);
+    let at = code.rsplit_once('/').unwrap().0.to_string();
+    let out = home.tooob(&[
+        "add",
+        "photos",
+        folder.path().to_str().unwrap(),
+        "--relay-code",
+        &code,
+    ]);
+    assert!(!out.status.success());
+    let said = stderr(&out);
+    assert!(said.contains(&format!("https://{at}")), "{said}");
+    assert!(!said.contains("--relay https://RELAY/"), "{said}");
+    assert_eq!(names(&home), 0);
+}
+
+#[test]
+fn a_typing_slip_never_echoes_the_whole_code() {
+    let home = Home::new();
+    let secret = "7Q4K-M2XD-9PHT-WB3C";
+    let code = format!("r.example.net/{secret}");
+    for args in [
+        vec!["add", "photos", "--relay-code", &code],
+        vec!["enroll", &code],
+        vec!["enroll", "nobody", &code],
+    ] {
+        let said = stderr(&home.tooob(&args));
+        assert!(!said.contains(secret), "{args:?}: {said}");
+        assert!(!said.trim().is_empty(), "{args:?}: refused, saying why");
+    }
+}
+
 #[test]
 fn share_with_a_relay_code_makes_a_host_enrolled_on_its_relay() {
     let home = Home::new();

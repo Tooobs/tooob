@@ -89,11 +89,18 @@ pub fn not_carried(relay: &str, key: &str) -> String {
 
 /// An Enrollment Code as its Relay Operator gives it: `r.tooobs.net/7Q4K-M2XD-9PHT-WB3C`, the
 /// Relay it's for, then its secret (ADR 0030, #132).
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct Code {
     /// The Relay as `named` writes it: its host and any port.
     pub relay: String,
     secret: String,
+}
+
+/// Never the whole secret, even in a debug print.
+impl std::fmt::Debug for Code {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Code({})", self.shown())
+    }
 }
 
 impl Code {
@@ -177,7 +184,9 @@ pub async fn redeem(
     .await
     .unwrap_or_else(|_| {
         Err(format!(
-            "{} didn't answer within {} seconds: the Enrollment Code wasn't redeemed",
+            "{} didn't answer within {} seconds, so the Enrollment Code may or may not have been \
+             redeemed: try the same command again, and if it says the code is used up, ask the \
+             Relay Operator for another",
             code.relay,
             REDEEM_WAIT.as_secs()
         ))
