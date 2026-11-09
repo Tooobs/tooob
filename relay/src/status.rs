@@ -13,7 +13,7 @@ use tracing::info;
 
 use crate::{
     enrolled::{List, Rule},
-    gate::{WRONG_TOKENS_ALLOWED, WRONG_TOKENS_WINDOW, WrongCodes, client_ip},
+    gate::{WrongCodes, client_ip},
     parse_key,
 };
 
@@ -30,7 +30,8 @@ pub(crate) struct Status {
     pub(crate) path: PathBuf,
     pub(crate) clients: Option<Clients>,
     pub(crate) sign_up: Option<String>,
-    pub(crate) wrong: Mutex<WrongCodes>,
+    /// Failed tokens, shared with the admin page's failed logins (#133).
+    pub(crate) wrong: Arc<Mutex<WrongCodes>>,
 }
 
 impl Status {
@@ -39,13 +40,14 @@ impl Status {
         path: PathBuf,
         clients: Option<Clients>,
         sign_up: Option<String>,
+        wrong: Arc<Mutex<WrongCodes>>,
     ) -> Arc<Status> {
         Arc::new(Status {
             rule,
             path,
             clients,
             sign_up,
-            wrong: Mutex::new(WrongCodes::new(WRONG_TOKENS_ALLOWED, WRONG_TOKENS_WINDOW)),
+            wrong,
         })
     }
 

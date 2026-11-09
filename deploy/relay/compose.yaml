@@ -14,6 +14,8 @@ services:
     ports:
       - "80:80"
       - "443:443"
+      # The admin page (#133): on this machine's loopback only, for `ssh -L`, never public.
+      - "127.0.0.1:8081:8081"
     volumes:
       # Caddy's certificates, kept across upgrades: Let's Encrypt limits how often it reissues them.
       - caddy-data:/data

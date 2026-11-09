@@ -6,13 +6,16 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use iroh_relay::server::{RelayConfig, Server, ServerConfig};
 use tracing::{info, warn};
 
+mod admin;
 pub mod config;
 mod enrolled;
 mod gate;
+mod presence;
 mod status;
 
 pub use enrolled::{DEFAULT_PATH, List, LiveCode, Refusal, Rule, access, now};
 pub use gate::{WRONG_CODES_ALLOWED, WRONG_TOKENS_ALLOWED, WRONG_TOKENS_WINDOW, WRONG_WINDOW};
+pub use presence::LastSeen;
 pub use status::BODY_MAX;
 
 /// How often a running Relay looks at its Enrolled Keys' file for a change.
@@ -24,8 +27,13 @@ pub struct Relay {
     _watch: Aborting,
     rule: Rule,
     status: Option<Aborting>,
+    admin: Option<Aborting>,
     enrolled: PathBuf,
     sign_up: Option<String>,
+    presence: presence::Presence,
+    clients: Option<iroh_relay::server::clients::Clients>,
+    /// Failed Operator Tokens, per address: the enroll API's and the admin page's logins alike.
+    wrong_tokens: Arc<std::sync::Mutex<gate::WrongCodes>>,
 }
 
 impl Relay {
@@ -36,18 +44,21 @@ impl Relay {
         let list = List::load(&enrolled)?;
         rule.follow(&list);
         say_access(&list, &enrolled);
+        let presence = presence::Presence::default();
+        let path = enrolled.clone();
         if let Some(relay) = config.relay.as_mut() {
             relay.forward = Arc::new(rule.clone());
             relay.access = Arc::new(gate::Gate::new(
                 enrolled.clone(),
                 rule.clone(),
                 relay.access.clone(),
+                presence.clone(),
             ));
         }
         let server = Server::spawn(config).await.map_err(|e| e.to_string())?;
         let clients = server.relay_service().map(|s| s.clients().clone());
         let kept = rule.clone();
-        let path = enrolled.clone();
+        let kept_clients = clients.clone();
         let watch = tokio::spawn(async move {
             // The file is small: read it each time, rather than trust a timestamp's granularity.
             let mut seen = list;
@@ -84,9 +95,40 @@ impl Relay {
             _watch: Aborting(watch),
             rule: kept,
             status: None,
+            admin: None,
             enrolled: path,
             sign_up: None,
+            presence,
+            clients: kept_clients,
+            wrong_tokens: Arc::new(std::sync::Mutex::new(gate::WrongCodes::new(
+                WRONG_TOKENS_ALLOWED,
+                WRONG_TOKENS_WINDOW,
+            ))),
         })
+    }
+
+    /// Serve the admin page (#133) at `addr`: it logs in with an Operator Token, and is meant for
+    /// a tunnel, never the Relay's public address. `domain` is this Relay's, which the Enrollment
+    /// Codes it makes name. Returns where it listens.
+    pub async fn serve_admin(
+        &mut self,
+        addr: impl Into<SocketAddr>,
+        domain: Option<String>,
+    ) -> Result<SocketAddr, String> {
+        let listener = tokio::net::TcpListener::bind(addr.into())
+            .await
+            .map_err(|e| e.to_string())?;
+        let at = listener.local_addr().map_err(|e| e.to_string())?;
+        let page = admin::Admin::new(
+            self.enrolled.clone(),
+            self.rule.clone(),
+            self.presence.clone(),
+            self.clients.clone(),
+            domain,
+            self.wrong_tokens.clone(),
+        );
+        self.admin = Some(Aborting(tokio::spawn(page.serve(listener))));
+        Ok(at)
     }
 
     /// A Relay over plain HTTP at `addr`, as `iroh-relay --dev` runs, with no metrics.
@@ -133,6 +175,7 @@ impl Relay {
             self.enrolled.clone(),
             self.server.relay_service().map(|s| s.clients().clone()),
             self.sign_up.clone(),
+            self.wrong_tokens.clone(),
         );
         let task = tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
@@ -164,6 +207,40 @@ impl Drop for Aborting {
     fn drop(&mut self) {
         self.0.abort();
     }
+}
+
+/// An Enrollment Code's uses left, in words.
+pub fn uses_text(uses: u32) -> String {
+    match uses {
+        1 => "1 use left".to_string(),
+        n => format!("{n} uses left"),
+    }
+}
+
+/// When an Enrollment Code expiring at `expires` (Unix seconds) expires, in words.
+pub fn expiry_text(expires: u64) -> String {
+    let left = expires.saturating_sub(now());
+    match left {
+        0 => "expired".to_string(),
+        s if s >= 86_400 => format!("expires in {} days", s.div_ceil(86_400)),
+        s if s >= 3_600 => format!("expires in {} hours", s.div_ceil(3_600)),
+        s => format!("expires in {} minutes", s.div_ceil(60)),
+    }
+}
+
+/// A length of time such as 7d, 12h, 30m or 90s, in seconds.
+pub fn parse_duration(s: &str) -> Result<u64, String> {
+    let bad = || format!("{s} isn't a length of time such as 7d, 12h or 30m");
+    let (n, unit) = s.split_at(s.len().saturating_sub(1));
+    let n: u64 = n.parse().map_err(|_| bad())?;
+    let per = match unit {
+        "d" => 86_400,
+        "h" => 3_600,
+        "m" => 60,
+        "s" => 1,
+        _ => return Err(bad()),
+    };
+    n.checked_mul(per).ok_or_else(bad)
 }
 
 /// Log whether the Relay is open or carries only Enrolled Keys' traffic.

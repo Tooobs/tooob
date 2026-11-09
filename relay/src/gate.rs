@@ -16,7 +16,10 @@ use iroh_base::EndpointId;
 use iroh_relay::server::{Access, AccessControl, ClientRequest, ConnectionId, DynAccessControl};
 use tracing::{info, warn};
 
-use crate::enrolled::{List, Refusal, Rule, now};
+use crate::{
+    enrolled::{List, Refusal, Rule, now},
+    presence::Presence,
+};
 
 /// How many wrong codes an address may present before it's refused.
 pub const WRONG_CODES_ALLOWED: u32 = 5;
@@ -71,15 +74,22 @@ pub(crate) struct Gate {
     /// The check the config file asks for (stock iroh-relay's `access`), applied after this one.
     next: Arc<dyn DynAccessControl>,
     wrong: Mutex<WrongCodes>,
+    presence: Presence,
 }
 
 impl Gate {
-    pub(crate) fn new(path: PathBuf, rule: Rule, next: Arc<dyn DynAccessControl>) -> Gate {
+    pub(crate) fn new(
+        path: PathBuf,
+        rule: Rule,
+        next: Arc<dyn DynAccessControl>,
+        presence: Presence,
+    ) -> Gate {
         Gate {
             path,
             rule,
             next,
             wrong: Mutex::new(WrongCodes::new(WRONG_CODES_ALLOWED, WRONG_WINDOW)),
+            presence,
         }
     }
 
@@ -159,10 +169,16 @@ impl AccessControl for Gate {
                 reason: Some(reason),
             };
         }
-        self.next.on_connect(request).await
+        let access = self.next.on_connect(request).await;
+        if access == Access::Allow {
+            self.presence.connected(key, request.connection_id());
+        }
+        access
     }
 
     fn on_disconnect(&self, endpoint_id: EndpointId, connection_id: ConnectionId) {
+        let keep = self.rule.is_enrolled(endpoint_id);
+        self.presence.disconnected(endpoint_id, connection_id, keep);
         self.next.on_disconnect(endpoint_id, connection_id)
     }
 }

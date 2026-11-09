@@ -5,7 +5,7 @@ use std::{path::PathBuf, process::ExitCode};
 
 use clap::{Parser, Subcommand};
 use iroh_base::EndpointId;
-use tooob_relay::{List, Relay, config, parse_key};
+use tooob_relay::{List, Relay, config, expiry_text, parse_duration, parse_key, uses_text};
 use tracing_subscriber::{EnvFilter, prelude::*};
 
 #[cfg(target_env = "musl")]
@@ -29,6 +29,10 @@ struct Cli {
     /// Where to answer `GET /__tooob/relay.json` (open or enrolled), if anywhere.
     #[clap(long, env = "TOOOB_RELAY_STATUS_ADDR")]
     status_addr: Option<std::net::SocketAddr>,
+    /// Where to serve the admin page, if anywhere: it logs in with an Operator Token, and is
+    /// meant for a tunnel, never the Relay's public address.
+    #[clap(long, env = "TOOOB_RELAY_ADMIN_ADDR")]
+    admin_addr: Option<std::net::SocketAddr>,
     /// This Relay's domain, which an Enrollment Code names (the Relay image's RELAY_DOMAIN).
     #[clap(long, env = "RELAY_DOMAIN")]
     domain: Option<String>,
@@ -178,13 +182,15 @@ fn main() -> ExitCode {
             }
         })
         .map(|said| println!("{said}")),
-        None => serve(
-            cli.dev,
-            cli.config_path,
-            cli.enrolled,
-            cli.status_addr,
-            cli.sign_up_url,
-        ),
+        None => serve(Serve {
+            dev: cli.dev,
+            config_path: cli.config_path,
+            enrolled: cli.enrolled,
+            status_addr: cli.status_addr,
+            sign_up_url: cli.sign_up_url,
+            admin_addr: cli.admin_addr,
+            domain: cli.domain,
+        }),
     };
     match done {
         Ok(()) => ExitCode::SUCCESS,
@@ -192,38 +198,6 @@ fn main() -> ExitCode {
             eprintln!("tooob-relay: {e}");
             ExitCode::FAILURE
         }
-    }
-}
-
-/// A length of time such as 7d, 12h, 30m or 90s, in seconds.
-fn parse_duration(s: &str) -> Result<u64, String> {
-    let bad = || format!("{s} isn't a length of time such as 7d, 12h or 30m");
-    let (n, unit) = s.split_at(s.len().saturating_sub(1));
-    let n: u64 = n.parse().map_err(|_| bad())?;
-    let per = match unit {
-        "d" => 86_400,
-        "h" => 3_600,
-        "m" => 60,
-        "s" => 1,
-        _ => return Err(bad()),
-    };
-    n.checked_mul(per).ok_or_else(bad)
-}
-
-fn uses_text(uses: u32) -> String {
-    match uses {
-        1 => "1 use left".to_string(),
-        n => format!("{n} uses left"),
-    }
-}
-
-fn expiry_text(expires: u64) -> String {
-    let left = expires.saturating_sub(tooob_relay::now());
-    match left {
-        0 => "expired".to_string(),
-        s if s >= 86_400 => format!("expires in {} days", s.div_ceil(86_400)),
-        s if s >= 3_600 => format!("expires in {} hours", s.div_ceil(3_600)),
-        s => format!("expires in {} minutes", s.div_ceil(60)),
     }
 }
 
@@ -239,13 +213,27 @@ fn edit(
     Ok(())
 }
 
-/// Run the Relay until it stops or is interrupted.
-fn serve(
+struct Serve {
     dev: bool,
     config_path: Option<PathBuf>,
     enrolled: PathBuf,
     status_addr: Option<std::net::SocketAddr>,
     sign_up_url: Option<String>,
+    admin_addr: Option<std::net::SocketAddr>,
+    domain: Option<String>,
+}
+
+/// Run the Relay until it stops or is interrupted.
+fn serve(
+    Serve {
+        dev,
+        config_path,
+        enrolled,
+        status_addr,
+        sign_up_url,
+        admin_addr,
+        domain,
+    }: Serve,
 ) -> Result<(), String> {
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
@@ -267,6 +255,10 @@ fn serve(
         if let Some(addr) = status_addr {
             let at = relay.serve_status(addr).await?;
             tracing::info!("tooob-relay: /__tooob/relay.json at http://{at}");
+        }
+        if let Some(addr) = admin_addr {
+            let at = relay.serve_admin(addr, domain).await?;
+            tracing::info!("tooob-relay: the admin page at http://{at}, for a tunnel");
         }
         tokio::select! {
             biased;

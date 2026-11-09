@@ -33,4 +33,5 @@ step "release.sh tests" test node --test release.test.mjs
 step "deploy/bundle.sh tests" deploy/check node --test bundle.test.mjs
 step "front.caddy tests" deploy/check node --test front.test.mjs
 step "precompress.sh tests" deploy/check node --test precompress.test.mjs
+step "admin page port tests" deploy/check node --test admin.test.mjs
 echo "check.sh: all passed"

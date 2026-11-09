@@ -64,6 +64,8 @@ impl Code {
 /// An Enrollment Code that can still enroll a Host, as `tooob-relay codes` lists it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveCode<'a> {
+    /// Its hash: names it, as the admin page does to cancel it, without being it.
+    pub id: &'a str,
     pub label: &'a str,
     pub uses_left: u32,
     /// Unix seconds.
@@ -107,6 +109,11 @@ fn normalize(code: &str) -> String {
 
 fn sha256(code: &str) -> String {
     hex_sha256(&normalize(code))
+}
+
+/// The hash the list keeps of an Operator Token, as `verify_operator_token` reads it.
+pub(crate) fn token_hash(presented: &str) -> String {
+    hex_sha256(presented.trim())
 }
 
 fn hex_sha256(text: &str) -> String {
@@ -269,10 +276,26 @@ impl List {
             .iter()
             .filter(move |c| c.live(now))
             .map(|c| LiveCode {
+                id: &c.sha256,
                 label: &c.label,
                 uses_left: c.uses_left,
                 expires: c.expires,
             })
+    }
+
+    /// Cancel the live code whose id (`LiveCode::id`) is `id`; whether there was one.
+    pub fn cancel_id(&mut self, id: &str, now: u64) -> bool {
+        match self
+            .codes
+            .iter_mut()
+            .find(|c| c.live(now) && c.sha256 == id)
+        {
+            Some(c) => {
+                c.cancelled = true;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Cancel the live code that is `code_or_label`, or every live one so labelled; how many.
@@ -346,6 +369,17 @@ impl List {
             .iter()
             .find(|t| t.sha256 == hash)
             .map(|t| t.label.as_str())
+    }
+
+    /// Whether an Operator Token whose hash is `hash` (`token_hash`) is still this Relay's: how an
+    /// admin session (#133) ends when its token is revoked, without keeping the token itself.
+    pub(crate) fn has_operator_token_hash(&self, hash: &str) -> bool {
+        self.tokens.iter().any(|t| t.sha256 == hash)
+    }
+
+    /// Whether this Relay has any Operator Token: with none, nobody can log in to the admin page.
+    pub fn has_operator_tokens(&self) -> bool {
+        !self.tokens.is_empty()
     }
 
     /// The Operator Tokens' labels; never the tokens, which the list doesn't have.
