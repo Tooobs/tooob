@@ -27,6 +27,12 @@ test('the image ships the plain-http Caddyfile and has Caddy parse it at build',
   assert.match(dockerfile, /caddy adapt --config \/etc\/caddy\/plain-http\.Caddyfile/);
 });
 
+test('every base image is named in full, so podman builds it with no registries.conf', () => {
+  const froms = read('../relay/image/Dockerfile').match(/^FROM \S+/gm);
+  assert.ok(froms.length >= 4);
+  for (const from of froms) assert.match(from, /^FROM docker\.io\/library\//, from);
+});
+
 test('test-relay.sh starts it with podman, its own volume, a Sign-up Page, and closes it', () => {
   const sh = code(read('../relay/test-relay.sh'));
   assert.match(sh, /podman run -d --name "\$name"/);
@@ -34,8 +40,10 @@ test('test-relay.sh starts it with podman, its own volume, a Sign-up Page, and c
   assert.match(sh, /-e TOOOB_RELAY_SIGN_UP_URL="\$sign_up"/);
   assert.match(sh, /-v "\$name-data:\/data"/);
   assert.match(sh, /-p 127\.0\.0\.1:8081:8081/, 'the admin page on loopback only');
-  // Closed from the start (ADR 0030): a stand-in key enrolled while none is.
-  assert.match(sh, /tooob-relay enroll "\$closer" --label/);
+  // Closed from the start (ADR 0030): a fresh stand-in key, its secret thrown away, enrolled into a
+  // new volume before the Relay first serves, and only then.
+  assert.match(sh, /if ! podman volume exists "\$name-data"; then\n[\s\S]*?openssl genpkey -algorithm ed25519[\s\S]*?podman run --rm -v "\$name-data:\/data" "\$name" \\\n\s+tooob-relay enroll "\$closer" --label[\s\S]*?\nfi\npodman run -d/);
+  assert.doesNotMatch(sh, /podman exec "\$name" tooob-relay enroll/);
   assert.match(sh, /podman rm -f "\$name"/, 'stop');
   assert.doesNotMatch(sh, /fly|docker /i, 'podman only, no host platform');
 });

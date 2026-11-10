@@ -4,7 +4,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -43,9 +43,11 @@ async function releases(byTag, latest) {
 
 /** ./bundle.sh ARGS... into a fresh directory (or `{ dir }`, last): its exit status, output and that directory. */
 function bundle(url, ...args) {
-  const dir = typeof args.at(-1) === 'object' ? args.pop().dir : mkdtempSync(join(scratch, 'out-'));
+  const opts = typeof args.at(-1) === 'object' ? args.pop() : {};
+  const dir = opts.dir ?? mkdtempSync(join(scratch, 'out-'));
   return new Promise((resolve) => {
-    const child = spawn(join(DEPLOY, 'bundle.sh'), [dir, ...args], { env: { ...process.env, TOOOB_RELEASES: url } });
+    const env = { ...process.env, TOOOB_RELEASES: url, ...(opts.path && { PATH: opts.path }) };
+    const child = spawn(join(DEPLOY, 'bundle.sh'), [dir, ...args], { env });
     let stdout = '', stderr = '';
     child.stdout.on('data', (d) => (stdout += d));
     child.stderr.on('data', (d) => (stderr += d));
@@ -67,6 +69,31 @@ test('with no Release named, the newest', async () => {
   const out = await bundle(url);
   assert.equal(out.status, 0, out.stderr);
   assert.equal(readFileSync(join(out.dir, 'www/index.html'), 'utf8'), '<p>Bootstrap 0.2.0</p>\n');
+});
+
+/** A PATH with the tools bundle.sh needs but no shasum, as on Arch (#142): sha256sum only, which
+ * here is whichever SHA-256 tool this box has, so the test runs on macOS too. */
+function pathWithoutShasum() {
+  const bin = mkdtempSync(join(scratch, 'bin-'));
+  const which = (tool) => execFileSync('/bin/sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).trim();
+  for (const tool of ['sh', 'curl', 'tar', 'xz', 'sed', 'cut', 'rm', 'mv', 'cp', 'dirname']) {
+    symlinkSync(which(tool), join(bin, tool));
+  }
+  let real;
+  try { real = which('sha256sum'); } catch { real = `${which('shasum')} -a 256`; }
+  writeFileSync(join(bin, 'sha256sum'), `#!/bin/sh\nexec ${real} "$@"\n`, { mode: 0o755 });
+  return bin;
+}
+
+test('with no shasum (Arch), sha256sum checks the Bundle and prints its hash', async () => {
+  const b = aBundle('0.1.0');
+  const url = await releases({ 'v0.1.0': b }, 'v0.1.0');
+  const out = await bundle(url, '0.1.0', { path: pathWithoutShasum() });
+  assert.equal(out.status, 0, out.stderr);
+  assert.match(out.stdout, new RegExp(`Release 0\\.1\\.0.*Bundle hash ${b.hash}$`, 'm'));
+  const bad = await releases({ 'v0.1.0': { ...b, archive: aBundle('0.1.0-evil').archive } }, 'v0.1.0');
+  const refused = await bundle(bad, '0.1.0', { path: pathWithoutShasum() });
+  assert.match(refused.stderr, /doesn't match its checksum/);
 });
 
 test("a Bundle that doesn't match its checksum is refused, and nothing is left in DIR/www", async () => {

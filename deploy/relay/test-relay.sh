@@ -10,9 +10,6 @@
 set -eu
 cd "$(dirname "$0")"
 name=tooob-test-relay
-# A stand-in key nobody's Host has (the ed25519 base point), enrolled so the Relay starts closed
-# (ADR 0030: its first Enrolled Key closes it) without carrying any Host of yours.
-closer=5866666666666666666666666666666666666666666666666666666666666666
 usage="usage: ./test-relay.sh start HOST:PORT SIGN_UP_URL [RELEASE | --local] | stop"
 
 case ${1:-} in
@@ -36,6 +33,15 @@ cp -R ../../relay/Cargo.toml ../../relay/Cargo.lock ../../relay/src ../../relay/
 podman build -t "$name" "$ctx/image"
 
 podman rm -f "$name" >/dev/null 2>&1 || true
+# The first start closes it (ADR 0030: its first Enrolled Key closes a Relay) before it ever serves:
+# a stand-in key, fresh, whose secret is thrown away at once, so no Host can ever be it. Enrolled
+# into a new volume only: remove it later and the Relay stays open across restarts.
+if ! podman volume exists "$name-data"; then
+  podman volume create "$name-data" >/dev/null
+  closer=$(openssl genpkey -algorithm ed25519 | openssl pkey -pubout -outform DER | tail -c 32 | od -An -tx1 | tr -d ' \n')
+  podman run --rm -v "$name-data:/data" "$name" \
+    tooob-relay enroll "$closer" --label "stand-in: keeps this test Relay closed"
+fi
 podman run -d --name "$name" \
   -p "$port:8080" \
   -p 127.0.0.1:8081:8081 \
@@ -44,7 +50,7 @@ podman run -d --name "$name" \
   -e RELAY_DOMAIN="$address" \
   -e TOOOB_RELAY_SIGN_UP_URL="$sign_up" \
   "$name" >/dev/null
-podman exec "$name" tooob-relay enroll "$closer" --label "stand-in: keeps this test Relay closed"
-echo "test-relay.sh: http://$address/ is up, closed, its Sign-up Page $sign_up"
+echo "test-relay.sh: http://$address/ is up, its Sign-up Page $sign_up"
+podman exec "$name" tooob-relay list
 echo "  its admin page is on 127.0.0.1:8081 here (ssh -L 8081:127.0.0.1:8081 to reach it)"
 echo "  tooob-relay there: podman exec $name tooob-relay list (or token new, enroll, code)"

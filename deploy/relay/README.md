@@ -42,7 +42,7 @@ To try what needs a closed Relay (Enrolled Keys, Operator Tokens, the enroll API
 ./test-relay.sh stop
 ```
 
-`HOST:PORT` is the box's address on your network (pick a port above 1024 for rootless podman, and let your firewall allow it there); the Sign-up Page is any page you name. It starts closed: it enrolls a stand-in key no Host has, so it carries only the Hosts you enroll. Its Enrolled Keys and Operator Tokens are in the podman volume `tooob-test-relay-data`, kept by `stop` and the next `start`; `podman volume rm tooob-test-relay-data` starts afresh.
+`HOST:PORT` is the box's address on your network (pick a port above 1024 for rootless podman, and let your firewall allow it there); the Sign-up Page is any page you name. It starts closed: its first start enrolls a stand-in key, made fresh and its secret thrown away, before it serves, so it carries only the Hosts you enroll. Remove that key (`tooob-relay list` shows it) and it stays open across restarts. Its Enrolled Keys and Operator Tokens are in the podman volume `tooob-test-relay-data`, kept by `stop` and the next `start`; `podman volume rm tooob-test-relay-data` starts afresh.
 
 - Point a Host at it: `tooob add … --relay http://192.168.0.79:8480/`.
 - Its `tooob-relay`: `podman exec tooob-test-relay tooob-relay list` (or `enroll`, `token new`, `code`).

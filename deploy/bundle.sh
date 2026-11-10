@@ -9,6 +9,9 @@ set -eu
 RELEASES=${TOOOB_RELEASES:-https://github.com/Tooobs/tooob/releases}
 [ $# -ge 1 ] || { echo "usage: bundle.sh DIR [RELEASE | --local]" >&2 && exit 1; }
 dir=$1 release=${2:-}
+# sha256sum where there is one (Linux, including boxes without Perl's shasum such as Arch, #142),
+# else shasum (macOS).
+if command -v sha256sum >/dev/null; then sum=sha256sum; else sum="shasum -a 256"; fi
 [ ! -e "$dir/www" ] || { echo "bundle.sh: $dir already has a www/: not mixing another Bundle into it" >&2 && exit 1; }
 
 if [ "$release" = --local ]; then
@@ -21,8 +24,6 @@ else
   for file in tooob-bootstrap.tar.xz tooob-bootstrap.tar.xz.sha256; do
     curl -fsSL -o "$dir/$file" "$from/$file" || { echo "bundle.sh: couldn't download $from/$file" >&2 && exit 1; }
   done
-  # shasum on macOS, sha256sum on Linux boxes without Perl's shasum (Arch, #142).
-  if command -v sha256sum >/dev/null; then sum=sha256sum; else sum="shasum -a 256"; fi
   (cd "$dir" && $sum -c --quiet tooob-bootstrap.tar.xz.sha256) ||
     { echo "bundle.sh: tooob-bootstrap.tar.xz doesn't match its checksum: not using it" >&2 && exit 1; }
   tar -xJf "$dir/tooob-bootstrap.tar.xz" -C "$dir"
@@ -31,4 +32,4 @@ else
   what="the Bootstrap Bundle of Release $(sed -n 's/^ *"release": "\(.*\)",$/\1/p' "$dir/www/__tooob/version.json")"
 fi
 
-echo "bundle.sh: $what, Bundle hash $(shasum -a 256 "$dir/www/__tooob/version.json" | cut -d' ' -f1)"
+echo "bundle.sh: $what, Bundle hash $($sum "$dir/www/__tooob/version.json" | cut -d' ' -f1)"
