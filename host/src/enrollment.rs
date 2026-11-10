@@ -36,8 +36,84 @@ impl Enrollment {
     }
 }
 
-/// Ask the Relay at `relay` (its URL) whether it carries the Host whose Host Key is `key`.
-pub async fn check(relay: &str, key: &str) -> Enrollment {
+/// What a Host found when it asked its Relay: whether it's carried, and, when it isn't, the
+/// Relay's Sign-up Page as relay.json names it (ADR 0031, #141).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Found {
+    pub enrollment: Enrollment,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sign_up: Option<String>,
+}
+
+impl Found {
+    pub fn new(enrollment: Enrollment) -> Found {
+        Found {
+            enrollment,
+            sign_up: None,
+        }
+    }
+
+    /// The Sign-up Page link for the Host Key `key`, if it isn't carried and its Relay has one.
+    pub fn link(&self, key: &str) -> Option<String> {
+        match self.enrollment {
+            Enrollment::NotEnrolled => sign_up_link(self.sign_up.as_deref()?, key),
+            _ => None,
+        }
+    }
+
+    /// Whether it's worth checking again soon: not carried, with a Sign-up Page to sign up on.
+    fn waiting_on_sign_up(&self) -> bool {
+        self.enrollment == Enrollment::NotEnrolled && self.sign_up.is_some()
+    }
+}
+
+/// `sign_up?key=<key>`, joined onto any query it has; None if it isn't an http(s) URL.
+pub fn sign_up_link(sign_up: &str, key: &str) -> Option<String> {
+    let mut url = reqwest::Url::parse(sign_up).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    url.query_pairs_mut().append_pair("key", key);
+    Some(url.to_string())
+}
+
+/// Ask the Relay at `relay` (its URL) whether it carries the Host whose Host Key is `key`, and
+/// if not, for its Sign-up Page.
+pub async fn check(relay: &str, key: &str) -> Found {
+    let enrollment = ask(relay, key).await;
+    let sign_up = match enrollment {
+        Enrollment::NotEnrolled => sign_up_of(relay).await,
+        _ => None,
+    };
+    Found {
+        enrollment,
+        sign_up,
+    }
+}
+
+/// The Sign-up Page the Relay's relay.json names as `sign_up`, if any.
+async fn sign_up_of(relay: &str) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Status {
+        sign_up: Option<String>,
+    }
+    let url = reqwest::Url::parse(relay)
+        .ok()?
+        .join("/__tooob/relay.json")
+        .ok()?;
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .ok()?;
+    let answer = http.get(url).send().await.ok()?;
+    if !answer.status().is_success() {
+        return None;
+    }
+    let status: Status = serde_json::from_slice(&answer.bytes().await.ok()?).ok()?;
+    status.sign_up.filter(|s| sign_up_link(s, "").is_some())
+}
+
+async fn ask(relay: &str, key: &str) -> Enrollment {
     #[derive(serde::Deserialize)]
     struct Answer {
         enrolled: bool,
@@ -79,12 +155,19 @@ pub fn named(relay: &str) -> String {
     }
 }
 
-/// What to tell the Owner of a Host the Relay at `relay` doesn't carry.
-pub fn not_carried(relay: &str, key: &str) -> String {
+/// What to tell the Owner of a Host the Relay at `relay` doesn't carry, with its Sign-up Page
+/// link if it has one.
+pub fn not_carried(relay: &str, key: &str, link: Option<&str>) -> String {
     format!(
-        "{} doesn't carry this Host yet: give its Relay Operator this Host Key: {key}",
-        named(relay)
+        "{} doesn't carry this Host yet: give its Relay Operator this Host Key: {key}{}",
+        named(relay),
+        or_sign_up(link)
     )
+}
+
+fn or_sign_up(link: Option<&str>) -> String {
+    link.map(|l| format!("; or sign up: {l}"))
+        .unwrap_or_default()
 }
 
 /// An Enrollment Code as its Relay Operator gives it: `r.tooobs.net/7Q4K-M2XD-9PHT-WB3C`, the
@@ -199,17 +282,20 @@ fn file(state_dir: &Path) -> PathBuf {
     state_dir.join("enrollment.json")
 }
 
-/// What the Host in `state_dir` last found; unknown if it never asked.
-pub fn last_found(state_dir: &Path) -> Enrollment {
-    std::fs::read(file(state_dir))
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
+/// What the Host in `state_dir` last found; unknown if it never asked. A file kept before #141
+/// holds the enrollment alone.
+pub fn last_found(state_dir: &Path) -> Found {
+    let Ok(bytes) = std::fs::read(file(state_dir)) else {
+        return Found::default();
+    };
+    serde_json::from_slice(&bytes)
+        .or_else(|_| serde_json::from_slice(&bytes).map(Found::new))
         .unwrap_or_default()
 }
 
 /// Keep what was found, for `tooob ls`. Written whole and renamed in; a failure only loses it.
-pub fn keep(state_dir: &Path, found: Enrollment) {
-    if let Ok(json) = serde_json::to_vec(&found) {
+pub fn keep(state_dir: &Path, found: &Found) {
+    if let Ok(json) = serde_json::to_vec(found) {
         let _ = crate::save_privately(&file(state_dir), &json);
     }
 }
@@ -233,18 +319,21 @@ impl Watch {
     }
 
     /// Take in one check; what to log, if anything, and whether it's a warning.
-    pub fn update(&mut self, now: Enrollment) -> Option<(bool, String)> {
+    pub fn update(&mut self, found: &Found) -> Option<(bool, String)> {
+        let now = found.enrollment;
         let carried = now.carried()?;
         let before = self.carried.replace(carried);
         let relay = named(&self.relay);
+        let link = found.link(&self.key);
         match (before, carried) {
-            (None, false) => Some((true, not_carried(&self.relay, &self.key))),
+            (None, false) => Some((true, not_carried(&self.relay, &self.key, link.as_deref()))),
             (Some(true), false) => Some((
                 true,
                 format!(
                     "{relay} doesn't carry this Host any more: give its Relay Operator this \
-                     Host Key: {}",
-                    self.key
+                     Host Key: {}{}",
+                    self.key,
+                    or_sign_up(link.as_deref())
                 ),
             )),
             (Some(false), true) => Some((
@@ -260,22 +349,37 @@ impl Watch {
 }
 
 /// Check every `every` while the Host runs (and once at once), logging what changes and keeping
-/// what's found for `tooob ls`. Stops when dropped.
-pub fn keep_checking(mut watch: Watch, state_dir: PathBuf, every: Duration) -> Checking {
+/// what's found for `tooob ls`; every `soon` instead while it isn't carried and its Relay has a
+/// Sign-up Page, so signing up is picked up quickly (#141). Stops when dropped.
+pub fn keep_checking(
+    mut watch: Watch,
+    state_dir: PathBuf,
+    every: Duration,
+    soon: Duration,
+) -> Checking {
     Checking(tokio::spawn(async move {
+        let mut last = Found::default();
         loop {
-            let now = check(&watch.relay, &watch.key).await;
-            if now != Enrollment::Unknown {
-                keep(&state_dir, now);
+            let found = check(&watch.relay, &watch.key).await;
+            if found.enrollment != Enrollment::Unknown {
+                keep(&state_dir, &found);
+                last = found.clone();
             }
-            if let Some((warning, said)) = watch.update(now) {
-                let fields = crate::fields! {"enrollment" => now};
+            if let Some((warning, said)) = watch.update(&found) {
+                let fields = crate::fields! {
+                    "enrollment" => found.enrollment,
+                    "sign_up" => found.link(&watch.key),
+                };
                 match warning {
                     true => crate::log::event("warning", fields, &format!("warning: {said}")),
                     false => crate::log::event("enrollment", fields, &said),
                 }
             }
-            tokio::time::sleep(every).await;
+            let wait = match last.waiting_on_sign_up() {
+                true => soon.min(every),
+                false => every,
+            };
+            tokio::time::sleep(wait).await;
         }
     }))
 }

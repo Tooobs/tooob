@@ -395,9 +395,10 @@ async fn say_if_not_carried(host: &Entry) {
         && let Some(key) = host.host_key()
     {
         let found = enrollment::check(url.as_str(), &key).await;
-        enrollment::keep(&host.state_dir, found);
-        if found == Enrollment::NotEnrolled {
-            say(&[enrollment::not_carried(url.as_str(), &key)]);
+        enrollment::keep(&host.state_dir, &found);
+        if found.enrollment == Enrollment::NotEnrolled {
+            let link = found.link(&key);
+            say(&[enrollment::not_carried(url.as_str(), &key, link.as_deref())]);
         }
     }
 }
@@ -455,7 +456,10 @@ async fn redeem(host: &Entry, code: &Code) -> Result<(), String> {
     }
     let key = tooob::host::load_host_key(&host.state_dir).map_err(|e| format!("{e:#}"))?;
     enrollment::redeem(&url, key, code).await?;
-    enrollment::keep(&host.state_dir, Enrollment::Enrolled);
+    enrollment::keep(
+        &host.state_dir,
+        &enrollment::Found::new(Enrollment::Enrolled),
+    );
     say(&[format!(
         "{} is enrolled on {} ({})",
         host.name,
@@ -719,6 +723,9 @@ async fn ls(home: &Home, json: bool) -> Result<()> {
         uploads_off: Option<String>,
         /// Whether its Relay carries it, as last found (#130); None with no Relay of its own.
         enrollment: Option<Enrollment>,
+        /// Its Relay's Sign-up Page link with its Host Key, while it isn't carried (#141).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        sign_up: Option<String>,
         #[serde(skip)]
         not_carried: Option<String>,
     }
@@ -740,18 +747,26 @@ async fn ls(home: &Home, json: bool) -> Result<()> {
             ),
             false => (None, None),
         };
-        let enrollment = match host.settings.network() {
+        let found = match host.settings.network() {
             Ok(Network::Relay(_)) => Some(enrollment::last_found(&host.state_dir)),
             _ => None,
         };
-        let not_carried = match (enrollment, host.host_key()) {
-            (Some(Enrollment::NotEnrolled), Some(key)) => {
-                Some(enrollment::not_carried(&host.settings.relay, &key))
-            }
+        let key = host.host_key();
+        let sign_up = found
+            .as_ref()
+            .zip(key.as_deref())
+            .and_then(|(found, key)| found.link(key));
+        let not_carried = match (found.as_ref().map(|f| f.enrollment), &key) {
+            (Some(Enrollment::NotEnrolled), Some(key)) => Some(enrollment::not_carried(
+                &host.settings.relay,
+                key,
+                sign_up.as_deref(),
+            )),
             _ => None,
         };
         rows.push(Row {
-            enrollment,
+            enrollment: found.map(|f| f.enrollment),
+            sign_up,
             not_carried,
             name,
             state: if running { "running" } else { "stopped" },
@@ -1277,6 +1292,12 @@ fn check_every() -> Result<Duration> {
     every("TOOOB_BOOTSTRAP_CHECK_EVERY", Duration::from_secs(10 * 60))
 }
 
+/// How often a running Host checks its enrollment again while its Relay doesn't carry it and has a
+/// Sign-up Page: every 30 seconds, or as `TOOOB_SIGN_UP_CHECK_EVERY` says (`1s`), which tests use.
+fn sign_up_check_every() -> Result<Duration> {
+    every("TOOOB_SIGN_UP_CHECK_EVERY", Duration::from_secs(30))
+}
+
 /// How often a running Host's release check looks for a newer Release: once a day for the whole
 /// box, or as `TOOOB_UPDATE_CHECK_EVERY` says (`1s`), which tests use.
 fn release_check_every() -> Result<Duration> {
@@ -1310,6 +1331,7 @@ async fn serve_here(
 ) -> Result<Option<Keeper>> {
     let check_every = check_every()?;
     let release_check_every = release_check_every()?;
+    let sign_up_check_every = sign_up_check_every()?;
     // Listening from before the Host starts, so a stop while it's still coming up is clean too.
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;
@@ -1365,10 +1387,16 @@ async fn serve_here(
     let key = running.address().id.to_z32();
     let fields = tooob::fields! {"host_key" => key, "relay" => relay, "local" => local};
     log::event("host", fields, &format!("Host {key}, through {through}"));
-    // Whether its Relay carries it, asked now and on the Bootstrap's schedule (#130).
+    // Whether its Relay carries it, asked now and on the Bootstrap's schedule (#130), or sooner
+    // while it waits on a Sign-up Page (#141).
     let _enrollment = relay.as_ref().map(|url| {
         let watch = enrollment::Watch::new(url, &key);
-        enrollment::keep_checking(watch, host.state_dir.clone(), check_every)
+        enrollment::keep_checking(
+            watch,
+            host.state_dir.clone(),
+            check_every,
+            sign_up_check_every,
+        )
     });
     // Until this returns: the Host stops, and its checks with it.
     let _checking = bootstrap.map(|first| {

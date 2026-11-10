@@ -25,6 +25,46 @@ fn not_carried(relay: &TestRelay, key: &str) -> String {
     format!("{at} doesn't carry this Host yet: give its Relay Operator this Host Key: {key}")
 }
 
+/// A Sign-up Page whose URL already has a query, so the Host Key is joined with `&`.
+const SIGN_UP: &str = "https://sign-up.example/join?relay=test";
+
+/// The notice with the Sign-up Page link (#141), word for word.
+fn not_carried_with_link(relay: &TestRelay, key: &str) -> String {
+    format!(
+        "{}; or sign up: {SIGN_UP}&key={key}",
+        not_carried(relay, key)
+    )
+}
+
+#[test]
+fn add_on_a_closed_relay_with_a_sign_up_page_shows_its_link_and_returns() {
+    let home = Home::new();
+    let folder = a_folder();
+    let relay = TestRelay::with_sign_up(SIGN_UP);
+    relay.close();
+    let started = std::time::Instant::now();
+    let out = home.tooob(&[
+        "add",
+        "photos",
+        folder.path().to_str().unwrap(),
+        "--relay",
+        &relay.url,
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(started.elapsed() < std::time::Duration::from_secs(15));
+    let key = home.shown("photos", "Host Key");
+    assert!(
+        stderr(&out).contains(&not_carried_with_link(&relay, &key)),
+        "{}",
+        stderr(&out)
+    );
+    let listed = home.ok(&["ls"]);
+    let line = format!("photos: {}", not_carried_with_link(&relay, &key));
+    assert!(listed.contains(&line), "{listed}");
+    let json: serde_json::Value = serde_json::from_str(&home.ok(&["ls", "--json"])).unwrap();
+    assert_eq!(json[0]["sign_up"], format!("{SIGN_UP}&key={key}"));
+}
+
 #[test]
 fn share_that_adds_a_host_on_a_closed_relay_that_hasnt_enrolled_it_says_so_with_the_host_key() {
     let home = Home::new();
@@ -75,10 +115,75 @@ fn add_on_a_closed_relay_that_hasnt_enrolled_it_succeeds_and_says_so_with_the_ho
     assert!(out.status.success(), "{}", stderr(&out));
     let key = home.shown("photos", "Host Key");
     assert!(
-        stderr(&out).contains(&not_carried(&relay, &key)),
+        stderr(&out).contains(&format!("{}\n", not_carried(&relay, &key))),
         "{}",
         stderr(&out)
     );
+    // No Sign-up Page: the notice as #130 made it, and no link in ls --json.
+    assert!(!stderr(&out).contains("sign up"), "{}", stderr(&out));
+    assert!(!home.ok(&["ls"]).contains("sign up"));
+    let json: serde_json::Value = serde_json::from_str(&home.ok(&["ls", "--json"])).unwrap();
+    assert!(json[0].get("sign_up").is_none(), "{json}");
+}
+
+#[test]
+fn share_on_a_closed_relay_with_a_sign_up_page_shows_its_link() {
+    let home = Home::new();
+    let folder = a_folder();
+    let relay = TestRelay::with_sign_up(SIGN_UP);
+    relay.close();
+    home.install_tooob();
+    home.stand_in("launchctl", "");
+    home.stand_in("systemctl", "");
+    let out = home.tooob(&[
+        "share",
+        folder.path().to_str().unwrap(),
+        "--name",
+        "photos",
+        "--relay",
+        &relay.url,
+        "-d",
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let key = home.shown("photos", "Host Key");
+    assert!(
+        stderr(&out).contains(&not_carried_with_link(&relay, &key)),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn run_shows_the_link_checks_again_soon_and_drops_it_once_signed_up() {
+    let home = Home::new();
+    let folder = a_folder();
+    let relay = TestRelay::with_sign_up(SIGN_UP);
+    relay.close();
+    home.ok(&[
+        "add",
+        "photos",
+        folder.path().to_str().unwrap(),
+        "--relay",
+        &relay.url,
+    ]);
+    let key = home.shown("photos", "Host Key");
+    // The usual schedule is an hour, so only the faster one can pick up the sign-up.
+    let running = home.start_with(
+        "photos",
+        &[
+            ("TOOOB_BOOTSTRAP_CHECK_EVERY", "1h"),
+            ("TOOOB_SIGN_UP_CHECK_EVERY", "1s"),
+        ],
+    );
+    running.until_it_says(&not_carried_with_link(&relay, &key));
+    home.until_logged("photos", &not_carried_with_link(&relay, &key));
+
+    relay.enroll_through_api(&key);
+    running.until_it_says(&format!("{} now carries this Host", named(&relay)));
+    assert_eq!(enrollment(&home), "enrolled");
+    assert!(!home.ok(&["ls"]).contains("sign up"));
+    let json: serde_json::Value = serde_json::from_str(&home.ok(&["ls", "--json"])).unwrap();
+    assert!(json[0].get("sign_up").is_none(), "{json}");
 }
 
 #[test]

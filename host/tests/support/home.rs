@@ -45,13 +45,40 @@ pub fn this_version_json() -> String {
 impl TestRelay {
     /// A Relay serving a Bootstrap that speaks this tooob's Protocol Version.
     pub fn start() -> TestRelay {
-        TestRelay::spawn(true)
+        TestRelay::spawn(true, None)
+    }
+
+    /// A Relay whose relay.json names `sign_up` as its Sign-up Page (ADR 0031).
+    pub fn with_sign_up(sign_up: &str) -> TestRelay {
+        TestRelay::spawn(true, Some(sign_up.to_string()))
+    }
+
+    /// Enroll `key` as a Sign-up Page does: `PUT /__tooob/api/enrolled/<key>` through its front,
+    /// with an Operator Token made for it.
+    pub fn enroll_through_api(&self, key: &str) {
+        use std::io::{Read, Write};
+        let mut token = String::new();
+        self.edit_enrolled(|list| token = list.make_operator_token("sign-up").unwrap());
+        let at = self.url.trim_start_matches("http://").trim_end_matches('/');
+        let body = r#"{"label":"signed up"}"#;
+        let mut conn = std::net::TcpStream::connect(at).unwrap();
+        write!(
+            conn,
+            "PUT /__tooob/api/enrolled/{key} HTTP/1.1\r\nhost: {at}\r\nauthorization: Bearer \
+             {token}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: \
+             close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        let mut answer = String::new();
+        conn.read_to_string(&mut answer).unwrap();
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
     }
 
     /// Only the front, with no Relay behind it: it serves a Bootstrap, but a Host never gets
     /// online through it.
     pub fn bootstrap_only() -> TestRelay {
-        TestRelay::spawn(false)
+        TestRelay::spawn(false, None)
     }
 
     /// From now on, serve `version_json` as its Bootstrap's, or no Bootstrap at all (a 404).
@@ -116,7 +143,7 @@ impl TestRelay {
         std::thread::sleep(Duration::from_millis(600));
     }
 
-    fn spawn(with_relay: bool) -> TestRelay {
+    fn spawn(with_relay: bool, sign_up: Option<String>) -> TestRelay {
         let version_json = Arc::new(Mutex::new(Some(Some(this_version_json()))));
         let enrolled_hangs_up = Arc::new(Mutex::new(false));
         let dir = tempfile::tempdir().unwrap();
@@ -142,6 +169,9 @@ impl TestRelay {
                     ),
                     false => None,
                 };
+                if let Some(s) = server.as_mut() {
+                    s.set_sign_up_url(sign_up);
+                }
                 let relay = server.as_ref().map(|s| s.http_addr());
                 let status = match server.as_mut() {
                     Some(s) => Some(s.serve_status(([127, 0, 0, 1], 0)).await.unwrap()),
@@ -178,7 +208,7 @@ impl TestRelay {
 }
 
 /// One connection to the front: its Bootstrap's version.json; tooob-relay's status answers
-/// (relay.json, enrolled/KEY), as the Relay image's Caddy routes them; or handed whole to
+/// (relay.json, enrolled/KEY, the enroll API), as the Relay image's Caddy routes them; or handed whole to
 /// iroh-relay.
 async fn answer(
     mut conn: tokio::net::TcpStream,
@@ -224,7 +254,9 @@ async fn answer(
             return;
         }
         (p, Some((_, status)))
-            if p.starts_with("/__tooob/enrolled/") || p == "/__tooob/relay.json" =>
+            if p.starts_with("/__tooob/enrolled/")
+                || p.starts_with("/__tooob/api/")
+                || p == "/__tooob/relay.json" =>
         {
             status
         }
