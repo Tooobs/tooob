@@ -21,7 +21,9 @@ else
   for file in tooob-bootstrap.tar.xz tooob-bootstrap.tar.xz.sha256; do
     curl -fsSL -o "$dir/$file" "$from/$file" || { echo "bundle.sh: couldn't download $from/$file" >&2 && exit 1; }
   done
-  (cd "$dir" && shasum -a 256 -c --quiet tooob-bootstrap.tar.xz.sha256) ||
+  # shasum on macOS, sha256sum on Linux boxes without Perl's shasum (Arch, #142).
+  if command -v sha256sum >/dev/null; then sum=sha256sum; else sum="shasum -a 256"; fi
+  (cd "$dir" && $sum -c --quiet tooob-bootstrap.tar.xz.sha256) ||
     { echo "bundle.sh: tooob-bootstrap.tar.xz doesn't match its checksum: not using it" >&2 && exit 1; }
   tar -xJf "$dir/tooob-bootstrap.tar.xz" -C "$dir"
   rm "$dir/tooob-bootstrap.tar.xz" "$dir/tooob-bootstrap.tar.xz.sha256"

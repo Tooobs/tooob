@@ -36,12 +36,13 @@ ENV DNS_PROVIDER=${DNS_PROVIDER}
 COPY --from=caddy /usr/bin/caddy /usr/bin/caddy
 COPY --from=tooob-relay /tooob-relay /usr/bin/tooob-relay
 COPY iroh-relay.toml /etc/iroh-relay.toml
-COPY Caddyfile front.caddy /etc/caddy/
+COPY Caddyfile plain-http.Caddyfile front.caddy /etc/caddy/
 # A config Caddy rejects fails the build, before it can replace a running Relay: parsed (adapted)
 # with stand-ins for what the Relay's environment sets. Not `caddy validate`: that also provisions
 # the DNS provider, which refuses a stand-in API token.
 RUN RELAY_DOMAIN=relay.example.com DNS_API_TOKEN=stand-in ACME_EMAIL=relay@example.com \
-    caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null
+    caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null && \
+    caddy adapt --config /etc/caddy/plain-http.Caddyfile --adapter caddyfile >/dev/null
 COPY --chmod=755 start.sh /usr/bin/start-relay
 COPY --from=bundle /srv /srv
 EXPOSE 80 443

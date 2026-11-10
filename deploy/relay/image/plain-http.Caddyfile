@@ -1,0 +1,15 @@
+# The Relay's Caddy over plain http on port 8080, for a Relay on your own network to try things on
+# (#142, ../test-relay.sh): no domain, no certificate, front.caddy as on a real Relay. start.sh uses it
+# only when RELAY_PLAIN_HTTP is set; every deploy leaves it unset and gets the Caddyfile's https.
+# Browser Visits don't work over it (a service worker needs https), only Hosts and the APIs.
+{
+	admin off
+	auto_https off
+	servers {
+		protocols h1
+	}
+}
+
+http://:8080 {
+	import front.caddy
+}

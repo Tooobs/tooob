@@ -35,4 +35,5 @@ step "front.caddy tests" deploy/check node --test front.test.mjs
 step "precompress.sh tests" deploy/check node --test precompress.test.mjs
 step "admin page port tests" deploy/check node --test admin.test.mjs
 step "closing a Relay tests" deploy/check node --test closing.test.mjs
+step "test Relay tests" deploy/check node --test test-relay.test.mjs
 echo "check.sh: all passed"

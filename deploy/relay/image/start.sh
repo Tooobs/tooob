@@ -6,7 +6,11 @@
 # public port reaches: a tunnel is the way in (fly proxy, or ssh -L to a VPS's loopback).
 tooob-relay --config-path /etc/iroh-relay.toml --admin-addr '[::]:8081' --status-addr 127.0.0.1:3341 &
 relay=$!
-caddy run --config /etc/caddy/Caddyfile &
+# Plain http on port 8080 only when RELAY_PLAIN_HTTP is set (#142, a test Relay on your own
+# network); otherwise https on the Relay's domain, as every deploy runs it.
+caddyfile=/etc/caddy/Caddyfile
+[ -z "${RELAY_PLAIN_HTTP:-}" ] || caddyfile=/etc/caddy/plain-http.Caddyfile
+caddy run --config "$caddyfile" &
 caddy=$!
 asked=""
 trap 'asked=yes; kill $relay $caddy 2>/dev/null' INT TERM

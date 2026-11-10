@@ -32,3 +32,21 @@ Point Hosts at it with `tooob add … --relay https://relay.example.com/`, or `t
 - Stop it: `ssh root@<server> 'cd tooob-relay && docker compose down'`.
 - Enroll a Host: `ssh root@<server> 'cd tooob-relay && docker compose exec -T relay tooob-relay enroll <host key> --label <name>'`, or make an Enrollment Code for it with `tooob-relay code --label <name>` there. A Relay with no Enrolled Keys is open to everyone; the first one closes it. To close one that's open today, see [../README.md](../README.md#closing-an-open-relay).
 - Watch the server's bandwidth: every byte a Visitor loads over the Relayed Path goes through here.
+
+## A test Relay on your own network
+
+To try what needs a closed Relay (Enrolled Keys, Operator Tokens, the enroll API, a Sign-up Page, the admin page) without touching your real one, run the same image on any Linux box at home with [podman](https://podman.io/), over plain http: no domain, no certificate, no open ports.
+
+```sh
+./test-relay.sh start 192.168.0.79:8480 http://192.168.0.10:8787/join   # HOST:PORT SIGN_UP_URL [RELEASE | --local]
+./test-relay.sh stop
+```
+
+`HOST:PORT` is the box's address on your network (pick a port above 1024 for rootless podman, and let your firewall allow it there); the Sign-up Page is any page you name. It starts closed: it enrolls a stand-in key no Host has, so it carries only the Hosts you enroll. Its Enrolled Keys and Operator Tokens are in the podman volume `tooob-test-relay-data`, kept by `stop` and the next `start`; `podman volume rm tooob-test-relay-data` starts afresh.
+
+- Point a Host at it: `tooob add … --relay http://192.168.0.79:8480/`.
+- Its `tooob-relay`: `podman exec tooob-test-relay tooob-relay list` (or `enroll`, `token new`, `code`).
+- Its admin page: `ssh -L 8081:127.0.0.1:8081 <box>`, then http://localhost:8081/.
+- Not here: browser Visits (a service worker needs https), and Enrollment Codes, which always name an https Relay.
+
+The plain http is the image's `RELAY_PLAIN_HTTP` option (`image/plain-http.Caddyfile`), off unless set; `deploy.sh` and the Fly setup never set it.
