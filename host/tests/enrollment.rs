@@ -127,6 +127,35 @@ fn add_on_a_closed_relay_that_hasnt_enrolled_it_succeeds_and_says_so_with_the_ho
 }
 
 #[test]
+fn add_doesnt_wait_long_on_a_relay_json_that_never_answers() {
+    let home = Home::new();
+    let folder = a_folder();
+    let relay = TestRelay::with_sign_up(SIGN_UP);
+    relay.close();
+    relay.stall_relay_json();
+    let started = std::time::Instant::now();
+    let out = home.tooob(&[
+        "add",
+        "photos",
+        folder.path().to_str().unwrap(),
+        "--relay",
+        &relay.url,
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(8),
+        "{:?}",
+        started.elapsed()
+    );
+    let key = home.shown("photos", "Host Key");
+    assert!(
+        stderr(&out).contains(&format!("{}\n", not_carried(&relay, &key))),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
 fn share_on_a_closed_relay_with_a_sign_up_page_shows_its_link() {
     let home = Home::new();
     let folder = a_folder();
@@ -184,6 +213,11 @@ fn run_shows_the_link_checks_again_soon_and_drops_it_once_signed_up() {
     assert!(!home.ok(&["ls"]).contains("sign up"));
     let json: serde_json::Value = serde_json::from_str(&home.ok(&["ls", "--json"])).unwrap();
     assert!(json[0].get("sign_up").is_none(), "{json}");
+
+    // Carried, it's back on the hour's schedule: a removal isn't seen within seconds.
+    relay.remove(&key);
+    std::thread::sleep(std::time::Duration::from_secs(4));
+    assert!(!running.log().contains("any more"), "{}", running.log());
 }
 
 #[test]

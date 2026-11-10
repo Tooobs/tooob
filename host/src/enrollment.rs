@@ -79,10 +79,22 @@ pub fn sign_up_link(sign_up: &str, key: &str) -> Option<String> {
 
 /// Ask the Relay at `relay` (its URL) whether it carries the Host whose Host Key is `key`, and
 /// if not, for its Sign-up Page.
+///
+/// It never waits long, whatever the Relay does (ADR 0022): the enrollment gets up to
+/// `ASK_WAIT`, and the Sign-up Page up to `SIGN_UP_WAIT` of what's left of it; a Sign-up Page
+/// not found in time is only left out.
 pub async fn check(relay: &str, key: &str) -> Found {
+    let deadline = tokio::time::Instant::now() + ASK_WAIT;
     let enrollment = ask(relay, key).await;
     let sign_up = match enrollment {
-        Enrollment::NotEnrolled => sign_up_of(relay).await,
+        Enrollment::NotEnrolled => {
+            let wait =
+                SIGN_UP_WAIT.min(deadline.saturating_duration_since(tokio::time::Instant::now()));
+            tokio::time::timeout(wait, sign_up_of(relay))
+                .await
+                .ok()
+                .flatten()
+        }
         _ => None,
     };
     Found {
@@ -91,25 +103,38 @@ pub async fn check(relay: &str, key: &str) -> Found {
     }
 }
 
+/// The longest a whole check waits on its Relay.
+const ASK_WAIT: Duration = Duration::from_secs(10);
+/// The longest it waits for relay.json, once it knows the Host isn't carried.
+const SIGN_UP_WAIT: Duration = Duration::from_secs(4);
+/// The most of an answer read: a tooob-relay's are well under a KiB.
+const MOST_READ: usize = 64 * 1024;
+
+/// GET `path` from the Relay at `relay` as JSON, within `ASK_WAIT` and `MOST_READ`.
+async fn get_json<T: serde::de::DeserializeOwned>(relay: &str, path: &str) -> Option<T> {
+    let url = reqwest::Url::parse(relay).ok()?.join(path).ok()?;
+    let http = reqwest::Client::builder().timeout(ASK_WAIT).build().ok()?;
+    let mut answer = http.get(url).send().await.ok()?;
+    if !answer.status().is_success() {
+        return None;
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = answer.chunk().await.ok()? {
+        body.extend_from_slice(&chunk);
+        if body.len() > MOST_READ {
+            return None;
+        }
+    }
+    serde_json::from_slice(&body).ok()
+}
+
 /// The Sign-up Page the Relay's relay.json names as `sign_up`, if any.
 async fn sign_up_of(relay: &str) -> Option<String> {
     #[derive(serde::Deserialize)]
     struct Status {
         sign_up: Option<String>,
     }
-    let url = reqwest::Url::parse(relay)
-        .ok()?
-        .join("/__tooob/relay.json")
-        .ok()?;
-    let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .ok()?;
-    let answer = http.get(url).send().await.ok()?;
-    if !answer.status().is_success() {
-        return None;
-    }
-    let status: Status = serde_json::from_slice(&answer.bytes().await.ok()?).ok()?;
+    let status: Status = get_json(relay, "/__tooob/relay.json").await?;
     status.sign_up.filter(|s| sign_up_link(s, "").is_some())
 }
 
@@ -120,19 +145,7 @@ async fn ask(relay: &str, key: &str) -> Enrollment {
         relay_access: String,
     }
     let ask = async {
-        let url = reqwest::Url::parse(relay)
-            .ok()?
-            .join(&format!("/__tooob/enrolled/{key}"))
-            .ok()?;
-        let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .ok()?;
-        let answer = http.get(url).send().await.ok()?;
-        if !answer.status().is_success() {
-            return None;
-        }
-        let answer: Answer = serde_json::from_slice(&answer.bytes().await.ok()?).ok()?;
+        let answer: Answer = get_json(relay, &format!("/__tooob/enrolled/{key}")).await?;
         Some(match (answer.enrolled, answer.relay_access.as_str()) {
             (true, _) => Enrollment::Enrolled,
             (false, "open") => Enrollment::Open,
@@ -358,6 +371,8 @@ pub fn keep_checking(
     soon: Duration,
 ) -> Checking {
     Checking(tokio::spawn(async move {
+        // The last answer the Relay gave: a check that can't ask (Unknown) keeps the schedule
+        // it was on, so a Relay that's briefly down doesn't slow a Host waiting on a sign-up.
         let mut last = Found::default();
         loop {
             let found = check(&watch.relay, &watch.key).await;
@@ -366,10 +381,10 @@ pub fn keep_checking(
                 last = found.clone();
             }
             if let Some((warning, said)) = watch.update(&found) {
-                let fields = crate::fields! {
-                    "enrollment" => found.enrollment,
-                    "sign_up" => found.link(&watch.key),
-                };
+                let mut fields = crate::fields! {"enrollment" => found.enrollment};
+                if let Some(link) = found.link(&watch.key) {
+                    fields.insert("sign_up".to_string(), serde_json::json!(link));
+                }
                 match warning {
                     true => crate::log::event("warning", fields, &format!("warning: {said}")),
                     false => crate::log::event("enrollment", fields, &said),
@@ -395,7 +410,26 @@ impl Drop for Checking {
 
 #[cfg(test)]
 mod tests {
-    use super::Code;
+    use super::{Code, sign_up_link};
+
+    #[test]
+    fn a_sign_up_link_joins_the_host_key_onto_any_query_and_only_for_http() {
+        assert_eq!(
+            sign_up_link("https://s.example/join", "abc").as_deref(),
+            Some("https://s.example/join?key=abc")
+        );
+        assert_eq!(
+            sign_up_link("https://s.example/join?r=1", "abc").as_deref(),
+            Some("https://s.example/join?r=1&key=abc")
+        );
+        assert_eq!(
+            sign_up_link("https://s.example/join#top", "abc").as_deref(),
+            Some("https://s.example/join?key=abc#top")
+        );
+        assert_eq!(sign_up_link("javascript:alert(1)", "abc"), None);
+        assert_eq!(sign_up_link("ftp://s.example/", "abc"), None);
+        assert_eq!(sign_up_link("not a url", "abc"), None);
+    }
 
     #[test]
     fn a_code_names_its_relay_and_is_never_shown_whole() {

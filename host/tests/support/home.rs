@@ -26,6 +26,8 @@ pub struct TestRelay {
     version_json: Arc<Mutex<Option<Option<String>>>>,
     /// Whether its front hangs up on `/__tooob/enrolled/…`, as a Relay that can't be reached would.
     enrolled_hangs_up: Arc<Mutex<bool>>,
+    /// Whether its front holds `/__tooob/relay.json` open without answering.
+    relay_json_stalls: Arc<Mutex<bool>>,
     /// Its Enrolled Keys' file (ADR 0030), which its tooob-relay watches.
     enrolled: std::path::PathBuf,
     _dir: tempfile::TempDir,
@@ -135,6 +137,12 @@ impl TestRelay {
         *self.enrolled_hangs_up.lock().unwrap() = true;
     }
 
+    /// From now on, never answer anyone asking for relay.json, holding the connection open, as a
+    /// Relay that has stalled would.
+    pub fn stall_relay_json(&self) {
+        *self.relay_json_stalls.lock().unwrap() = true;
+    }
+
     fn edit_enrolled(&self, change: impl FnOnce(&mut tooob_relay::List)) {
         let mut list = tooob_relay::List::load(&self.enrolled).unwrap();
         change(&mut list);
@@ -153,6 +161,8 @@ impl TestRelay {
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let served = version_json.clone();
         let hangs_up = enrolled_hangs_up.clone();
+        let relay_json_stalls = Arc::new(Mutex::new(false));
+        let stalls = relay_json_stalls.clone();
         let list = enrolled.clone();
         // A runtime of its own, so sync and async tests alike can start one.
         std::thread::spawn(move || {
@@ -182,7 +192,13 @@ impl TestRelay {
                 port_tx.send(front.local_addr().unwrap().port()).unwrap();
                 let fronting = async {
                     while let Ok((conn, _)) = front.accept().await {
-                        tokio::spawn(answer(conn, relay, served.clone(), hangs_up.clone()));
+                        tokio::spawn(answer(
+                            conn,
+                            relay,
+                            served.clone(),
+                            hangs_up.clone(),
+                            stalls.clone(),
+                        ));
                     }
                 };
                 tokio::select! {
@@ -200,6 +216,7 @@ impl TestRelay {
             ip_url: format!("http://127.0.0.1:{port}/"),
             version_json,
             enrolled_hangs_up,
+            relay_json_stalls,
             enrolled,
             _dir: dir,
             _stop: stop,
@@ -208,13 +225,14 @@ impl TestRelay {
 }
 
 /// One connection to the front: its Bootstrap's version.json; tooob-relay's status answers
-/// (relay.json, enrolled/KEY, the enroll API), as the Relay image's Caddy routes them; or handed whole to
-/// iroh-relay.
+/// (relay.json, enrolled/KEY, the enroll API), as the Relay image's Caddy routes them; or handed
+/// whole to iroh-relay.
 async fn answer(
     mut conn: tokio::net::TcpStream,
     relay: Option<(std::net::SocketAddr, std::net::SocketAddr)>,
     version_json: Arc<Mutex<Option<Option<String>>>>,
     enrolled_hangs_up: Arc<Mutex<bool>>,
+    relay_json_stalls: Arc<Mutex<bool>>,
 ) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut head = Vec::new();
@@ -246,6 +264,10 @@ async fn answer(
                 None => return,
             };
             let _ = conn.write_all(reply.as_bytes()).await;
+            return;
+        }
+        ("/__tooob/relay.json", Some(_)) if *relay_json_stalls.lock().unwrap() => {
+            tokio::time::sleep(Duration::from_secs(60)).await;
             return;
         }
         (p, Some(_))
