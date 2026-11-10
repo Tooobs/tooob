@@ -99,6 +99,7 @@ AI agents run Hosts for their Owners and visit Sites in a browser like anyone el
 
 Owners find a Relay to use. Choosing stays the Owner's ([ADR 0015](adr/0015-no-default-relay-or-bootstrap.md), [ADR 0020](adr/0020-a-relay-serves-its-bootstrap.md)).
 
+- ✅ A closed test Relay on your own network, over plain http, to try Enrolled Keys, Operator Tokens, the enroll API and a Sign-up Page on ([#142](https://github.com/Tooobs/tooob/issues/142))
 - ⬜ A public list, or a trusted site with each Relay's stats and terms ([#72](https://github.com/Tooobs/tooob/issues/72))
 - ⬜ A Relay audit: what each listed Relay serves, checked against tooob's published Releases ([#74](https://github.com/Tooobs/tooob/issues/74))
 - ⬜ Research: what a Relay costs to run, by provider and by what it carries ([#73](https://github.com/Tooobs/tooob/issues/73))

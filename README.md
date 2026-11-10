@@ -171,6 +171,13 @@ Everything here up to #1 is in the first Release, **[0.1.0](https://github.com/T
 - **[#141](https://github.com/Tooobs/tooob/issues/141) A Host that isn't carried shows its Relay's Sign-up Page link, and checks again soon** · 2026-11-10 · the next Release (not out yet)
   - On a closed Relay that names a Sign-up Page (`--sign-up-url`, #140), the "doesn't carry this Host yet" line now ends `; or sign up: <page>?key=<host key>` (joined with `&` if the page's address has a query), wherever it shows: `tooob add`, a `tooob share` that adds a Host, `tooob run` and its log, and under `tooob ls`; `ls --json` has it as `"sign_up"`. Nothing else about the Host or its Site goes in the link, and `add` prints it and returns: a Relay slow to answer never holds it up more than 10 s. While the Host isn't carried, `tooob run` checks again every 30 s (`TOOOB_SIGN_UP_CHECK_EVERY`) instead of every 10 minutes, so signing up on the page is picked up within about half a minute, and the link goes away. On r.tooobs.net, which is open and names no Sign-up Page, nothing shows: `curl -s https://r.tooobs.net/__tooob/relay.json` has no `sign_up`. To see it, run a Relay of your own with `--sign-up-url` and an Enrolled Key that isn't your Host's.
 
+### [Relay finder](https://github.com/Tooobs/tooob/milestone/6) (in progress)
+
+Owners find a Relay to use instead of running their own: a plain list anyone can host, or a trusted site with each Relay's stats and terms, and an audit that checks what each one serves against tooob's published Releases. Choosing stays the Owner's.
+
+- **[#142](https://github.com/Tooobs/tooob/issues/142) A closed test Relay on your own network, over plain http** · 2026-11-10 · the next Release (not out yet)
+  - On any Linux box at home with podman, `deploy/relay/test-relay.sh start <box's address>:<port> <sign-up page>` builds the Relay image and runs it over plain http on that port (open it in the box's firewall), closed and naming that Sign-up Page; `deploy/relay/test-relay.sh stop` stops it, keeping its Enrolled Keys and Operator Tokens in the podman volume `tooob-test-relay-data`. Its first start enrolls a stand-in key whose secret is thrown away, so it carries only the Hosts you enroll. From another machine, `curl -s http://<box>:<port>/__tooob/relay.json` says `"relay_access":"enrolled"` with your `sign_up`; `tooob add … --relay http://<box>:<port>/` prints the "doesn't carry this Host yet" line with the sign-up link; `podman exec tooob-test-relay tooob-relay token new signup` makes a token for a `PUT /__tooob/api/enrolled/<host key>`, and a running Host says it's carried within about 30 s. The admin page is on the box's 127.0.0.1:8081 (`ssh -L 8081:127.0.0.1:8081 <box>`). Browser Visits and Enrollment Codes don't work on it (a service worker needs https; codes name only https Relays, #144). The image's plain http is `RELAY_PLAIN_HTTP`, off unless set; no deploy sets it, so r.tooobs.net is unchanged: `curl -s https://r.tooobs.net/__tooob/relay.json` still says `{"relay_access":"open"}`. `deploy/bundle.sh` now works where there's no `shasum` (Arch).
+
 ## Still to come
 
 What each later milestone will add when it's done, in the planned order. Details and progress: [the roadmap](https://github.com/Tooobs/tooob/blob/main/docs/roadmap.md).
@@ -178,10 +185,6 @@ What each later milestone will add when it's done, in the planned order. Details
 ### [Agents](https://github.com/Tooobs/tooob/blob/main/docs/roadmap.md#agents)
 
 AI agents run Hosts for their Owners and visit Sites in a browser like anyone else. An agent shares a status dashboard or a preview with people and other agents by invitation, and every device its Invites let in is approved by a person first ([ADR 0018](docs/adr/0018-agents-make-approve-first-invites-enforced-by-agent-accounts.md)). A local MCP server lets an agent read, block and revoke; anything that would let someone in waits for the Owner.
-
-### [Relay finder](https://github.com/Tooobs/tooob/blob/main/docs/roadmap.md#relay-finder)
-
-Owners find a Relay to use instead of running their own: a plain list anyone can host, or a trusted site with each Relay's stats and terms, and an audit that checks what each one serves against tooob's published Releases. Choosing stays the Owner's.
 
 ### [Normal people](https://github.com/Tooobs/tooob/blob/main/docs/roadmap.md#normal-people)
 
