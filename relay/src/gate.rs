@@ -94,13 +94,9 @@ impl Gate {
     }
 
     /// Redeem `code` for `key`, from `from`: the code's label, or why not.
+    /// A valid code is always redeemed, whatever its address has done (#135): only wrong ones
+    /// count, and only wrong ones are refused once the address is at its limit.
     fn redeem(&self, code: &str, key: EndpointId, from: Option<IpAddr>) -> Result<String, String> {
-        if self.wrong.lock().unwrap().refused(from, Instant::now()) {
-            return Err(format!(
-                "too many wrong Enrollment Codes from this address: try again in {} minutes",
-                WRONG_WINDOW.as_secs() / 60
-            ));
-        }
         // Locked against the CLI's edits too, which run in processes of their own.
         let mut refusal = None;
         let mut list_after = None;
@@ -121,10 +117,19 @@ impl Gate {
             info!("tooob-relay: enrolled {key} as {label} with an Enrollment Code");
             label
         })
-        .inspect_err(|_| {
-            if refusal == Some(Refusal::Wrong) {
-                self.wrong.lock().unwrap().count(from, Instant::now());
+        .map_err(|reason| {
+            if refusal != Some(Refusal::Wrong) {
+                return reason;
             }
+            let mut wrong = self.wrong.lock().unwrap();
+            if wrong.refused(from, Instant::now()) {
+                return format!(
+                    "too many wrong Enrollment Codes from this address: try again in {} minutes",
+                    WRONG_WINDOW.as_secs() / 60
+                );
+            }
+            wrong.count(from, Instant::now());
+            reason
         })
     }
 }

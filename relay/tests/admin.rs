@@ -219,13 +219,22 @@ async fn logging_in_sets_a_session_cookie_only_the_page_can_send() {
 }
 
 #[tokio::test]
-async fn a_wrong_token_is_refused_and_too_many_lock_the_address_out() {
+async fn too_many_wrong_tokens_refuse_the_address_wrong_ones_but_a_valid_one_logs_in() {
+    // Others may share the address (#135): only guessers are slowed.
     let a = admin().await;
     for _ in 0..WRONG_TOKENS_ALLOWED {
         let reply = login_reply(a.at, "wrong").await;
         assert!(reply.starts_with("HTTP/1.1 401"), "{reply}");
     }
+    let reply = login_reply(a.at, "wrong").await;
+    assert!(reply.starts_with("HTTP/1.1 429"), "{reply}");
+    assert!(reply.contains("Too many wrong tokens from here"), "{reply}");
     let reply = login_reply(a.at, &a.token).await;
+    assert!(
+        reply.to_ascii_lowercase().contains("set-cookie:"),
+        "{reply}"
+    );
+    let reply = login_reply(a.at, "wrong").await;
     assert!(reply.starts_with("HTTP/1.1 429"), "{reply}");
 }
 

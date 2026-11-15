@@ -35,8 +35,8 @@ pub struct Relay {
 }
 
 /// A fresh count of failed Operator Tokens, per address. The enroll API and the admin page each
-/// have their own: on Fly every public client may look like one address (#135), and public
-/// guesses must not lock the Relay Operator out of the admin page.
+/// have their own, so public guesses never slow the Relay Operator's own wrong tries at the admin
+/// page. Neither ever refuses a valid token (#135): many clients may share one address.
 fn wrong_tokens() -> Arc<std::sync::Mutex<gate::WrongCodes>> {
     Arc::new(std::sync::Mutex::new(gate::WrongCodes::new(
         WRONG_TOKENS_ALLOWED,

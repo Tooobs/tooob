@@ -113,9 +113,6 @@ impl Status {
         request: &Request,
         from: Option<std::net::IpAddr>,
     ) -> Reply {
-        if self.wrong.lock().unwrap().refused(from, Instant::now()) {
-            return Reply::empty(429);
-        }
         let presented = request
             .headers("authorization")
             .next()
@@ -128,8 +125,14 @@ impl Status {
             Ok(list) => list.verify_operator_token(presented).map(str::to_string),
             Err(_) => return Reply::empty(500),
         };
+        // A valid token works whatever its address has done (#135); only bad ones are counted,
+        // and only bad ones are refused once the address is at its limit.
         let Some(service) = service else {
-            self.wrong.lock().unwrap().count(from, Instant::now());
+            let mut wrong = self.wrong.lock().unwrap();
+            if wrong.refused(from, Instant::now()) {
+                return Reply::empty(429);
+            }
+            wrong.count(from, Instant::now());
             return Reply::empty(401);
         };
         let Ok(key) = parse_key(key) else {

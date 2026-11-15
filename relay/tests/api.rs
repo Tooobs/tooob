@@ -189,16 +189,37 @@ async fn a_bad_key_or_body_is_a_400() {
 async fn the_11th_failed_attempt_in_a_minute_from_one_address_is_a_429() {
     let dir = tempfile::tempdir().unwrap();
     let list = dir.path().join("enrolled.toml");
-    let token = make_token(&list, "sign-up");
+    make_token(&list, "sign-up");
     let (_relay, at) = relay(&list).await;
     let host = stranger().to_z32();
     for _ in 0..10 {
         assert_eq!(put(at, &host, Some("nope"), ME, "x").await, 401);
     }
     assert_eq!(put(at, &host, Some("nope"), ME, "x").await, 429);
-    // Even with the right token, until the minute passes; another address is let try.
-    assert_eq!(put(at, &host, Some(&token), ME, "x").await, 429);
-    assert_eq!(put(at, &host, Some(&token), "192.0.2.2", "x").await, 200);
+    // Another address is let try.
+    assert_eq!(put(at, "nope", Some("nope"), "192.0.2.2", "x").await, 401);
+}
+
+#[tokio::test]
+async fn a_valid_token_from_an_address_at_its_limit_still_enrolls_and_removes() {
+    // Others may share the address, a Sign-up Page's among them (#135).
+    let dir = tempfile::tempdir().unwrap();
+    let list = dir.path().join("enrolled.toml");
+    let token = make_token(&list, "sign-up");
+    let (_relay, at) = relay(&list).await;
+    let host = stranger();
+    for _ in 0..10 {
+        assert_eq!(put(at, &host.to_z32(), Some("nope"), ME, "x").await, 401);
+    }
+    assert_eq!(put(at, &host.to_z32(), Some(&token), ME, "sam").await, 200);
+    assert_eq!(enrolled(&list), vec![(host, "sam".to_string())]);
+    let remove = format!(
+        "DELETE /__tooob/api/enrolled/{} HTTP/1.1\r\nX-Forwarded-For: {ME}\r\nAuthorization: Bearer {token}",
+        host.to_z32()
+    );
+    assert_eq!(send(at, &remove, "").await.0, 200);
+    assert!(enrolled(&list).is_empty());
+    assert_eq!(put(at, &host.to_z32(), Some("nope"), ME, "x").await, 429);
 }
 
 #[test]

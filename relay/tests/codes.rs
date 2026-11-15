@@ -125,18 +125,26 @@ async fn an_expired_cancelled_or_wrong_code_enrolls_nothing_and_says_which() {
 }
 
 #[tokio::test]
-async fn after_several_wrong_codes_an_address_is_refused_even_a_good_one() {
+async fn an_address_at_its_limit_is_refused_wrong_codes_but_a_valid_one_still_enrolls() {
+    // Others may share the address (#135): only guessers are slowed.
     let dir = tempfile::tempdir().unwrap();
     let (path, good) = with_code(dir.path(), "sam", 1, in_a_week());
     let relay = relay(&path).await;
+    let wrong = "relay.example.com/0000-0000-0000-0000";
     for _ in 0..tooob_relay::WRONG_CODES_ALLOWED {
-        let (refused, _) = connect(&relay, Some("relay.example.com/0000-0000-0000-0000")).await;
+        let (refused, _) = connect(&relay, Some(wrong)).await;
         assert!(refused.err().unwrap().contains("wrong"));
     }
-    let (refused, _) = connect(&relay, Some(&good)).await;
-    let refused = refusal(refused, "let in after too many wrong codes");
+    let (refused, _) = connect(&relay, Some(wrong)).await;
+    let refused = refusal(refused, "let in with a wrong code");
     assert!(refused.contains("too many wrong"), "{refused}");
     assert!(enrolled(&path).is_empty());
+    let (client, key) = connect(&relay, Some(&good)).await;
+    client.unwrap();
+    assert_eq!(enrolled(&path), vec![(key, "sam".to_string())]);
+    let (refused, _) = connect(&relay, Some(wrong)).await;
+    let refused = refusal(refused, "let in with a wrong code");
+    assert!(refused.contains("too many wrong"), "{refused}");
     // A connection with no code is still admitted, under the forwarding rule.
     connect(&relay, None).await.0.unwrap();
 }

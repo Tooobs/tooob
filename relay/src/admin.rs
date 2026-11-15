@@ -268,13 +268,9 @@ impl Admin {
     }
 
     /// Log in with `presented`, an Operator Token, from `from`.
+    /// A valid token always logs in, whatever its address has done (#135): only wrong ones count,
+    /// and only wrong ones are refused once the address is at its limit.
     fn login(&self, presented: &str, from: Option<IpAddr>) -> Reply {
-        if self.wrong.lock().unwrap().refused(from, Instant::now()) {
-            return Reply::page(
-                "429 Too Many Requests",
-                self.render_login(Some("Too many wrong tokens from here: wait a minute.")),
-            );
-        }
         // Read now, not as last watched, so a revoked token fails at once.
         let list = match List::load(&self.path) {
             Ok(list) => list,
@@ -286,7 +282,15 @@ impl Admin {
             }
         };
         let Some(label) = list.verify_operator_token(presented) else {
-            self.wrong.lock().unwrap().count(from, Instant::now());
+            let mut wrong = self.wrong.lock().unwrap();
+            if wrong.refused(from, Instant::now()) {
+                return Reply::page(
+                    "429 Too Many Requests",
+                    self.render_login(Some("Too many wrong tokens from here: wait a minute.")),
+                );
+            }
+            wrong.count(from, Instant::now());
+            drop(wrong);
             return Reply::page(
                 "401 Unauthorized",
                 self.render_login(Some("That isn't one of this Relay's Operator Tokens.")),
