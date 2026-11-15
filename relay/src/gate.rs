@@ -118,6 +118,8 @@ impl Gate {
             label
         })
         .map_err(|reason| {
+            // Only a wrong code meets the limit: a real code, even expired or used up, says so
+            // (ADR 0030; telling it needs the 80-bit code itself).
             if refusal != Some(Refusal::Wrong) {
                 return reason;
             }

@@ -240,7 +240,7 @@ async fn too_many_wrong_tokens_refuse_the_address_wrong_ones_but_a_valid_one_log
 
 #[tokio::test]
 async fn wrong_tokens_at_the_public_enroll_api_never_lock_the_admin_page_out() {
-    // On Fly every public client may look like one address (#135).
+    // The two wrong-token counts stay separate (#135).
     let mut a = admin().await;
     let status = a.relay.serve_status(([127, 0, 0, 1], 0)).await.unwrap();
     let key = fresh_key().to_z32();
@@ -254,8 +254,27 @@ async fn wrong_tokens_at_the_public_enroll_api_never_lock_the_admin_page_out() {
         .await;
         assert!(reply.starts_with("HTTP/1.1 401"), "{reply}");
     }
-    let reply = login_reply(a.at, &a.token).await;
-    assert!(reply.starts_with("HTTP/1.1 303"), "{reply}");
+    let reply = login_reply(a.at, "wrong").await;
+    assert!(reply.starts_with("HTTP/1.1 401"), "{reply}");
+}
+
+#[tokio::test]
+async fn wrong_admin_logins_never_lock_the_public_enroll_api_out() {
+    // The two wrong-token counts stay separate (#135).
+    let mut a = admin().await;
+    let status = a.relay.serve_status(([127, 0, 0, 1], 0)).await.unwrap();
+    for _ in 0..=WRONG_TOKENS_ALLOWED {
+        login_reply(a.at, "wrong").await;
+    }
+    let key = fresh_key().to_z32();
+    let reply = raw(
+        status,
+        &format!(
+            "DELETE /__tooob/api/enrolled/{key} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer wrong\r\nConnection: close\r\n\r\n"
+        ),
+    )
+    .await;
+    assert!(reply.starts_with("HTTP/1.1 401"), "{reply}");
 }
 
 #[tokio::test]
