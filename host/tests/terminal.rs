@@ -666,8 +666,19 @@ fn pair_prints_its_link_and_one_qr_code() {
 
     let (said, ok) = said_in_terminal(&home, &["pair", "photos", "phone"]);
     assert!(ok, "{said}");
+    let said = shown(said.as_bytes());
+    assert!(
+        said.starts_with("http"),
+        "the link first, no indent: {said:?}"
+    );
     assert!(said.contains("/#invite="), "{said}");
     assert_eq!(qr_codes(&said), 1, "{said}");
+    let under = said.lines().nth(1).unwrap_or_default();
+    assert!(under.starts_with(QR), "the code, no indent: {said:?}");
+    assert!(
+        said.ends_with("\x1b[0m\n\n"),
+        "a blank line after it: {said:?}"
+    );
 }
 
 #[test]

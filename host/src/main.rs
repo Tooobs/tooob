@@ -524,7 +524,7 @@ async fn share(
             label: label.clone(),
             expires_in,
             approve: flags.contains_key("approve"),
-            qr: !flags.contains_key("no-qr"),
+            qr: wants_qr(flags),
         })
         .collect();
     // A reused Host keeps its own Relay; the flags are for a new one. Invites need a Key Address,
@@ -935,11 +935,13 @@ async fn owner_command(
     };
     let refused = refused(&host);
     let json = flags.contains_key("json");
-    let qr = !flags.contains_key("no-qr");
+    let qr = wants_qr(flags);
     match command {
+        // The link alone on stdout, so a script can take it.
         "invite" => {
             let options = invite_options(flags)?;
-            invite(&host, &client, &said()?, options, qr).await?
+            let link = invite_link(&host, &client, &said()?, options).await?;
+            print_link(&link, "", qr);
         }
         "pair" => {
             let invite = client.pair(&said()?).await.map_err(refused)?;
@@ -1163,30 +1165,32 @@ fn invite_options(flags: &Flags) -> Result<InviteOptions> {
     })
 }
 
-/// Make an Invite and print its link, alone on stdout so a script can take it.
-async fn invite(
-    host: &Entry,
-    client: &Client,
-    label: &str,
-    options: InviteOptions,
-    qr: bool,
-) -> Result<()> {
-    print_link(&invite_link(host, client, label, options).await?, "", qr);
-    Ok(())
+/// Whether Invite Links are drawn as QR codes too: unless `--no-qr` (#145).
+fn wants_qr(flags: &Flags) -> bool {
+    !flags.contains_key("no-qr")
+}
+
+/// What a printed Invite Link's output on stderr ended with.
+#[derive(PartialEq)]
+enum Ended {
+    /// The link's own line.
+    AtLink,
+    /// Its QR code, which ends in a blank line.
+    AtQrCode,
 }
 
 /// Print an Invite Link after `indent`, alone on stdout, and when `qr`, under it on stderr its QR
 /// code for a phone to scan, with the same indent, then a blank line: only in a terminal wide
-/// enough for it, never into a pipe or a log (#145). Whether the code was shown.
-fn print_link(link: &str, indent: &str, qr: bool) -> bool {
+/// enough for it, never into a pipe or a log (#145).
+fn print_link(link: &str, indent: &str, qr: bool) -> Ended {
     eprint!("{indent}");
     println!("{link}");
     match qr.then(|| tooob::qr::for_stderr(link, indent)).flatten() {
         Some(code) => {
             eprint!("{code}");
-            true
+            Ended::AtQrCode
         }
-        None => false,
+        None => Ended::AtLink,
     }
 }
 
@@ -1523,6 +1527,12 @@ async fn until_stopped(
 /// before and after: who each is for and for how long, then its link on a line of its own, alone
 /// on stdout so a script can take it. Nothing when there are none.
 async fn invite_given(host: &Entry, client: &Client, invitees: &[Invitee]) -> Result<()> {
+    /// An Invite made for an Invitee: how long it works for, and its link.
+    struct Made<'a> {
+        invitee: &'a Invitee,
+        works_for: String,
+        link: String,
+    }
     let mut made = Vec::new();
     for invitee in invitees {
         let options = InviteOptions {
@@ -1532,22 +1542,32 @@ async fn invite_given(host: &Entry, client: &Client, invitees: &[Invitee]) -> Re
         };
         let works_for = lasts(&options);
         let link = invite_link(host, client, &invitee.label, options).await?;
-        made.push((&invitee.label, works_for, link, invitee.qr));
+        made.push(Made {
+            invitee,
+            works_for,
+            link,
+        });
     }
     if made.is_empty() {
         return Ok(());
     }
     eprintln!("\n  Invites · each opens in one browser");
-    // A QR code ends in a blank line of its own: the one that would follow it is left out.
-    let mut blank_after = false;
-    for (label, works_for, link, qr) in made {
-        if !blank_after {
+    // Each Invite has a blank line before it and the block one after it; a QR code already ends
+    // in one, so none is added after a code.
+    let mut ended = Ended::AtLink;
+    for Made {
+        invitee,
+        works_for,
+        link,
+    } in made
+    {
+        if ended == Ended::AtLink {
             eprintln!();
         }
-        eprintln!("    {label} · {works_for}");
-        blank_after = print_link(&link, "    ", qr);
+        eprintln!("    {} · {works_for}", invitee.label);
+        ended = print_link(&link, "    ", invitee.qr);
     }
-    if !blank_after {
+    if ended == Ended::AtLink {
         eprintln!();
     }
     Ok(())

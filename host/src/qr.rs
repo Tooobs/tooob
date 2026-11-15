@@ -8,13 +8,21 @@ const QUIET: usize = 4;
 const COLOURS: &str = "\x1b[30;107m";
 const RESET: &str = "\x1b[0m";
 
-/// `link` as a QR code, two modules a character cell, each line after `indent`, then a blank
-/// line. None when it can't be encoded.
-pub fn drawn(link: &str, indent: &str) -> Option<String> {
-    let code = qrcode::QrCode::with_error_correction_level(link, qrcode::EcLevel::L).ok()?;
+/// `link` encoded as a QR code; None when it can't be.
+fn encoded(link: &str) -> Option<qrcode::QrCode> {
+    qrcode::QrCode::with_error_correction_level(link, qrcode::EcLevel::L).ok()
+}
+
+/// How many columns a drawn code takes, quiet zone and all, `indent` not counted.
+fn columns(code: &qrcode::QrCode) -> usize {
+    code.width() + 2 * QUIET
+}
+
+/// `code` drawn two modules a character cell, each line after `indent`, then a blank line.
+fn drawn(code: &qrcode::QrCode, indent: &str) -> String {
     let width = code.width();
     let colors = code.to_colors();
-    let size = width + 2 * QUIET;
+    let size = columns(code);
     // Outside the code is the quiet zone, light.
     let dark = |x: usize, y: usize| {
         let (Some(x), Some(y)) = (x.checked_sub(QUIET), y.checked_sub(QUIET)) else {
@@ -38,7 +46,7 @@ pub fn drawn(link: &str, indent: &str) -> Option<String> {
         out.push('\n');
     }
     out.push('\n');
-    Some(out)
+    out
 }
 
 /// `link` drawn for the terminal on stderr, `indent` before each line: None when stderr isn't a
@@ -50,15 +58,16 @@ pub fn for_stderr(link: &str, indent: &str) -> Option<String> {
     {
         return None;
     }
-    let drawn = drawn(link, indent)?;
-    let needs = drawn.lines().next()?.chars().count() - COLOURS.len() - RESET.len();
-    (needs <= usize::from(stderr_columns()?)).then_some(drawn)
+    let code = encoded(link)?;
+    let needs = indent.chars().count() + columns(&code);
+    (needs <= usize::from(stderr_columns()?)).then(|| drawn(&code, indent))
 }
 
 /// How wide the terminal on stderr is, in columns; None when it doesn't say.
 fn stderr_columns() -> Option<u16> {
-    // SAFETY: TIOCGWINSZ writes one winsize, `size`, ours.
+    // SAFETY: winsize is plain integers, for which all zeros is a valid value.
     let mut size: libc::winsize = unsafe { std::mem::zeroed() };
+    // SAFETY: TIOCGWINSZ writes one winsize, into `size`, which is ours and lives past the call.
     let got = unsafe { libc::ioctl(libc::STDERR_FILENO, libc::TIOCGWINSZ, &mut size) };
     (got == 0 && size.ws_col > 0).then_some(size.ws_col)
 }
@@ -99,7 +108,7 @@ mod tests {
 
     #[test]
     fn a_drawn_link_reads_back_as_the_link() {
-        let drawn = drawn(LINK, "    ").unwrap();
+        let drawn = drawn(&encoded(LINK).unwrap(), "    ");
         assert_eq!(read(&drawn, "    "), LINK);
         assert!(drawn.ends_with("\n\n"), "a blank line after it: {drawn:?}");
     }

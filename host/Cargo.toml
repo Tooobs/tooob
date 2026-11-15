@@ -38,9 +38,9 @@ webrtc = "0.21"
 axum = { version = "0.8.9", features = ["ws"] }
 expectrl = "0.9.0"
 getrandom = "0.4.3"
+rqrr = { version = "0.11.0", default-features = false }
 tooob-relay = { path = "../relay" }
 tempfile = "3.27.0"
-rqrr = { version = "0.11.0", default-features = false }
 
 [target.'cfg(target_env = "musl")'.dependencies]
 mimalloc = { version = "0.1.52", default-features = false }
