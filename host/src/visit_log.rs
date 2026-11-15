@@ -234,8 +234,8 @@ impl Visit {
         }
         let path = self.path();
         let due = match self.said {
-            // A Visit's first Direct Path settles it: no need to wait.
-            None if !self.directs.is_empty() => now,
+            // Even with a Direct Path up, its kind may change as ICE moves pair (#137): from a
+            // Tailscale pair to the LAN's, say. Its getting in gives the kind as it stands then.
             None => self.started + shared.direct_wait,
             Some(said) if said == path => return (says, None, false),
             Some(_) if path == Path::Relay && self.heard <= self.path_since => {
@@ -598,7 +598,7 @@ impl Presence {
         DIRECTS.fetch_add(1, Ordering::Relaxed)
     }
 
-    /// Direct Path `id` is up, of `kind`.
+    /// Direct Path `id` is up, of `kind`; or, up already, is of `kind` now.
     pub(crate) fn direct_up(&self, id: u64, kind: Kind) {
         let Connection { visits, key, .. } = &*self.0;
         visits.change(key, |visit| {
@@ -707,5 +707,63 @@ impl Visits {
                 ),
             );
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The log of this test process's one Host, kept in a folder of its own; the lines it has so
+    /// far, of the Visitor named `label`.
+    fn said_of(dir: &std::path::Path, label: &str) -> Vec<String> {
+        log::Reader::open(dir)
+            .so_far()
+            .unwrap()
+            .into_iter()
+            .map(|kept| log::Line::parse("photos", &kept).text)
+            .filter(|text| text.starts_with(&format!("{label} (")))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn the_direct_paths_kind_is_logged_as_it_stands_once_settled_and_again_when_it_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        log::keep(log::Log::open(dir.path(), "photos", false));
+        let wait = Duration::from_millis(400);
+        let visits = Visits(Arc::new(Shared {
+            grace: Duration::from_secs(60),
+            direct_wait: wait,
+            still_here: Duration::from_secs(600),
+            refused_cap: REFUSED_CAP,
+            access: Arc::new(Mutex::new(Access::open(dir.path().join("access")).unwrap())),
+            usage: Arc::new(Usage::open(dir.path().join("usage")).unwrap()),
+            state: Mutex::default(),
+        }));
+        let key = "ab".repeat(32);
+        let presence = visits.connection(&key);
+        presence.let_in("mom");
+        let path = presence.direct_path();
+        // ICE's first pair: the browser's end peer-reflexive, so of no kind yet.
+        presence.direct_up(path, Kind::Unknown);
+        tokio::time::sleep(wait / 4).await;
+        // ICE moves onto the LAN pair before the Visit's path settles.
+        presence.direct_up(path, Kind::Lan);
+        tokio::time::sleep(wait * 2).await;
+        let short = short(&key);
+        assert_eq!(
+            said_of(dir.path(), "mom"),
+            [format!("mom ({short}) got in · return · direct · LAN")]
+        );
+        // A later change of kind gets a line of its own.
+        presence.direct_up(path, Kind::NatPunched);
+        tokio::time::sleep(wait * 2).await;
+        assert_eq!(
+            said_of(dir.path(), "mom"),
+            [
+                format!("mom ({short}) got in · return · direct · LAN"),
+                format!("mom ({short}) moved to direct · NAT punched"),
+            ]
+        );
     }
 }

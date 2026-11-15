@@ -539,6 +539,12 @@ async function goDirect() {
     directKind(pc); // it may have changed (Wi-Fi to 5G)
   };
   resume();
+  // ICE may move it onto another pair once connected: from a Tailscale pair to the LAN's, about
+  // 3 s in (#137). Judge its kind again each time.
+  const ice = pc.sctp?.transport?.iceTransport;
+  ice?.addEventListener?.('selectedcandidatepairchange', () => {
+    if (directPc === pc && stats.path === 'direct') directKind(pc, true);
+  });
 
   // A Direct Path that fails mid-visit (the network changed under it: Wi-Fi to 5G and back) gets
   // an ICE restart over iroh: new candidates, same data channel, so streams on it carry on. Tried
@@ -601,8 +607,9 @@ function setPath(path) {
 // What kind of Direct Path WebRTC picked: on the home network (LAN), or punched through NAT via
 // STUN-discovered public addresses. Judged by the Host's end of the selected candidate pair. Only
 // the kind is ever shown, never an address: the pill is on screen when people show the Site around.
-async function directKind(pc) {
-  stats.directKind = undefined;
+// `again`: the pair changed, so the pill keeps the kind it shows until the new one is judged.
+async function directKind(pc, again = false) {
+  if (!again) stats.directKind = undefined;
   // Android Chrome may not have the selected pair in its stats yet right at 'connected': retry.
   for (let attempt = 0; attempt < 10 && stats.path === 'direct'; attempt++) {
     const kind = await classify(pc).catch(() => undefined);

@@ -95,6 +95,7 @@ pub(crate) async fn open(
         credit,
         candidates,
         up: AtomicBool::new(false),
+        connected: Arc::new(std::sync::Mutex::new(0)),
         closed: Notify::new(),
     });
     let config = RTCConfigurationBuilder::new()
@@ -252,7 +253,56 @@ struct Handler {
     candidates: mpsc::UnboundedSender<RTCIceCandidateInit>,
     /// Connected at least once.
     up: AtomicBool,
+    /// Which time it's connected, counting each change of its state: the kind's watch for this
+    /// time stops once it changes. Held while its Visit hears it's up or down, so a watch never
+    /// says it's up after it went down.
+    connected: Arc<std::sync::Mutex<u64>>,
     closed: Notify,
+}
+
+/// How often a connected Direct Path's kind is judged again: ICE may move it onto another pair
+/// (from a Tailscale pair to the LAN's, about 3 s in: #137). webrtc-rs 0.21 has no callback for a
+/// change of the selected pair, so its stats are read again instead.
+const KIND_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
+impl Handler {
+    /// Its state changed: a new time connected, or the last one over.
+    fn changed(&self) -> std::sync::MutexGuard<'_, u64> {
+        let mut connected = self.connected.lock().unwrap();
+        *connected += 1;
+        connected
+    }
+
+    /// Judge its kind now and tell its Visit; then again each `KIND_EVERY` while it stays
+    /// connected this time, telling its Visit of each change.
+    fn watch_kind(&self) {
+        let (pc, presence, id) = (self.pc.get().cloned(), self.presence.clone(), self.id);
+        let connected = self.connected.clone();
+        let this_time = *connected.lock().unwrap();
+        tokio::spawn(async move {
+            let mut said = None;
+            loop {
+                let kind = match pc.as_ref().and_then(std::sync::Weak::upgrade) {
+                    Some(pc) => kind_of(&*pc).await,
+                    None => Kind::Unknown,
+                };
+                {
+                    let now = connected.lock().unwrap();
+                    if *now != this_time {
+                        return;
+                    }
+                    if said != Some(kind) {
+                        presence.direct_up(id, kind);
+                        said = Some(kind);
+                    }
+                }
+                if pc.as_ref().and_then(std::sync::Weak::upgrade).is_none() {
+                    return;
+                }
+                tokio::time::sleep(KIND_EVERY).await;
+            }
+        });
+    }
 }
 
 #[async_trait::async_trait]
@@ -267,18 +317,16 @@ impl PeerConnectionEventHandler for Handler {
         match state {
             RTCPeerConnectionState::Connected => {
                 self.up.store(true, Ordering::Relaxed);
-                let pc = self.pc.get().and_then(std::sync::Weak::upgrade);
-                let kind = match pc {
-                    Some(pc) => kind_of(&*pc).await,
-                    None => Kind::Unknown,
-                };
-                self.presence.direct_up(self.id, kind);
+                drop(self.changed());
+                self.watch_kind();
             }
             RTCPeerConnectionState::Closed => {
+                let _changed = self.changed();
                 self.presence.direct_down(self.id);
                 self.closed.notify_one();
             }
             RTCPeerConnectionState::Disconnected | RTCPeerConnectionState::Failed => {
+                let _changed = self.changed();
                 self.presence.direct_down(self.id)
             }
             _ => {}

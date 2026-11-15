@@ -857,8 +857,9 @@ test('the Host counts what each Visitor downloads and uploads, on the Direct Pat
 
 test("the Host's log never says a Visitor who closed their tab moved to the Relay", async ({ browser, relay }) => {
   test.skip(h.olderThan('0.3.0'), 'tests #23, from 0.3.0; the Release swapped in is older');
-  // A grace longer than the wait for a path to settle, so a move logged as the tab went would show.
-  const { name, invite } = await hostWithSite(relay, { TOOOB_VISIT_GRACE: '5s', TOOOB_DIRECT_WAIT: '1s' });
+  // A grace longer than the wait for a path to settle, so a move logged as the tab went would show;
+  // and a wait longer than ICE takes to move onto the LAN pair on a box with Tailscale (#137).
+  const { name, invite } = await hostWithSite(relay, { TOOOB_VISIT_GRACE: '10s', TOOOB_DIRECT_WAIT: '5s' });
   const page = await h.newVisitor(browser);
   await page.goto(invite('mom'));
   await h.siteText(page);
