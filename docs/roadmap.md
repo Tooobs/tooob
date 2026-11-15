@@ -109,6 +109,7 @@ Owners find a Relay to use. Choosing stays the Owner's ([ADR 0015](adr/0015-no-d
 
 tooob for people who don't open a terminal.
 
+- ✅ Each Invite Link shows as a QR code in the terminal, so a phone's camera opens it ([#145](https://github.com/Tooobs/tooob/issues/145))
 - ⬜ The macOS `tooob` is signed and notarized ([#52](https://github.com/Tooobs/tooob/issues/52)), and Releases include Intel Macs ([#51](https://github.com/Tooobs/tooob/issues/51))
 - ⬜ The Host runs on Windows ([#28](https://github.com/Tooobs/tooob/issues/28))
 - ⬜ A Bootstrap speaks the current and the previous Protocol Version ([#53](https://github.com/Tooobs/tooob/issues/53))

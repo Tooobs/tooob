@@ -180,6 +180,13 @@ Owners find a Relay to use instead of running their own: a plain list anyone can
 - **[#135](https://github.com/Tooobs/tooob/issues/135) A valid Enrollment Code or Operator Token is never refused by the guessing limits** · 2026-11-14 · the next Release (not out yet)
   - Nothing shows on r.tooobs.net, which is open. Underneath, tooob-relay's guessing limits now refuse only wrong guesses: an address with 5 wrong Enrollment Codes in 15 minutes, or 10 bad Operator Tokens in a minute at the enroll API or the admin page's login, still gets in with a valid one, so someone sharing your address (a proxy, CGNAT, Cloudflare's Worker addresses) can't lock you or your Sign-up Page out. To see it, on a Relay of your own (the test Relay, #142, will do): send 11 `PUT /__tooob/api/enrolled/<host key>` with a bad `Authorization: Bearer` token, and the 11th gets 429; then the same `PUT` with a real token still enrolls the key (200).
 
+### [Normal people](https://github.com/Tooobs/tooob/milestone/2) (in progress)
+
+tooob for people who don't open a terminal: a signed `tooob` for every Mac and for Windows that upgrades itself, set-up that walks them through it, and Visitors who keep working when a Host and its Relay's Bootstrap are a Protocol Version apart. Every v1 choice is already checked against it.
+
+- **[#145](https://github.com/Tooobs/tooob/issues/145) tooob shows each Invite Link as a QR code in the terminal, to scan with a phone** · 2026-11-15 · the next Release (not out yet)
+  - `tooob invite NAME LABEL`, `tooob pair NAME LABEL` and each Invite in `tooob share`'s Invites block now draw the Invite Link as a QR code under it (about 49 columns by 25 lines, black on white whatever your terminal's theme): point a phone's camera at it to open the link, which matters most for `pair`, how your own phone becomes an Owner Device. `--no-qr` leaves it out, say on a screen share, where anyone could scan an Invite first. The code goes only to a terminal: `tooob invite NAME LABEL | pbcopy` still copies the link alone, and a Host's log never has one. It's also left out when the terminal is narrower than the code (try a window under 49 columns) or `NO_COLOR` is set.
+
 ## Still to come
 
 What each later milestone will add when it's done, in the planned order. Details and progress: [the roadmap](https://github.com/Tooobs/tooob/blob/main/docs/roadmap.md).
@@ -187,10 +194,6 @@ What each later milestone will add when it's done, in the planned order. Details
 ### [Agents](https://github.com/Tooobs/tooob/blob/main/docs/roadmap.md#agents)
 
 AI agents run Hosts for their Owners and visit Sites in a browser like anyone else. An agent shares a status dashboard or a preview with people and other agents by invitation, and every device its Invites let in is approved by a person first ([ADR 0018](docs/adr/0018-agents-make-approve-first-invites-enforced-by-agent-accounts.md)). A local MCP server lets an agent read, block and revoke; anything that would let someone in waits for the Owner.
-
-### [Normal people](https://github.com/Tooobs/tooob/blob/main/docs/roadmap.md#normal-people)
-
-tooob for people who don't open a terminal: a signed `tooob` for every Mac and for Windows that upgrades itself, set-up that walks them through it, and Visitors who keep working when a Host and its Relay's Bootstrap are a Protocol Version apart. Every v1 choice is already checked against it.
 
 ### [v2](https://github.com/Tooobs/tooob/blob/main/docs/roadmap.md#v2)
 
