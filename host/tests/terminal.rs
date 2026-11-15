@@ -217,7 +217,17 @@ fn share_with_everything_given_asks_nothing_prints_its_invites_and_the_keys_and_
     assert!(said.contains(&format!("{name}: serving")), "{said}");
     assert!(!said.contains('?'), "asked something: {said}");
     let block = &said[said.find("\n\n  Invites").expect(&said)..];
-    let lines: Vec<&str> = block.split('\n').collect();
+    // A QR code under each link, with its indent; the block around them as it was without.
+    assert_eq!(qr_codes(block), 2, "{block}");
+    let all: Vec<&str> = block.split('\n').collect();
+    for (i, _) in all
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.contains("/#invite="))
+    {
+        assert!(all[i + 1].starts_with(&format!("    {QR}")), "{block:?}");
+    }
+    let lines: Vec<&str> = all.into_iter().filter(|l| !l.contains(QR)).collect();
     let link = |line: &str| {
         line.starts_with("    http://")
             && line.contains(".localhost:")
@@ -573,19 +583,91 @@ fn every_command_missing_something_fails_at_once_with_the_command_to_type() {
     assert!(home.ok(&["invites", "photos"]).is_empty(), "no Invite made");
 }
 
+/// The colours a QR code is drawn in, starting each of its lines.
+const QR: &str = "\x1b[30;107m";
+
+/// How many QR codes a terminal showed: runs of lines drawn in its colours.
+fn qr_codes(said: &str) -> usize {
+    let drawn: Vec<bool> = said.lines().map(|l| l.contains(QR)).collect();
+    drawn
+        .iter()
+        .enumerate()
+        .filter(|&(i, &d)| d && (i == 0 || !drawn[i - 1]))
+        .count()
+}
+
 #[test]
-fn invite_with_everything_given_prints_only_the_link() {
+fn invite_with_everything_given_prints_the_link_and_under_it_its_qr_code() {
     let home = Home::new();
     let folder = a_folder();
     home.add_naming("photos", folder.path().to_str().unwrap(), RELAY);
 
     let (said, ok) = said_in_terminal(&home, &["invite", "photos", "Bob"]);
     assert!(ok, "{said}");
+    let said = shown(said.as_bytes());
     let key = home.shown("photos", "Host Key");
     let link = format!("https://{key}.relay.example/#invite=");
-    assert!(said.trim().starts_with(&link), "{said}");
-    assert_eq!(said.trim().lines().count(), 1, "the link alone: {said}");
+    assert!(said.starts_with(&link), "the link first: {said}");
+    assert_eq!(qr_codes(&said), 1, "{said}");
+    assert!(
+        said.ends_with("\x1b[0m\n\n"),
+        "a blank line after it: {said:?}"
+    );
     assert!(home.ok(&["invites", "photos"]).contains("Bob"));
+}
+
+#[test]
+fn invites_qr_code_is_on_stderr_only_and_left_out_for_no_qr_no_color_or_a_narrow_terminal() {
+    let home = Home::new();
+    let folder = a_folder();
+    home.add_naming("photos", folder.path().to_str().unwrap(), RELAY);
+    let out = home.0.path().join("out");
+    let mut sh = bash(&home);
+    let mut run = |line: String| {
+        sh.send_line(format!("{line}; echo EN''D")).unwrap();
+        let said = shown(sh.expect("END\r\n").unwrap().before());
+        sh.expect("$ ").unwrap();
+        said
+    };
+
+    // stdout to a file: the terminal shows the code, the file only the link.
+    let said = run(format!(
+        "{} > '{}'",
+        tooob_line(&home, "invite photos Bob"),
+        out.display()
+    ));
+    assert_eq!(qr_codes(&said), 1, "{said}");
+    let link = std::fs::read_to_string(&out).unwrap();
+    assert_eq!(link.lines().count(), 1, "{link}");
+    assert!(link.contains("/#invite="), "{link}");
+
+    for (line, why) in [
+        (tooob_line(&home, "invite photos Ann --no-qr"), "--no-qr"),
+        (
+            format!("NO_COLOR=1 {}", tooob_line(&home, "invite photos Cy")),
+            "NO_COLOR",
+        ),
+        (
+            format!("stty cols 40; {}", tooob_line(&home, "invite photos Di")),
+            "40 columns",
+        ),
+    ] {
+        let said = run(line);
+        assert!(said.contains("/#invite="), "{why}: {said}");
+        assert_eq!(qr_codes(&said), 0, "{why}: {said}");
+    }
+}
+
+#[test]
+fn pair_prints_its_link_and_one_qr_code() {
+    let home = Home::new();
+    let folder = a_folder();
+    home.add_naming("photos", folder.path().to_str().unwrap(), RELAY);
+
+    let (said, ok) = said_in_terminal(&home, &["pair", "photos", "phone"]);
+    assert!(ok, "{said}");
+    assert!(said.contains("/#invite="), "{said}");
+    assert_eq!(qr_codes(&said), 1, "{said}");
 }
 
 #[test]

@@ -12,6 +12,7 @@ pub mod hosts;
 mod jars;
 pub mod keys;
 pub mod log;
+pub mod qr;
 mod shared_folder;
 pub mod upgrade;
 mod usage;

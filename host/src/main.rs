@@ -38,7 +38,7 @@ const USAGE: &str = "usage:
                                                   -d (--detach), keeps it running instead, now and
                                                   after logins, reboots and crashes: launchd or
                                                   systemd runs it
-  tooob share PATH [--invite LABEL]... [--expires 7d] [--approve] [--name NAME]
+  tooob share PATH [--invite LABEL]... [--expires 7d] [--approve] [--no-qr] [--name NAME]
                    [--relay URL | --local | --relay-code CODE] [--uploads] [-d]
                                                   add a Host for PATH (or reuse its Host), invite
                                                   each LABEL, then run it (-d as for run); it
@@ -55,13 +55,13 @@ const USAGE: &str = "usage:
   tooob rm NAME                                   stop it and delete it, Host Key and all
   tooob logs NAME [-n N|all] [-f] [--json]       its log, the last 50 lines, N, or all of it;
                                                   -f follows it, --json gives an object a line
-  tooob invite NAME LABEL [--approve] [--owner] [--expires 1h]
+  tooob invite NAME LABEL [--approve] [--owner] [--expires 1h] [--no-qr]
                                                   print an Invite Link; --approve: each device
                                                   it lets in waits for approve, --owner: to be
                                                   an Owner Device. Each waiting device shows a
                                                   Device Code: approve only when it's the code
                                                   tooob visitors shows
-  tooob pair NAME LABEL                           Pairing Invite (this box only)
+  tooob pair NAME LABEL [--no-qr]                 Pairing Invite (this box only)
   tooob visitors NAME [--json]                    its Visitors: when each was last seen, and what
                                                   was sent to them and received from them
   tooob invites NAME [--json]                     its unused Invites
@@ -89,7 +89,8 @@ const USAGE: &str = "usage:
 NAME is a Host Name, what the Host serves, or a Host Key prefix. Owner commands work whether the
 Host is running or not. There's no default Relay: deploy/ shows how to run your own. Nothing is
 asked but upgrade's one question: what's missing is an error that shows the command to type.
-Running Hosts look for a newer Release once a day, and say when one is out.";
+Running Hosts look for a newer Release once a day, and say when one is out. In a terminal, share,
+invite and pair draw each Invite Link as a QR code too, for a phone to scan; --no-qr leaves it out.";
 
 const VALUE_FLAGS: &[&str] = &[
     "relay",
@@ -102,6 +103,7 @@ const VALUE_FLAGS: &[&str] = &[
 ];
 const BARE_FLAGS: &[&str] = &[
     "local", "json", "approve", "owner", "follow", "yes", "check", "anyway", "detach", "uploads",
+    "no-qr",
 ];
 
 /// Where an Owner learns to deploy a Relay.
@@ -488,6 +490,8 @@ struct Invitee {
     label: String,
     expires_in: u64,
     approve: bool,
+    /// Its link drawn as a QR code too, unless `--no-qr`.
+    qr: bool,
 }
 
 /// `tooob share`: add a Host for a folder or file, or reuse the one already serving it, then run
@@ -520,6 +524,7 @@ async fn share(
             label: label.clone(),
             expires_in,
             approve: flags.contains_key("approve"),
+            qr: !flags.contains_key("no-qr"),
         })
         .collect();
     // A reused Host keeps its own Relay; the flags are for a new one. Invites need a Key Address,
@@ -888,7 +893,8 @@ async fn owner_command(
     invitees: &[String],
 ) -> Result<()> {
     let allowed: &[&str] = match command {
-        "invite" => &["expires", "approve", "owner"],
+        "invite" => &["expires", "approve", "owner", "no-qr"],
+        "pair" => &["no-qr"],
         "visitors" | "invites" => &["json"],
         _ => &[],
     };
@@ -929,14 +935,15 @@ async fn owner_command(
     };
     let refused = refused(&host);
     let json = flags.contains_key("json");
+    let qr = !flags.contains_key("no-qr");
     match command {
         "invite" => {
             let options = invite_options(flags)?;
-            invite(&host, &client, &said()?, options).await?
+            invite(&host, &client, &said()?, options, qr).await?
         }
         "pair" => {
             let invite = client.pair(&said()?).await.map_err(refused)?;
-            println!("{}", host.invite_link(&invite.token)?);
+            print_link(&host.invite_link(&invite.token)?, "", qr);
         }
         "visitors" => {
             let visitors = client.visitors().await.map_err(refused)?;
@@ -1157,9 +1164,30 @@ fn invite_options(flags: &Flags) -> Result<InviteOptions> {
 }
 
 /// Make an Invite and print its link, alone on stdout so a script can take it.
-async fn invite(host: &Entry, client: &Client, label: &str, options: InviteOptions) -> Result<()> {
-    println!("{}", invite_link(host, client, label, options).await?);
+async fn invite(
+    host: &Entry,
+    client: &Client,
+    label: &str,
+    options: InviteOptions,
+    qr: bool,
+) -> Result<()> {
+    print_link(&invite_link(host, client, label, options).await?, "", qr);
     Ok(())
+}
+
+/// Print an Invite Link after `indent`, alone on stdout, and when `qr`, under it on stderr its QR
+/// code for a phone to scan, with the same indent, then a blank line: only in a terminal wide
+/// enough for it, never into a pipe or a log (#145). Whether the code was shown.
+fn print_link(link: &str, indent: &str, qr: bool) -> bool {
+    eprint!("{indent}");
+    println!("{link}");
+    match qr.then(|| tooob::qr::for_stderr(link, indent)).flatten() {
+        Some(code) => {
+            eprint!("{code}");
+            true
+        }
+        None => false,
+    }
 }
 
 /// Make an Invite; its link. The Key Address comes first: without one, no Invite is made that
@@ -1504,18 +1532,24 @@ async fn invite_given(host: &Entry, client: &Client, invitees: &[Invitee]) -> Re
         };
         let works_for = lasts(&options);
         let link = invite_link(host, client, &invitee.label, options).await?;
-        made.push((&invitee.label, works_for, link));
+        made.push((&invitee.label, works_for, link, invitee.qr));
     }
     if made.is_empty() {
         return Ok(());
     }
     eprintln!("\n  Invites · each opens in one browser");
-    for (label, works_for, link) in made {
-        eprintln!("\n    {label} · {works_for}");
-        eprint!("    ");
-        println!("{link}");
+    // A QR code ends in a blank line of its own: the one that would follow it is left out.
+    let mut blank_after = false;
+    for (label, works_for, link, qr) in made {
+        if !blank_after {
+            eprintln!();
+        }
+        eprintln!("    {label} · {works_for}");
+        blank_after = print_link(&link, "    ", qr);
     }
-    eprintln!();
+    if !blank_after {
+        eprintln!();
+    }
     Ok(())
 }
 
