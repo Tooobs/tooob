@@ -359,7 +359,13 @@ export function logOf(name) {
 /** Wait until Host `name`'s log has a line matching `re`; that line. */
 export async function logged(name, re, ms = 20000) {
   let line;
-  await until(async () => (line = logOf(name).find((l) => re.test(l))), `${name} to log ${re}`, ms);
+  try {
+    await until(async () => (line = logOf(name).find((l) => re.test(l))), `${name} to log ${re}`, ms);
+  } catch (e) {
+    // What it did log, to see why not.
+    e.message += `\n${name}'s log:\n${logOf(name).join('\n')}`;
+    throw e;
+  }
   return line;
 }
 

@@ -859,7 +859,7 @@ test("the Host's log never says a Visitor who closed their tab moved to the Rela
   test.skip(h.olderThan('0.3.0'), 'tests #23, from 0.3.0; the Release swapped in is older');
   // A grace longer than the wait for a path to settle, so a move logged as the tab went would show;
   // and a wait longer than ICE takes to move onto the LAN pair on a box with Tailscale (#137).
-  const { name, invite } = await hostWithSite(relay, { TOOOB_VISIT_GRACE: '10s', TOOOB_DIRECT_WAIT: '5s' });
+  const { name, invite } = await hostWithSite(relay, { TOOOB_VISIT_GRACE: '15s', TOOOB_DIRECT_WAIT: '8s' });
   const page = await h.newVisitor(browser);
   await page.goto(invite('mom'));
   await h.siteText(page);

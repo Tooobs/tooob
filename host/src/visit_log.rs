@@ -145,6 +145,8 @@ struct Visit {
     last_left: Instant,
     /// Its Direct Paths up now, by their id.
     directs: HashMap<u64, Kind>,
+    /// The kind of its last Direct Path to go, if one went.
+    went: Option<Kind>,
     /// The path the log last said it takes: None until its getting in is logged.
     said: Option<Path>,
     /// When its path last changed.
@@ -181,10 +183,15 @@ impl Visit {
         }
     }
 
-    /// Its getting in, unless that's said already: on the path it takes now.
+    /// Its getting in, unless that's said already: on the path it takes now. Or, if its Direct
+    /// Path went and its Visitor hasn't been heard on the Relay since, on that Direct Path: a tab
+    /// closed before the path settled (`UNNOTICED`) got in on it.
     fn got_in(&mut self, says: &mut Vec<Said>) {
         if self.said.is_none() {
-            let path = self.path();
+            let path = match (self.path(), self.went) {
+                (Path::Relay, Some(kind)) if self.heard <= self.path_since => Path::Direct(kind),
+                (path, _) => path,
+            };
             says.push(Said::GotIn {
                 first: self.first,
                 path,
@@ -532,6 +539,7 @@ impl Presence {
                 connections: 1,
                 last_left: now,
                 directs: HashMap::new(),
+                went: None,
                 said: None,
                 path_since: now,
                 heard: now,
@@ -610,7 +618,9 @@ impl Presence {
     pub(crate) fn direct_down(&self, id: u64) {
         let Connection { visits, key, .. } = &*self.0;
         visits.change(key, |visit| {
-            visit.directs.remove(&id);
+            if let Some(kind) = visit.directs.remove(&id) {
+                visit.went = Some(kind);
+            }
         });
     }
 
@@ -714,10 +724,18 @@ impl Visits {
 mod tests {
     use super::*;
 
-    /// The log of this test process's one Host, kept in a folder of its own; the lines it has so
-    /// far, of the Visitor named `label`.
-    fn said_of(dir: &std::path::Path, label: &str) -> Vec<String> {
-        log::Reader::open(dir)
+    /// The folder of this test process's one Host log, kept for the process: each test names
+    /// its own Visitor in it.
+    fn host_log() -> &'static std::path::Path {
+        static DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
+        let dir = DIR.get_or_init(|| tempfile::tempdir().unwrap()).path();
+        log::keep(log::Log::open(dir, "photos", false));
+        dir
+    }
+
+    /// The lines the Host log has so far of the Visitor named `label`.
+    fn said_of(label: &str) -> Vec<String> {
+        log::Reader::open(host_log())
             .so_far()
             .unwrap()
             .into_iter()
@@ -726,20 +744,46 @@ mod tests {
             .collect()
     }
 
-    #[tokio::test]
-    async fn the_direct_paths_kind_is_logged_as_it_stands_once_settled_and_again_when_it_changes() {
-        let dir = tempfile::tempdir().unwrap();
-        log::keep(log::Log::open(dir.path(), "photos", false));
-        let wait = Duration::from_millis(400);
-        let visits = Visits(Arc::new(Shared {
+    /// Visits waiting `wait` for a path to settle, logging to the Host log, their state in `dir`.
+    fn visits(dir: &std::path::Path, wait: Duration) -> Visits {
+        host_log();
+        Visits(Arc::new(Shared {
             grace: Duration::from_secs(60),
             direct_wait: wait,
             still_here: Duration::from_secs(600),
             refused_cap: REFUSED_CAP,
-            access: Arc::new(Mutex::new(Access::open(dir.path().join("access")).unwrap())),
-            usage: Arc::new(Usage::open(dir.path().join("usage")).unwrap()),
+            access: Arc::new(Mutex::new(Access::open(dir.join("access")).unwrap())),
+            usage: Arc::new(Usage::open(dir.join("usage")).unwrap()),
             state: Mutex::default(),
-        }));
+        }))
+    }
+
+    #[tokio::test]
+    async fn a_visitor_who_closes_their_tab_before_the_path_settles_got_in_on_its_direct_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let wait = Duration::from_millis(400);
+        let visits = visits(dir.path(), wait);
+        let key = "cd".repeat(32);
+        let presence = visits.connection(&key);
+        presence.let_in("dad");
+        let path = presence.direct_path();
+        presence.direct_up(path, Kind::Lan);
+        tokio::time::sleep(wait / 4).await;
+        // The tab closes: its Direct Path goes at once, its iroh connection lingers unheard.
+        presence.direct_down(path);
+        tokio::time::sleep(wait * 2).await;
+        let short = short(&key);
+        assert_eq!(
+            said_of("dad"),
+            [format!("dad ({short}) got in · return · direct · LAN")]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_direct_paths_kind_is_logged_as_it_stands_once_settled_and_again_when_it_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let wait = Duration::from_millis(400);
+        let visits = visits(dir.path(), wait);
         let key = "ab".repeat(32);
         let presence = visits.connection(&key);
         presence.let_in("mom");
@@ -752,14 +796,14 @@ mod tests {
         tokio::time::sleep(wait * 2).await;
         let short = short(&key);
         assert_eq!(
-            said_of(dir.path(), "mom"),
+            said_of("mom"),
             [format!("mom ({short}) got in · return · direct · LAN")]
         );
         // A later change of kind gets a line of its own.
         presence.direct_up(path, Kind::NatPunched);
         tokio::time::sleep(wait * 2).await;
         assert_eq!(
-            said_of(dir.path(), "mom"),
+            said_of("mom"),
             [
                 format!("mom ({short}) got in · return · direct · LAN"),
                 format!("mom ({short}) moved to direct · NAT punched"),

@@ -37,7 +37,7 @@ use webrtc::data_channel::{DataChannel, DataChannelEvent};
 use webrtc::peer_connection::{
     PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCConfigurationBuilder,
     RTCIceCandidateInit, RTCIceServer, RTCPeerConnectionIceEvent, RTCPeerConnectionState,
-    RTCSessionDescription, RTCStatsReportEntry, StatsSelector,
+    RTCSessionDescription,
 };
 
 // ponytail: Google's public STUN server; run our own next to the Relay before launch.
@@ -95,7 +95,7 @@ pub(crate) async fn open(
         credit,
         candidates,
         up: AtomicBool::new(false),
-        connected: Arc::new(std::sync::Mutex::new(0)),
+        generation: Arc::new(std::sync::Mutex::new(0)),
         closed: Notify::new(),
     });
     let config = RTCConfigurationBuilder::new()
@@ -253,51 +253,52 @@ struct Handler {
     candidates: mpsc::UnboundedSender<RTCIceCandidateInit>,
     /// Connected at least once.
     up: AtomicBool,
-    /// Which time it's connected, counting each change of its state: the kind's watch for this
-    /// time stops once it changes. Held while its Visit hears it's up or down, so a watch never
-    /// says it's up after it went down.
-    connected: Arc<std::sync::Mutex<u64>>,
+    /// A generation count of its state, bumped on each change (up, down or closed): a watch of
+    /// its kind runs only while the generation it started in lasts. Locked while its Visit hears
+    /// it's up or down, so a watch never says it's up after it went down.
+    generation: Arc<std::sync::Mutex<u64>>,
     closed: Notify,
 }
 
 /// How often a connected Direct Path's kind is judged again: ICE may move it onto another pair
-/// (from a Tailscale pair to the LAN's, about 3 s in: #137). webrtc-rs 0.21 has no callback for a
-/// change of the selected pair, so its stats are read again instead.
+/// (from a Tailscale pair to the LAN's, about 3 s in: #137). webrtc-rs 0.21 has no public
+/// callback for a change of the selected pair, so the pair is read again instead.
 const KIND_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl Handler {
-    /// Its state changed: a new time connected, or the last one over.
-    fn changed(&self) -> std::sync::MutexGuard<'_, u64> {
-        let mut connected = self.connected.lock().unwrap();
-        *connected += 1;
-        connected
+    /// Its state changed: start a new generation. The guard keeps it locked while the caller
+    /// tells its Visit.
+    fn next_generation(&self) -> std::sync::MutexGuard<'_, u64> {
+        let mut generation = self.generation.lock().unwrap();
+        *generation += 1;
+        generation
     }
 
-    /// Judge its kind now and tell its Visit; then again each `KIND_EVERY` while it stays
-    /// connected this time, telling its Visit of each change.
+    /// Judge its kind now and tell its Visit; then again each `KIND_EVERY` while this generation
+    /// lasts, telling its Visit of each change. A reread that can't judge keeps the last kind.
     fn watch_kind(&self) {
         let (pc, presence, id) = (self.pc.get().cloned(), self.presence.clone(), self.id);
-        let connected = self.connected.clone();
-        let this_time = *connected.lock().unwrap();
+        let generation = self.generation.clone();
+        let this_one = *generation.lock().unwrap();
         tokio::spawn(async move {
             let mut said = None;
             loop {
-                let kind = match pc.as_ref().and_then(std::sync::Weak::upgrade) {
-                    Some(pc) => kind_of(&*pc).await,
-                    None => Kind::Unknown,
+                let Some(pc) = pc.as_ref().and_then(std::sync::Weak::upgrade) else {
+                    return;
                 };
+                let judged = kind_of(&*pc).await;
+                drop(pc);
                 {
-                    let now = connected.lock().unwrap();
-                    if *now != this_time {
+                    let now = generation.lock().unwrap();
+                    if *now != this_one {
                         return;
                     }
+                    // Its first pass says it's up, of whatever kind.
+                    let kind = judged.or(said).unwrap_or(Kind::Unknown);
                     if said != Some(kind) {
                         presence.direct_up(id, kind);
                         said = Some(kind);
                     }
-                }
-                if pc.as_ref().and_then(std::sync::Weak::upgrade).is_none() {
-                    return;
                 }
                 tokio::time::sleep(KIND_EVERY).await;
             }
@@ -317,16 +318,16 @@ impl PeerConnectionEventHandler for Handler {
         match state {
             RTCPeerConnectionState::Connected => {
                 self.up.store(true, Ordering::Relaxed);
-                drop(self.changed());
+                drop(self.next_generation());
                 self.watch_kind();
             }
             RTCPeerConnectionState::Closed => {
-                let _changed = self.changed();
+                let _generation = self.next_generation();
                 self.presence.direct_down(self.id);
                 self.closed.notify_one();
             }
             RTCPeerConnectionState::Disconnected | RTCPeerConnectionState::Failed => {
-                let _changed = self.changed();
+                let _generation = self.next_generation();
                 self.presence.direct_down(self.id)
             }
             _ => {}
@@ -347,35 +348,33 @@ impl PeerConnectionEventHandler for Handler {
 
 /// What kind of Direct Path `pc` is: on the home network (LAN), or punched through NAT. Judged as
 /// the browser judges it, by the address of the other end of the selected candidate pair: here,
-/// the browser's. The address itself goes nowhere: only the kind is logged (ADR 0025).
-async fn kind_of(pc: &dyn PeerConnection) -> Kind {
-    let report = pc
-        .get_stats(std::time::Instant::now(), StatsSelector::None)
-        .await;
-    let selected = report
+/// the browser's. The address itself goes nowhere: only the kind is logged (ADR 0025). `None`
+/// when there's no selected pair to judge (as on a reread that misses).
+///
+/// The pair is the ICE transport's, not the stats': when Chrome hides its host candidate behind
+/// an mDNS name this box can't resolve, the browser's end is a peer-reflexive candidate, which
+/// webrtc-rs 0.21 leaves out of its stats, so the stats never knew the kind (#137).
+async fn kind_of(pc: &dyn PeerConnection) -> Option<Kind> {
+    let sctp = pc.sctp().await?;
+    let pair = sctp
         .transport()
-        .map(|t| t.selected_candidate_pair_id.clone());
-    let pair = report
-        .candidate_pairs()
-        .find(|p| selected.as_deref() == Some(p.stats.id.as_str()))
-        .or_else(|| report.candidate_pairs().find(|p| p.nominated));
-    // The pair names its candidates by their own ids; their entries' ids have a prefix of the
-    // entry's type (`RTCRemoteIceCandidate_…`).
-    let browser = pair.and_then(|pair| {
-        let id = &pair.remote_candidate_id;
-        report.iter().find_map(|entry| match entry {
-            RTCStatsReportEntry::RemoteCandidate(c)
-                if c.stats.id == *id || c.stats.id.ends_with(&format!("_{id}")) =>
-            {
-                c.address.clone()
-            }
-            _ => None,
-        })
-    });
-    match browser {
-        Some(address) if on_the_home_network(&address) => Kind::Lan,
-        Some(_) => Kind::NatPunched,
-        None => Kind::Unknown,
+        .ice_transport()
+        .get_selected_candidate_pair()
+        .await
+        .ok()??;
+    Some(kind_of_pair(&pair.local().address, &pair.remote().address))
+}
+
+/// The kind of a candidate pair from `here`, this end's address, to `browser`, the browser's.
+fn kind_of_pair(here: &str, browser: &str) -> Kind {
+    if browser.is_empty() {
+        Kind::Unknown
+    } else if browser == here || on_the_home_network(browser) {
+        // Both ends of one address: the browser is on this box. On a box with Tailscale, the
+        // pair this end holds may stay the Tailscale one after the browser's moves off it (#137).
+        Kind::Lan
+    } else {
+        Kind::NatPunched
     }
 }
 
@@ -627,4 +626,21 @@ async fn pace(bytes: usize) {
         at
     };
     tokio::time::sleep_until(wait_until).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_pair_is_lan_on_the_home_network_or_on_this_box_and_nat_punched_otherwise() {
+        assert_eq!(kind_of_pair("192.168.1.5", "192.168.1.9"), Kind::Lan);
+        assert_eq!(kind_of_pair("192.168.1.5", "abc.local"), Kind::Lan);
+        // A browser on this box, on its Tailscale address.
+        assert_eq!(kind_of_pair("100.98.1.2", "100.98.1.2"), Kind::Lan);
+        // A Tailscale pair between two places isn't a home network.
+        assert_eq!(kind_of_pair("100.98.1.2", "100.71.3.4"), Kind::NatPunched);
+        assert_eq!(kind_of_pair("192.168.1.5", "203.0.113.7"), Kind::NatPunched);
+        assert_eq!(kind_of_pair("192.168.1.5", ""), Kind::Unknown);
+    }
 }
