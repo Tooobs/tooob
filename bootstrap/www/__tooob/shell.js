@@ -540,10 +540,13 @@ async function goDirect() {
   };
   resume();
   // ICE may move it onto another pair once connected: from a Tailscale pair to the LAN's, about
-  // 3 s in (#137). Judge its kind again each time.
+  // 3 s in (#137). Judge its kind again each time, and once more a second later, for when only the
+  // stats name the new pair and they still name the old one (see selectedHostAddress).
   const ice = pc.sctp?.transport?.iceTransport;
+  const judgeAgain = () => directPc === pc && stats.path === 'direct' && directKind(pc, true);
   ice?.addEventListener?.('selectedcandidatepairchange', () => {
-    if (directPc === pc && stats.path === 'direct') directKind(pc, true);
+    judgeAgain();
+    setTimeout(judgeAgain, 1000);
   });
 
   // A Direct Path that fails mid-visit (the network changed under it: Wi-Fi to 5G and back) gets
@@ -622,6 +625,27 @@ async function directKind(pc, again = false) {
 }
 
 async function classify(pc) {
+  const address = selectedHostAddress(pc) ?? (await statsHostAddress(pc));
+  if (!address) return;
+  // ponytail: judged by the address alone, so a home network on global IPv6 shows "NAT punched", and
+  // so does Tailscale's 100.64/10; compare the two ends' networks if that misleads people.
+  const lan = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|127\.|fe80:|fc|fd|::1$)/i.test(address);
+  return lan ? 'LAN' : 'NAT punched';
+}
+
+// The Host's end of the pair the ICE transport has selected now. It changes before
+// `selectedcandidatepairchange` fires, while getStats() can still name the old pair for a while
+// after it: an event 30 ms in read the Tailscale pair from the stats, and the pill said "NAT
+// punched" for good (#137, 3 runs in 8 on the g14). Chrome often hides the address here
+// (`redacted-ip.invalid`), and then only the stats say it: anything but an IP address is none.
+function selectedHostAddress(pc) {
+  const address = pc.sctp?.transport?.iceTransport?.getSelectedCandidatePair?.()?.remote?.address;
+  return /^[\d.]+$|:/.test(address ?? '') ? address : undefined;
+}
+
+// The same from the stats, where the ICE transport doesn't say (Android Chrome may not name the
+// selected pair yet right at 'connected').
+async function statsHostAddress(pc) {
   const report = await pc.getStats();
   let pair;
   report.forEach((s) => {
@@ -630,12 +654,7 @@ async function classify(pc) {
   report.forEach((s) => {
     if (!pair && s.type === 'candidate-pair' && s.state === 'succeeded' && s.nominated) pair = s;
   });
-  const hostEnd = pair && report.get(pair.remoteCandidateId);
-  if (!hostEnd?.address) return;
-  // ponytail: judged by the address alone, so a home network on global IPv6 shows "NAT punched", and
-  // so does Tailscale's 100.64/10; compare the two ends' networks if that misleads people.
-  const lan = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|127\.|fe80:|fc|fd|::1$)/i.test(hostEnd.address);
-  return lan ? 'LAN' : 'NAT punched';
+  return (pair && report.get(pair.remoteCandidateId))?.address;
 }
 
 // The status pill, once the Site is showing: timings, and which path carries the traffic. Or, with
