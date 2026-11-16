@@ -445,10 +445,10 @@ async fn a_block_closes_the_visitors_open_websocket() {
 
 #[tokio::test]
 async fn a_site_that_is_down_gives_the_visitor_a_502() {
-    let closed = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap(); // nothing listens here
+    // Nothing listens here, and nothing can: an unprivileged test can't bind a port under 1024. A
+    // port freed by binding port 0 and dropping it could be taken by another test running
+    // alongside, and answer 200 (seen in a Release's checks on the g14).
+    let closed: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let config = HostConfig {
         site: Site::WebApp(closed),
