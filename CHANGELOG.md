@@ -7,6 +7,30 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
 
 ## Unreleased
 
+**0.3.7 is the first published Release since 0.3.5.** 0.3.6 was tagged, but one line of its notes
+looked like a secret to GitHub Actions, which then dropped the build plan, so nothing was built or
+published: everything under 0.3.6 below arrives with 0.3.7.
+
+In short:
+- **QR codes.** `tooob share`, `invite` and `pair` draw each Invite Link as a QR code, so a phone's
+  camera opens it (`--no-qr` to leave it out).
+- **Closed Relays.** A Relay can carry only its Enrolled Hosts' traffic. Owners join with an
+  Enrollment Code (`--relay-code`) or the Relay's Sign-up Page, whose link a Host that isn't
+  carried prints. Relay Operators get Operator Tokens, an enroll API and an admin page, and new
+  Relays start closed. r.tooobs.net stays open for now.
+- **Backup and restore.** `tooob backup` and `tooob restore` move a Host, under a passphrase.
+- **Fixes.** A Host on a box with Tailscale labels LAN Visitors "LAN", not "NAT punched"; a
+  Relay sends the Bootstrap compressed (about 0.8 MB, not 3.1 MB); requests a page gives up on
+  end at once.
+
+### Fixed
+- `./release.sh` refuses notes with an `Authorization` header or a bearer credential in them,
+  which GitHub Actions takes for a secret, so a Release is never again tagged and left unbuilt.
+  0.3.6's notes are reworded.
+- `deploy/served.sh RELAY_DOMAIN`, with no Bundle, checks a running Relay: its domain and a Key
+  Address under it serve the same Bundle, and it names that Bundle's hash. It used to stop on a
+  missing argument.
+
 ## 0.3.6 — 2026-11-16
 
 Protocol Version: `tooob/0`. Tested with iroh-relay 1.3.0.
@@ -14,10 +38,10 @@ Protocol Version: `tooob/0`. Tested with iroh-relay 1.3.0.
 ### Added
 - `tooob backup NAME FILE` saves one Host (its Host Key, Allowlist, Invites and Host Settings, not its usage counts or cookie jars) into one file sealed under a passphrase (argon2id and XChaCha20-Poly1305, ADR 0029), and `tooob restore NAME FILE` brings it back as the same Host, on this machine or another. Both take `--passphrase-file PATH`, or `-` for standard input. `restore` refuses a wrong passphrase, a taken name, and a Host Key another Host here already has, writing nothing (#5).
 - `tooob restore NAME FILE --serves PATH` restores a Host whose folder (or web app) is somewhere else on this machine: PATH is checked as `tooob add` checks it, and the Host's record and settings both move to it, the settings' other lines kept. `tooob run` still refuses a Host whose `serves` was edited by hand, and now says to `tooob rm` it and restore it with `--serves` (#127).
-- Enrollment Codes (ADR 0030): `tooob-relay code --label NAME [--uses N] [--expires 7d]` prints a code naming its Relay (`r.tooobs.net/7Q4K-M2XD-9PHT-WB3C`; one use, 7 days by default), `codes` lists the unused ones and `cancel <code or label>` cancels them. A Host connecting with a code as iroh's auth token is enrolled under its label and a use is spent; an expired, used up, cancelled or wrong code enrolls nothing and the Host is told which, and 5 wrong codes from one address refuse redemption from it for 15 minutes. Only a hash of each code is kept. The Host's `--relay-code` comes next (#129).
+- Enrollment Codes (ADR 0030): `tooob-relay code --label NAME [--uses N] [--expires 7d]` prints a code naming its Relay (`r.tooobs.net/7Q4K-M2XD-9PHT-WB3C`; one use, 7 days by default), `codes` lists the unused ones and `cancel <code or label>` cancels them. A Host connecting with a code as iroh's auth token is enrolled under its label and a use is spent; an expired, used up, cancelled or wrong code enrolls nothing and the Host is told which, and after 5 wrong codes from one address its next wrong ones are refused for 15 minutes (a valid code always works, #135). Only a hash of each code is kept (#129).
 - A Host tells its Owner when its Relay doesn't carry it yet (ADR 0030): a Relay answers `/__tooob/enrolled/<host key>` with `{"enrolled":…,"relay_access":…}`, and on a closed Relay that hasn't enrolled it, `tooob add` (and a `tooob share` that adds a Host) prints `<relay> doesn't carry this Host yet: give its Relay Operator this Host Key: <key>`, `tooob run` says so at start and in its log and logs each change, and `tooob ls` (and `"enrollment"` in `--json`) shows the last answer. A Relay that can't be reached is never reported as not carrying it. Redeploy a Relay of your own to get the new path (#130).
 - An Owner enrolls a Host with an Enrollment Code (ADR 0030): `tooob add NAME TARGET --relay-code CODE` (and `tooob share … --relay-code CODE` for a Host it adds) uses the Relay the code names and redeems the code on the Host's first connection; `--relay` naming another Relay, or `--local`, is refused before anything is made. `tooob enroll NAME CODE` enrolls an existing Host on its own Relay. A wrong, expired, used up or cancelled code (or no answer from the Relay within 20 s) fails in one line saying which: `add` and `share` remove the Host they made, and `enroll` changes nothing. `share` on a Host that exists refuses `--relay-code` and points to `enroll`. A code is never printed whole (#132).
-- tooob-relay names its Sign-up Page and enrolls keys for an Operator Token (ADR 0031): `--sign-up-url` (or `TOOOB_RELAY_SIGN_UP_URL`) adds `sign_up` to `relay.json`; `tooob-relay token new LABEL` prints an Operator Token once and keeps only its hash, and `token list` and `token revoke LABEL` manage them. `PUT /__tooob/api/enrolled/<key>` with `Authorization: Bearer <token>` and `{"label": …}` enrolls a key, and `DELETE` removes one and disconnects it at once. A missing, wrong or revoked token gets 401 and changes nothing; 10 failures in a row get 429 for 60 s; a request must arrive whole within 10 s, with headers up to 8 KiB and a body up to 4 KiB (#140).
+- tooob-relay names its Sign-up Page and enrolls keys for an Operator Token (ADR 0031): `--sign-up-url` (or `TOOOB_RELAY_SIGN_UP_URL`) adds `sign_up` to `relay.json`; `tooob-relay token new LABEL` prints an Operator Token once and keeps only its hash, and `token list` and `token revoke LABEL` manage them. `PUT /__tooob/api/enrolled/<key>` with the Operator Token in its `Authorization` header and `{"label": …}` enrolls a key, and `DELETE` removes one and disconnects it at once. A missing, wrong or revoked token gets 401 and changes nothing; after 10 bad tokens in a minute from one address, its next bad ones get 429 (a valid token always works, #135); a request must arrive whole within 10 s, with headers up to 8 KiB and a body up to 4 KiB (#140).
 - A Host that isn't carried shows its Relay's Sign-up Page link (ADR 0031): when `relay.json` has an http(s) `sign_up`, the "doesn't carry this Host yet" notice in `add`, `share`, `run` and its log, and `ls` ends `; or sign up: <sign_up>?key=<host key>`, and `ls --json` has `"sign_up"`. A check of the Relay never waits more than 10 s in all. While not carried on such a Relay, a running Host checks again every 30 s (`TOOOB_SIGN_UP_CHECK_EVERY`) instead of on the Bootstrap check's schedule, and goes back to it once carried (#141).
 - tooob-relay's admin page (ADR 0030), on `--admin-addr` (`TOOOB_RELAY_ADMIN_ADDR`); the Relay image serves it on port 8081, which no front route or public port reaches, and Compose publishes it on 127.0.0.1 only. Server-rendered HTML with plain forms: each Enrolled Key with its label, connected now or last seen, and whether the Relay is open or closed; add, relabel and remove a key (disconnected at once); make an Enrollment Code (shown once), and list and cancel unused ones. It logs in with an Operator Token, then a session cookie (`HttpOnly`, `SameSite=Strict`, 12 hours) that ends at once when the token is revoked. Failed logins are counted apart from the enroll API's. It refuses requests not naming localhost, cross-site forms and framing (#133).
 - New Relays start closed (ADR 0030): the VPS wizard ends with a stage that enrolls the Relay Operator's first Host Key or prints an Enrollment Code for it (or, if asked, leaves the Relay open), and the Fly steps end with the same. `deploy/README.md` says how to close a Relay that's open today without cutting anyone off: enroll every Host Key back to back; Owners of those Hosts do nothing. A deploy or redeploy never enrolls a key: no `deploy.sh`, `start.sh`, Compose file or `fly.toml` does, and Fly runs no `release_command`. The old advice to restrict iroh-relay's own `access` is gone (#134).

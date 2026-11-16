@@ -116,6 +116,19 @@ test('an empty Unreleased section is refused', (t) => {
   assert.equal(git(bare, 'tag', '-l'), '');
 });
 
+// GitHub Actions drops a job output that looks like it holds a secret, and dist's plan carries the
+// Release's notes, so notes with a credential header in them leave a Release tagged but unbuilt
+// (0.3.6).
+for (const line of ['- `PUT /x` with `Authorization: Basic …` enrolls a key.', '- Send the Operator Token as `Bearer <token>`.']) {
+  test(`notes GitHub would take for a secret are refused: ${line}`, (t) => {
+    const { work, bare } = aClone(t, { changelog: `# Changelog\n\n## Unreleased\n\n### Added\n${line}\n` });
+    const result = release(work, '0.1.0');
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /takes for a secret/);
+    assert.equal(git(bare, 'tag', '-l'), '');
+  });
+}
+
 test('a patch Release that changes the Protocol Version is refused', (t) => {
   const { work, bare } = aClone(t);
   git(work, 'tag', 'v0.1.0');

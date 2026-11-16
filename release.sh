@@ -23,6 +23,11 @@ unreleased() {
   awk '/^## /{ inside = ($0 == "## Unreleased"); next } inside' CHANGELOG.md
 }
 [[ -n $(unreleased | tr -d '[:space:]') ]] || refuse "CHANGELOG.md's Unreleased section is empty: say what this Release changes"
+# GitHub Actions drops a job output that looks like it holds a secret, and dist's plan, which the
+# build jobs read, carries these notes: a credential header in them leaves the tag pushed but
+# nothing built or published (0.3.6, masked as `Authorization: ***`).
+! unreleased | grep -qE '[Aa]uthorization:|Bearer[[:space:]]+[^[:space:]]' ||
+  refuse "CHANGELOG.md's Unreleased section has an Authorization header or a Bearer credential in it, which GitHub Actions takes for a secret, so the Release would never be built: reword it"
 
 # protocol_version [REF]: the Host's Protocol Version at REF, or in the working tree.
 protocol_version() {
