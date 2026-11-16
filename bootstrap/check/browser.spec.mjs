@@ -759,6 +759,7 @@ test('a Direct Path that fails mid-visit is renegotiated each time, and a downlo
 });
 
 test('the pill says the Direct Path is on the home network', async ({ browser, relay }) => {
+  test.skip(h.olderThan('0.3.6'), 'tests #137 (the kind judged again on a Tailscale box), from 0.3.6; the Release swapped in is older');
   const { invite } = await hostWithSite(relay);
   const page = await h.newVisitor(browser);
   await page.goto(invite('mom'));
@@ -784,7 +785,7 @@ const ADDRESS = /\b\d{1,3}(\.\d{1,3}){3}\b|\b[0-9a-f]{0,4}(:[0-9a-f]{0,4}){2,7}\
 const addressesIn = (name, site) => h.logOf(name).filter((l) => ADDRESS.test(l.replaceAll(site.addr, 'SITE')));
 
 test("the Host's log says a Visitor got in on the Direct Path, of which kind, and when they left", async ({ browser, relay }) => {
-  test.skip(h.olderThan('0.3.0'), 'tests #23, from 0.3.0; the Release swapped in is older');
+  test.skip(h.olderThan('0.3.6'), 'tests #23 and #137 (the kind judged again on a Tailscale box), from 0.3.6; the Release swapped in is older');
   const { name, invite, site } = await hostWithSite(relay, { TOOOB_VISIT_GRACE: '1s' });
   const page = await h.newVisitor(browser);
   await page.goto(invite('mom'));
@@ -798,7 +799,7 @@ test("the Host's log says a Visitor got in on the Direct Path, of which kind, an
 });
 
 test("the Host's log says when a Visitor moves from the Relay onto the Direct Path", async ({ browser, relay }) => {
-  test.skip(h.olderThan('0.3.0'), 'tests #23, from 0.3.0; the Release swapped in is older');
+  test.skip(h.olderThan('0.3.6'), 'tests #23 and #137 (the kind judged again on a Tailscale box), from 0.3.6; the Release swapped in is older');
   // The Visit's path settles in 1 s, well before the browser tries the Direct Path again.
   const { name, invite } = await hostWithSite(relay, { TOOOB_DIRECT_WAIT: '1s' });
   const page = await h.newVisitor(browser);
@@ -856,7 +857,7 @@ test('the Host counts what each Visitor downloads and uploads, on the Direct Pat
 });
 
 test("the Host's log never says a Visitor who closed their tab moved to the Relay", async ({ browser, relay }) => {
-  test.skip(h.olderThan('0.3.0'), 'tests #23, from 0.3.0; the Release swapped in is older');
+  test.skip(h.olderThan('0.3.6'), 'tests #23 and #137 (the kind judged again on a Tailscale box), from 0.3.6; the Release swapped in is older');
   // A grace longer than the wait for a path to settle, so a move logged as the tab went would show;
   // and a wait longer than ICE takes to move onto the LAN pair on a box with Tailscale (#137).
   const { name, invite } = await hostWithSite(relay, { TOOOB_VISIT_GRACE: '15s', TOOOB_DIRECT_WAIT: '8s' });
