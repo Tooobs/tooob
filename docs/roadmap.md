@@ -19,6 +19,7 @@ A home box serving a Site to invited Visitors in ordinary browsers, for technica
 
 - ✅ A Visitor opens an Invite Link in an ordinary browser, on a phone too, and the Site loads ([#37](https://github.com/Tooobs/tooob/issues/37), [#40](https://github.com/Tooobs/tooob/issues/40))
 - ✅ Straight to the Host over WebRTC when it can, the Relay when not, on real phones ([#38](https://github.com/Tooobs/tooob/issues/38), [#39](https://github.com/Tooobs/tooob/issues/39))
+- ✅ The pill and the Host's log judge the Direct Path's kind again when ICE moves pair, so a Host with Tailscale shows LAN Visitors "LAN" ([#137](https://github.com/Tooobs/tooob/issues/137))
 - ⬜ The Direct Path comes back after a long background or a 5G → Wi-Fi switch ([#15](https://github.com/Tooobs/tooob/issues/15))
 - ✅ Visitors stay logged in across a Host restart ([#41](https://github.com/Tooobs/tooob/issues/41))
 - ✅ The Visitor Key can't be read by the Site's own scripts ([#43](https://github.com/Tooobs/tooob/issues/43))
