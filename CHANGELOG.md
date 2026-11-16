@@ -7,6 +7,10 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
 
 ## Unreleased
 
+## 0.3.6 — 2026-11-16
+
+Protocol Version: `tooob/0`. Tested with iroh-relay 1.3.0.
+
 ### Added
 - `tooob backup NAME FILE` saves one Host (its Host Key, Allowlist, Invites and Host Settings, not its usage counts or cookie jars) into one file sealed under a passphrase (argon2id and XChaCha20-Poly1305, ADR 0029), and `tooob restore NAME FILE` brings it back as the same Host, on this machine or another. Both take `--passphrase-file PATH`, or `-` for standard input. `restore` refuses a wrong passphrase, a taken name, and a Host Key another Host here already has, writing nothing (#5).
 - `tooob restore NAME FILE --serves PATH` restores a Host whose folder (or web app) is somewhere else on this machine: PATH is checked as `tooob add` checks it, and the Host's record and settings both move to it, the settings' other lines kept. `tooob run` still refuses a Host whose `serves` was edited by hand, and now says to `tooob rm` it and restore it with `--serves` (#127).
