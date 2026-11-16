@@ -80,4 +80,4 @@ The page refuses requests that don't name `localhost`, and forms posted from any
 
 ## Checks
 
-`cd check && node --test bundle.test.mjs` tests `bundle.sh`. The Relay image itself is checked live, on a real domain with its certificates: deploy it, run `served.sh`, and open an Invite Link through it.
+`cd check && node --test bundle.test.mjs` tests `bundle.sh`. The Relay image itself is checked live, on a real domain with its certificates: deploy it, run `served.sh`, and open an Invite Link through it. `./served.sh RELAY_DOMAIN` alone, with no Bundle, checks a running Relay at any time: its domain and a Key Address under it serve the same Bundle, and it names that Bundle's hash. `cd check && node --test served.test.mjs` tests `served.sh` against a stand-in `curl`.
