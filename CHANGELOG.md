@@ -7,6 +7,10 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
 
 ## Unreleased
 
+## 0.3.7 — 2026-11-18
+
+Protocol Version: `tooob/0`. Tested with iroh-relay 1.3.0.
+
 **0.3.7 is the first published Release since 0.3.5.** 0.3.6 was tagged, but one line of its notes
 looked like a secret to GitHub Actions, which then dropped the build plan, so nothing was built or
 published: everything under 0.3.6 below arrives with 0.3.7.
