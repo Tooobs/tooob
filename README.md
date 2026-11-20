@@ -68,6 +68,17 @@ https://kgjwugk89iaan7dtoyuju7pts5r7j3f1zxm3zp8k98nepg1hq46y.relay.example/#invi
 
 Each of a Site's pages has its own address on the Key Address: `https://<host key>.<relay domain>/subfolder/` opens that page ([ADR 0023](docs/adr/0023-site-pages-have-real-paths-on-their-key-address.md)). Links within a Site work as they would anywhere, and the address bar and the tab's title follow the Site, so a reload, a bookmark or a shared link lands on the page it was.
 
+## Using tooob with an agent
+
+A Claude Code plugin teaches an agent to use tooob for you. In Claude Code:
+
+```
+/plugin marketplace add Tooobs/tooob
+/plugin install tooob@tooob
+```
+
+Its skill, `tooob`, fires when you ask the agent to send someone a file or folder, to get files from someone, or to look after your Hosts. It shares through the Relay your Hosts already use (or asks you which), keeps the Host running with `-d`, makes a one-day Invite for each person, and hands you the links and the `tooob rm NAME` that ends it. It asks before going on when `share` warns, and never lets anyone in without you seeing them first. The plugin follows the Releases: it arrives with 0.3.8, and until that Release is out there's nothing to install. See [agent/](agent/README.md).
+
 ## What you can try
 
 What a technical early adopter can try after each push, in the order it landed. Each entry is a ticket, the date its work was pushed, and the first Release that has it. A finished milestone's summary says what it adds up to.

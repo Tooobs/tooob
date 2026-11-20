@@ -127,6 +127,16 @@ set_cargo_version() {
   mv "$1.new" "$1"
 }
 
+# set_plugin_version: the agent plugin follows the Releases (#149): plugin.json's version is
+# $RELEASE, and the marketplace entry is pinned to its tag, so the skill never names an option the
+# Owner's tooob doesn't have yet.
+set_plugin_version() {
+  sed -E "s/^(  \"version\": \")[^\"]*\"/\1$RELEASE\"/" agent/.claude-plugin/plugin.json >"$TMP/plugin.json"
+  mv "$TMP/plugin.json" agent/.claude-plugin/plugin.json
+  sed -E "s/(\"ref\": \")v[^\"]*\"/\1v$RELEASE\"/" .claude-plugin/marketplace.json >"$TMP/marketplace.json"
+  mv "$TMP/marketplace.json" .claude-plugin/marketplace.json
+}
+
 # stamp_changelog: Unreleased becomes this Release's section, under a fresh, empty Unreleased.
 stamp_changelog() {
   local body notes relay
@@ -165,10 +175,12 @@ set_cargo_version host/Cargo.toml
 set_cargo_version bootstrap/web/Cargo.toml
 cargo update -q --workspace --offline
 (cd bootstrap && cargo update -q --workspace --offline)
+set_plugin_version
 # A test Release's notes are "Unreleased", which stays for the Release it's testing.
 [[ $RELEASE == *-rc.* ]] || stamp_changelog
 
-git add host/Cargo.toml bootstrap/web/Cargo.toml Cargo.lock bootstrap/Cargo.lock CHANGELOG.md
+git add host/Cargo.toml bootstrap/web/Cargo.toml Cargo.lock bootstrap/Cargo.lock CHANGELOG.md \
+  agent/.claude-plugin/plugin.json .claude-plugin/marketplace.json
 git commit -q -m "Release $RELEASE"
 git tag -a "v$RELEASE" -m "Release $RELEASE"
 # main first, then the tag on its own: pushed together, GitHub starts no workflow for the tag.

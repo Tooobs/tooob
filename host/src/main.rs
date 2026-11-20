@@ -2178,3 +2178,99 @@ fn parse(typed: &Typed) -> Result<(Vec<String>, Flags, Vec<String>)> {
     }
     Ok((words, flags, invitees))
 }
+
+/// The agent plugin's skill (#149) names only commands and options this `tooob` has: a command
+/// renamed or an option removed without the skill changing fails here.
+#[cfg(test)]
+mod skill {
+    use super::{NOT_IN_USAGE, commands, options};
+
+    /// The skill's files, as (name, text).
+    fn skill_files() -> Vec<(&'static str, String)> {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../agent/skills/tooob/");
+        ["SKILL.md", "reference.md"]
+            .into_iter()
+            .map(|f| (f, std::fs::read_to_string(format!("{dir}{f}")).unwrap()))
+            .collect()
+    }
+
+    /// Every `tooob …` command in `text`'s code (backtick spans and fenced blocks), as its words.
+    fn tooob_commands(text: &str) -> Vec<Vec<String>> {
+        let mut code = Vec::new();
+        let mut fenced = false;
+        for line in text.lines() {
+            if line.trim_start().starts_with("```") {
+                fenced = !fenced;
+            } else if fenced {
+                code.push(line.to_string());
+            } else {
+                code.extend(line.split('`').skip(1).step_by(2).map(str::to_string));
+            }
+        }
+        let mut found = Vec::new();
+        for span in code {
+            let words: Vec<&str> = span.split_whitespace().collect();
+            for (i, _) in words.iter().enumerate().filter(|(_, w)| **w == "tooob") {
+                let rest = words[i + 1..]
+                    .iter()
+                    .take_while(|w| !["|", "&&", ";", ">", "&", "2>&1"].contains(w))
+                    .map(|w| w.trim_matches(|c| "[]()".contains(c)).to_string())
+                    .collect();
+                found.push(rest);
+            }
+        }
+        found
+    }
+
+    /// What's wrong with one command the skill names, if anything.
+    fn problem(command: &[String]) -> Option<String> {
+        let shown = format!("tooob {}", command.join(" "));
+        // `tooob` itself, or `tooob <command> --help`: no command named.
+        let first = command.first().filter(|w| !w.starts_with(['<', '…']))?;
+        if first.starts_with('-') {
+            return (!["--version", "--help"].contains(&first.as_str()))
+                .then(|| format!("{shown}: tooob has no {first}"));
+        }
+        if !commands().contains(&first.as_str()) && !NOT_IN_USAGE.contains(&first.as_str()) {
+            return Some(format!("{shown}: there's no command {first}"));
+        }
+        let known = options(first);
+        command[1..]
+            .iter()
+            .filter(|w| w.starts_with('-') && w.len() > 1)
+            .find(|w| !["--help", "-h"].contains(&w.as_str()) && !known.contains(w))
+            .map(|w| format!("{shown}: {first} takes no {w}"))
+    }
+
+    #[test]
+    fn the_skill_names_only_commands_and_options_tooob_has() {
+        let mut problems = Vec::new();
+        let mut seen = 0;
+        for (file, text) in skill_files() {
+            for command in tooob_commands(&text) {
+                seen += 1;
+                if let Some(p) = problem(&command) {
+                    problems.push(format!("{file}: {p}"));
+                }
+            }
+        }
+        assert!(seen > 10, "the skill names only {seen} tooob commands");
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
+    }
+
+    #[test]
+    fn a_made_up_option_or_command_is_found() {
+        let text = "Run `tooob share PATH -d --forever`, then `tooob send X`.";
+        let found: Vec<_> = tooob_commands(text)
+            .iter()
+            .filter_map(|c| problem(c))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                "tooob share PATH -d --forever: share takes no --forever",
+                "tooob send X: there's no command send",
+            ]
+        );
+    }
+}

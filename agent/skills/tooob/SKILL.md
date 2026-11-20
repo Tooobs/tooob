@@ -1,0 +1,57 @@
+---
+name: tooob
+description: Share a file or folder with someone, get files from someone, or look after the Owner's tooob Hosts. Use when the user asks to send, share or hand over a file or folder, to receive or collect files from a person, or to list, check, approve, revoke or remove their tooob Hosts, Invites or Visitors. tooob serves a Shared Folder from this box to invited Visitors' browsers through an Invite Link.
+---
+
+# tooob
+
+tooob makes a Host on this box: it serves a file or Shared Folder to the people the Owner invites, in their ordinary browsers, through a Relay that can't read the traffic. You are working for the Owner (the person you talk to), with every Owner power, through the `tooob` CLI in your shell.
+
+`tooob <command> --help` shows any command's usage. [reference.md](reference.md) covers the commands that look at or change Hosts, exit codes and `TOOOB_HOME`.
+
+## First: the version
+
+Run `tooob --version`. If it's older than this plugin's version (in its `plugin.json`), tell the Owner to run `tooob upgrade` before you go on: this skill may name options their `tooob` doesn't have yet.
+
+## Send a file or folder
+
+1. **Pick the Relay.** tooob has no default Relay. Run `tooob ls --json`, then `tooob show NAME` for each Host there: its `relay` line names its Relay. If every Host names the same Relay, use it. Otherwise, or with no Hosts at all, ask the Owner which Relay to use. Always tell the Owner which Relay you used ("shared through r.tooobs.net").
+2. **Share it, kept running.**
+
+   ```
+   tooob share PATH -d --expires 1d --no-qr --relay URL
+   ```
+
+   `-d` matters: without it, `share` serves in the foreground and never returns. The Host Name is in what it prints; `tooob ls --json` also lists it, with the path it `serves`.
+3. **Invite each person**, one Invite each, labelled by the person:
+
+   ```
+   tooob invite NAME Sam --expires 1d --no-qr
+   ```
+
+   The Invite Link is the only line on stdout (it holds `#invite=`). First-Visit Approval stays off. Add `--approve` only when the Owner asks for it; then, when the person reads out the Device Code their browser shows, run `tooob approve NAME CODE`.
+4. **Hand over the links.** Give each link to the Owner, or send it to the person the Owner named. Say that each link opens in one browser, within a day.
+5. **Say how it ends.** Give the Owner `tooob rm NAME`, which stops the Host and deletes it. Until then, `-d` keeps it running across logins and reboots.
+
+If `-d` fails (no systemd or launchd here, or no `~/.local/bin/tooob`), run the same `tooob share PATH --expires 1d --no-qr --relay URL` without `-d`, in the background, with stdout in a file. Then make the Invites as above, and tell the Owner that the Host stops when that process stops.
+
+## Receive files
+
+Make a new, empty folder, and share it with uploads on:
+
+```
+tooob share DIR -d --uploads --expires 1d --no-qr --relay URL
+```
+
+Then invite and hand over the link as above, and tell the Owner the files arrive in DIR. Never share an existing folder for uploads.
+
+## A tooob link needs a browser
+
+An Invite Link opens the Bootstrap, a service worker, so `curl` or a fetch tool can't open one. Given an Invite Link, hand it to the Owner to open in their browser.
+
+## Rules
+
+- If `share` prints `tooob: warning:` (a home folder, `.git`, `.env`, `.ssh`), stop the Host (`tooob rm NAME` for one you just made), tell the Owner what it said, and go on only if they say so.
+- Never `tooob rm` or `tooob stop` a Host you didn't make, unless the Owner says to.
+- Never `tooob unblock`, and never make an `--owner` Invite, unless the Owner asks for it: those let someone in without the Owner seeing them first.
+- Send an Invite Link only to the Owner, or to a person the Owner named.

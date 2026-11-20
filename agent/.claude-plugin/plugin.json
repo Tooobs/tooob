@@ -1,0 +1,9 @@
+{
+  "name": "tooob",
+  "version": "0.3.8",
+  "description": "Share and receive files with tooob: an agent makes a Host, invites people, and hands over Invite Links.",
+  "author": { "name": "Tooobs" },
+  "homepage": "https://github.com/Tooobs/tooob",
+  "repository": "https://github.com/Tooobs/tooob",
+  "license": "MIT OR Apache-2.0"
+}

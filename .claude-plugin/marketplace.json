@@ -1,0 +1,17 @@
+{
+  "name": "tooob",
+  "owner": { "name": "Tooobs" },
+  "description": "tooob's plugin for agents, pinned to a tooob Release.",
+  "plugins": [
+    {
+      "name": "tooob",
+      "description": "Share and receive files with tooob.",
+      "source": {
+        "source": "git-subdir",
+        "url": "Tooobs/tooob",
+        "path": "agent",
+        "ref": "v0.3.8"
+      }
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+schema_version: "1.1"
+name: send-a-file
+description: >-
+  "Send report.pdf to Sam": the skill fires, the agent shares the file kept running with a
+  one-day Invite and no QR code, and its reply holds the Invite Link. Real model calls and a real
+  Host on r.tooobs.net: run it by hand before a Release that changes the skill (agent/README.md).
+tags: [send]
+runs: 6
+context:
+  scaffold_script: scaffold.sh
+execution:
+  max_turns: 20
+  timeout_seconds: 300
+  allowed_tools: [Skill, Read, Bash]
+  prompt: |
+    Send report.pdf to Sam with tooob, through the Relay https://r.tooobs.net. I'll pass Sam the link.
+graders:
+  - name: skill-fired
+    type: tool_used
+    tool: Skill
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?tooob"'
+  - name: shared-kept-running-for-a-day
+    type: tool_used
+    tool: Bash
+    input_match: 'tooob share (?=[^"]*\s-d\b)(?=[^"]*--expires 1d)(?=[^"]*--no-qr)'
+  - name: reply-has-the-invite-link
+    type: regex
+    pattern: 'https?://\S+#invite='

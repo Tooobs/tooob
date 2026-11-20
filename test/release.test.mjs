@@ -31,6 +31,10 @@ function aClone(t, { changelog = UNRELEASED, browserTest = "test('stub', () => {
   git(work, 'config', 'user.email', 'release-test@example.invalid');
   git(work, 'config', 'user.name', 'release test');
   copyFileSync(join(REPO, 'release.sh'), join(work, 'release.sh'));
+  for (const file of ['.claude-plugin/marketplace.json', 'agent/.claude-plugin/plugin.json']) {
+    mkdirSync(dirname(join(work, file)), { recursive: true });
+    copyFileSync(join(REPO, file), join(work, file));
+  }
   writeFileSync(join(work, 'check.sh'), '#!/bin/sh\necho "check.sh: stub"\n', { mode: 0o755 });
   writeFileSync(join(work, 'test/linux/run.sh'), `#!/bin/sh\necho "test/linux/run.sh: stub"\n${linuxTests}\n`, { mode: 0o755 });
   const check = join(work, 'bootstrap/check');
@@ -159,6 +163,10 @@ test('a Release bumps every version, stamps the changelog, and pushes a commit a
   assert.equal(packageVersion(work, 'bootstrap/web/Cargo.toml'), '0.2.0');
   assert.equal(lockedVersion(work, 'Cargo.lock', 'tooob'), '0.2.0');
   assert.equal(lockedVersion(work, 'bootstrap/Cargo.lock', 'web'), '0.2.0');
+  // The agent plugin follows the Releases (#149): its marketplace entry is pinned to the tag.
+  const json = (path) => JSON.parse(readFileSync(join(work, path), 'utf8'));
+  assert.equal(json('agent/.claude-plugin/plugin.json').version, '0.2.0');
+  assert.equal(json('.claude-plugin/marketplace.json').plugins.find((p) => p.name === 'tooob').source.ref, 'v0.2.0');
 
   const today = new Date().toISOString().slice(0, 10);
   const changelog = readFileSync(join(work, 'CHANGELOG.md'), 'utf8');
