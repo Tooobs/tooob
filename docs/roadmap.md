@@ -43,6 +43,7 @@ A home box serving a Site to invited Visitors in ordinary browsers, for technica
 - ✅ A Host run in a terminal shows who's visiting and how much, and `q` quits or `d` keeps it running in the background ([#97](https://github.com/Tooobs/tooob/issues/97))
 - ✅ `tooob share PATH` is add, invite and run in one ([#22](https://github.com/Tooobs/tooob/issues/22))
 - ✅ `tooob` asks nothing, and shows the command to type instead; `share` warns about what a folder holds ([#79](https://github.com/Tooobs/tooob/issues/79))
+- ✅ An unknown command or option says so in one line and suggests the nearest one; every command has `--help` ([#111](https://github.com/Tooobs/tooob/issues/111))
 
 ### Visitors and the Owner
 

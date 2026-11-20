@@ -7,6 +7,13 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
 
 ## Unreleased
 
+### Changed
+
+- An unknown command or option says so in one line and suggests the nearest one (`tooob la`:
+  did you mean `ls`?), instead of printing the whole usage; `remove`, `delete` and `list` are
+  suggested, never run. `tooob --help`, `tooob help`, `tooob <cmd> --help` and `tooob help <cmd>`
+  print to stdout and exit 0. (#111)
+
 ## 0.3.7 — 2026-11-18
 
 Protocol Version: `tooob/0`. Tested with iroh-relay 1.3.0.
