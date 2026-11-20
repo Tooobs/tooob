@@ -91,6 +91,7 @@ A home box serving a Site to invited Visitors in ordinary browsers, for technica
 
 AI agents run Hosts for their Owners and visit Sites in a browser like anyone else; tooob is only the transport ([ADR 0019](adr/0019-tooob-is-the-transport-not-the-signalling.md)).
 
+- ⬜ An agent shares and receives files with tooob, through a tooob plugin for Claude Code ([#149](https://github.com/Tooobs/tooob/issues/149))
 - ⬜ Agent Accounts: an Agent works within a Host a person made, and invites only with First-Visit Approval ([#63](https://github.com/Tooobs/tooob/issues/63))
 - ⬜ A local MCP server lets an agent read, block and revoke ([#9](https://github.com/Tooobs/tooob/issues/9))
 - ⬜ An agent's requests become Pending Requests the Owner approves ([#10](https://github.com/Tooobs/tooob/issues/10))
