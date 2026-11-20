@@ -7,6 +7,15 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
 
 ## Unreleased
 
+### Added
+
+- A Claude Code plugin, `tooob` (under `agent/`, listed in this repo's marketplace): its skill
+  teaches an agent to send a file or folder (`tooob share … -d --expires 1d --no-qr` on the
+  Relay the Owner's Hosts use, a one-day Invite for each person) and to receive files
+  (`--uploads`), to stop and ask when `share` warns, and never to let anyone in without the
+  Owner. `./release.sh` pins the marketplace entry and the plugin's version to each Release,
+  and a cargo test checks every `tooob` command the skill names against the usage text. (#149)
+
 ### Changed
 
 - An unknown command or option says so in one line and suggests the nearest one (`tooob la`:

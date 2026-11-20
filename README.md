@@ -202,13 +202,16 @@ tooob for people who don't open a terminal: a signed `tooob` for every Mac and f
 - **[#145](https://github.com/Tooobs/tooob/issues/145) tooob shows each Invite Link as a QR code in the terminal, to scan with a phone** · 2026-11-15 · 0.3.7
   - `tooob invite NAME LABEL`, `tooob pair NAME LABEL` and each Invite in `tooob share`'s Invites block now draw the Invite Link as a QR code under it (about 49 columns by 25 lines, black on white whatever your terminal's theme): point a phone's camera at it to open the link, which matters most for `pair`, how your own phone becomes an Owner Device. `--no-qr` leaves it out, say on a screen share, where anyone could scan an Invite first. The code goes only to a terminal: `tooob invite NAME LABEL | pbcopy` still copies the link alone, and a Host's log never has one. It's also left out when the terminal is narrower than the code (try a window under 49 columns) or `NO_COLOR` is set.
 
+### [Agents](https://github.com/Tooobs/tooob/milestone/5) (in progress)
+
+AI agents run Hosts for their Owners and visit Sites in a browser like anyone else. An agent shares a status dashboard or a preview with people and other agents by invitation, and every device its Invites let in is approved by a person first ([ADR 0018](docs/adr/0018-agents-make-approve-first-invites-enforced-by-agent-accounts.md)). A local MCP server lets an agent read, block and revoke; anything that would let someone in waits for the Owner.
+
+- **[#149](https://github.com/Tooobs/tooob/issues/149) An agent shares and receives files with tooob, through a tooob plugin for Claude Code** · 2026-11-20 · 0.3.8 (not out yet)
+  - Nothing to install until 0.3.8 is out: the marketplace pins the plugin to that Release. Then, in Claude Code, `/plugin marketplace add Tooobs/tooob` and `/plugin install tooob@tooob`, and ask "send report.pdf to Sam": the agent runs `tooob share report.pdf -d --expires 1d --no-qr` on the Relay your Hosts use, makes Sam a one-day Invite, and gives you the link and the `tooob rm NAME` that ends it. Ask it to get files from someone and it shares a new, empty folder with `--uploads`. Ask it to share a folder that holds a `.env`: it stops the Host and asks you first. Before then, `claude plugin validate agent` checks the plugin in a clone.
+
 ## Still to come
 
 What each later milestone will add when it's done, in the planned order. Details and progress: [the roadmap](https://github.com/Tooobs/tooob/blob/main/docs/roadmap.md).
-
-### [Agents](https://github.com/Tooobs/tooob/blob/main/docs/roadmap.md#agents)
-
-AI agents run Hosts for their Owners and visit Sites in a browser like anyone else. An agent shares a status dashboard or a preview with people and other agents by invitation, and every device its Invites let in is approved by a person first ([ADR 0018](docs/adr/0018-agents-make-approve-first-invites-enforced-by-agent-accounts.md)). A local MCP server lets an agent read, block and revoke; anything that would let someone in waits for the Owner.
 
 ### [v2](https://github.com/Tooobs/tooob/blob/main/docs/roadmap.md#v2)
 
