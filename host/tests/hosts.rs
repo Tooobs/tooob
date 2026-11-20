@@ -12,6 +12,10 @@ fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
+fn stdout(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
 #[test]
 fn a_host_is_added_then_run_and_a_second_run_of_it_is_refused_with_the_pid() {
     let home = Home::new();
@@ -70,7 +74,7 @@ fn add_needs_a_relay_and_a_bootstrap_is_refused() {
         none.contains("--relay https://RELAY/") && none.contains("deploy/"),
         "{none}"
     );
-    let usage = stderr(&home.tooob(&[]));
+    let usage = stdout(&home.tooob(&["--help"]));
     assert!(
         usage.contains("usage:") && !usage.to_lowercase().contains("bootstrap"),
         "{usage}"
@@ -905,7 +909,7 @@ fn share_warns_in_a_line_for_each_thing_a_folder_holds_that_everyone_invited_cou
             again.log()
         );
     }
-    let usage = stderr(&home.tooob(&[]));
+    let usage = stdout(&home.tooob(&["--help"]));
     assert!(
         !usage.contains("include-git") && !usage.contains("asks"),
         "{usage}"

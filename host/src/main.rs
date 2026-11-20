@@ -286,7 +286,8 @@ async fn run() -> Result<()> {
         Some(command) if OWNER.contains(&command) => {
             owner_command(&home, &typed, command, &words, &flags, &invitees).await?
         }
-        _ => bail!("{USAGE}"),
+        // No command, only flags or nothing: the usage is asked for with --help (#111).
+        _ => bail!("say a command; tooob --help lists the commands"),
     }
     Ok(())
 }
@@ -510,6 +511,23 @@ async fn share(
     flags: &Flags,
     invitees: &[String],
 ) -> Result<()> {
+    if words.len() > 2 {
+        bail!(too_many("share", &words[2..]));
+    }
+    let allowed = [
+        "expires",
+        "approve",
+        "no-qr",
+        "name",
+        "relay",
+        "local",
+        "relay-code",
+        "uploads",
+        "detach",
+    ];
+    if let Some(other) = flags.keys().find(|f| !allowed.contains(&f.as_str())) {
+        return Err(typed.no_option("share", other));
+    }
     let Some(given) = words.get(1) else {
         return Err(typed.missing("say what to share, a folder or a file", "PATH"));
     };
@@ -1910,8 +1928,17 @@ impl Typed {
     fn no_option(&self, command: &str, name: &str) -> anyhow::Error {
         let at = self.args.iter().position(|a| flag_name(a) == Some(name));
         let typed = at.map_or(format!("--{name}"), |i| self.args[i].clone());
+        if command == "tooob" && self.args.first().map(String::as_str) == Some("--version") {
+            return anyhow::anyhow!("--version takes no other option:\n  tooob --version");
+        }
         let options = options(command);
-        if let (Some(at), Some(near)) = (at, nearest(&typed, options.iter().map(String::as_str))) {
+        // A short option for another letter would change what was asked: `-f` is never `-d`.
+        let short = |o: &str| !o.starts_with("--");
+        let near_ones = options
+            .iter()
+            .map(String::as_str)
+            .filter(|o| !(short(&typed) && short(o)));
+        if let (Some(at), Some(near)) = (at, nearest(&typed, near_ones)) {
             return anyhow::anyhow!(
                 "{command} takes no {typed}; did you mean {near}?\n{}",
                 self.fixed(at, near)
@@ -1998,7 +2025,8 @@ fn too_many(command: &str, extra: &[String]) -> String {
 /// Other names people type for a command: suggested, never run, so each thing has one name (#111).
 const ALIASES: &[(&str, &str)] = &[("remove", "rm"), ("delete", "rm"), ("list", "ls")];
 
-/// Commands that are gone, each saying in a line what replaced it (#96), and `help`.
+/// Commands the usage doesn't list but `tooob` knows: `help`, and `enable` and `disable`, gone
+/// (#96), which say in a line what replaced them when run; their `--help` is the whole usage.
 const NOT_IN_USAGE: &[&str] = &["help", "enable", "disable"];
 
 /// The usage text's entry for each command, as (its commands, its lines): `block` and `unblock`
@@ -2040,7 +2068,8 @@ fn command_help(command: &str) -> Option<String> {
         .into_iter()
         .find(|(names, _)| names.contains(&command))?;
     let mut help = format!("usage:\n{lines}\n");
-    if lines.contains("NAME") {
+    // share's `--name NAME` is a new name, not a Host's.
+    if lines.replace("--name NAME", "").contains("NAME") {
         help.push_str("NAME is a Host Name, what the Host serves, or a Host Key prefix.\n");
     }
     Some(help)
@@ -2074,11 +2103,16 @@ fn nearest<'a>(typed: &str, candidates: impl Iterator<Item = &'a str>) -> Option
     } else {
         2
     };
-    candidates
+    let near: Vec<(usize, &str)> = candidates
         .map(|c| (edit_distance(typed, c), c))
         .filter(|&(d, _)| d <= near_enough)
-        .min_by_key(|&(d, _)| d)
-        .map(|(_, c)| c)
+        .collect();
+    let best = near.iter().map(|&(d, _)| d).min()?;
+    // Two as near (`rn`: run or rm) is no guess at all.
+    match near.iter().filter(|&&(d, _)| d == best).collect::<Vec<_>>()[..] {
+        [&(_, only)] => Some(only),
+        _ => None,
+    }
 }
 
 /// Levenshtein distance.
