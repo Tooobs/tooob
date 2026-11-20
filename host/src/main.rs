@@ -86,6 +86,7 @@ const USAGE: &str = "usage:
                                                   Relay isn't ready for it; Hosts kept running
                                                   restart on it
   tooob --version                                 the Release and Protocol Version
+  tooob help [COMMAND] | COMMAND --help           this, or only COMMAND's part of it
 NAME is a Host Name, what the Host serves, or a Host Key prefix. Owner commands work whether the
 Host is running or not. There's no default Relay: deploy/ shows how to run your own. Nothing is
 asked but upgrade's one question: what's missing is an error that shows the command to type.
@@ -143,19 +144,24 @@ async fn run() -> Result<()> {
         return Ok(());
     }
     let typed = Typed::new(std::env::args().skip(1).collect());
-    let (words, flags, invitees) = parse(typed.args.iter().cloned())?;
+    // Help asked for does only that: `tooob share PATH --help` shares nothing (#111).
+    if let Some(help) = help(&typed)? {
+        print!("{help}");
+        return Ok(());
+    }
+    let (words, flags, invitees) = parse(&typed)?;
     let home = Home::from_env()?;
     // add, run, ls, show and rm take exactly what they say, nothing more: `run` in particular
     // takes no settings, so a Host runs the same however it's started (ADR 0014).
     let exactly = |n: usize, allowed: &[&str]| {
         if words.len() > n {
-            bail!("too many arguments: {}\n{USAGE}", words[n..].join(" "));
+            bail!(too_many(&words[0], &words[n..]));
         }
         if let Some(other) = flags.keys().find(|f| !allowed.contains(&f.as_str())) {
-            bail!("{} takes no --{other}\n{USAGE}", words[0]);
+            return Err(typed.no_option(&words[0], other));
         }
         if !invitees.is_empty() {
-            bail!("{} takes no --invite\n{USAGE}", words[0]);
+            return Err(typed.no_option(&words[0], "invite"));
         }
         Ok(())
     };
@@ -909,13 +915,13 @@ async fn owner_command(
     };
     let arity = if after_name(command).is_some() { 3 } else { 2 };
     if words.len() > arity {
-        bail!("too many arguments: {}\n{USAGE}", words[arity..].join(" "));
+        bail!(too_many(command, &words[arity..]));
     }
     if let Some(other) = flags.keys().find(|f| !allowed.contains(&f.as_str())) {
-        bail!("{command} takes no --{other}\n{USAGE}");
+        return Err(typed.no_option(command, other));
     }
     if !invitees.is_empty() {
-        bail!("{command} takes no --invite\n{USAGE}");
+        return Err(typed.no_option(command, "invite"));
     }
     let host = named(home, typed, command, words.get(1))?;
     if command == "stop" {
@@ -1853,17 +1859,97 @@ impl Typed {
     /// quoted so it can be pasted back: `tooob share PATH --invite sam`.
     fn missing(&self, what: &str, gap: &str) -> anyhow::Error {
         let at = self.words_at.last().map_or(0, |&i| i + 1);
-        let mut shown: Vec<String> = self
-            .args
+        let mut shown = self.shown();
+        shown.insert(at.min(shown.len()), gap.to_string());
+        anyhow::anyhow!("{what}:\n  tooob {}", shown.join(" "))
+    }
+
+    /// Each argument as it may be shown back: quoted to paste, an Enrollment Code never whole.
+    fn shown(&self) -> Vec<String> {
+        self.args
             .iter()
             .enumerate()
             .map(|(i, a)| match self.is_code(i) {
                 true => hide_code(a),
                 false => quote(a),
             })
-            .collect();
-        shown.insert(at.min(shown.len()), gap.to_string());
-        anyhow::anyhow!("{what}:\n  tooob {}", shown.join(" "))
+            .collect()
+    }
+
+    /// The words, `--flags` and their values left out.
+    fn words(&self) -> Vec<&str> {
+        self.words_at
+            .iter()
+            .map(|&i| self.args[i].as_str())
+            .collect()
+    }
+
+    /// Whether `--help` (or `-h`) was typed, not as a flag's value.
+    fn asks_for_help(&self) -> bool {
+        let mut i = 0;
+        while i < self.args.len() {
+            match flag_name(&self.args[i]) {
+                Some("help") => return true,
+                Some(name) if name == "invite" || VALUE_FLAGS.contains(&name) => i += 1,
+                _ => {}
+            }
+            i += 1;
+        }
+        false
+    }
+
+    /// The command as typed, with `args[at]` replaced by `fix`, to paste: `  tooob ls --json`.
+    fn fixed(&self, at: usize, fix: &str) -> String {
+        let mut args = self.args.clone();
+        args[at] = fix.to_string();
+        format!("  tooob {}", Typed::new(args).shown().join(" "))
+    }
+
+    /// `command` takes no `--name` (as typed, `-f` say): one line naming the option it's nearest,
+    /// with the command to type, or its own options (#111).
+    fn no_option(&self, command: &str, name: &str) -> anyhow::Error {
+        let at = self.args.iter().position(|a| flag_name(a) == Some(name));
+        let typed = at.map_or(format!("--{name}"), |i| self.args[i].clone());
+        let options = options(command);
+        if let (Some(at), Some(near)) = (at, nearest(&typed, options.iter().map(String::as_str))) {
+            return anyhow::anyhow!(
+                "{command} takes no {typed}; did you mean {near}?\n{}",
+                self.fixed(at, near)
+            );
+        }
+        if command == "tooob" {
+            return anyhow::anyhow!("there's no tooob {typed}; tooob --help lists the commands");
+        }
+        match options.is_empty() {
+            true => {
+                anyhow::anyhow!("{command} takes no {typed}; tooob help {command} shows its usage")
+            }
+            false => anyhow::anyhow!(
+                "{command} takes no {typed}; its options: {}",
+                options.join(", ")
+            ),
+        }
+    }
+
+    /// There's no command `args[at]`: one line naming the nearest, with the command to type (#111).
+    fn no_command(&self, at: usize) -> anyhow::Error {
+        let word = &self.args[at];
+        let near = ALIASES
+            .iter()
+            .find(|(alias, _)| alias == word)
+            .map(|(_, command)| *command)
+            .or_else(|| nearest(word, commands().into_iter()));
+        match near {
+            Some(near) => anyhow::anyhow!(
+                "there's no tooob {}; did you mean {near}?\n{}",
+                quote(word),
+                self.fixed(at, near)
+            ),
+            None => anyhow::anyhow!(
+                "there's no tooob {}; tooob --help lists the commands",
+                quote(word)
+            ),
+        }
     }
 
     /// Whether `args[i]` is an Enrollment Code: `--relay-code`'s value, or a word after
@@ -1896,14 +1982,148 @@ fn flag_name(arg: &str) -> Option<&str> {
         "-f" => Some("follow"),
         "-d" => Some("detach"),
         "-n" => Some("lines"),
+        "-h" => Some("help"),
         _ => arg.strip_prefix("--"),
     }
 }
 
+/// One line for words `command` doesn't take, pointing at its help.
+fn too_many(command: &str, extra: &[String]) -> String {
+    format!(
+        "too many arguments: {}; tooob help {command} shows its usage",
+        extra.join(" ")
+    )
+}
+
+/// Other names people type for a command: suggested, never run, so each thing has one name (#111).
+const ALIASES: &[(&str, &str)] = &[("remove", "rm"), ("delete", "rm"), ("list", "ls")];
+
+/// Commands that are gone, each saying in a line what replaced it (#96), and `help`.
+const NOT_IN_USAGE: &[&str] = &["help", "enable", "disable"];
+
+/// The usage text's entry for each command, as (its commands, its lines): `block` and `unblock`
+/// share one.
+fn usage_entries() -> Vec<(Vec<&'static str>, String)> {
+    let mut entries: Vec<(Vec<&'static str>, String)> = Vec::new();
+    for line in USAGE.lines().skip(1) {
+        if let Some(rest) = line.strip_prefix("  tooob ") {
+            let names = rest
+                .split(" | ")
+                .filter_map(|part| part.split_whitespace().next())
+                .filter(|name| name.chars().all(|c| c.is_ascii_lowercase()))
+                .collect();
+            entries.push((names, line.to_string()));
+        } else if line.starts_with("   ")
+            && let Some((_, lines)) = entries.last_mut()
+        {
+            lines.push('\n');
+            lines.push_str(line);
+        } else if !line.starts_with(' ') {
+            break;
+        }
+    }
+    entries.retain(|(names, _)| !names.is_empty());
+    entries
+}
+
+/// Every command the usage text names.
+fn commands() -> Vec<&'static str> {
+    usage_entries()
+        .into_iter()
+        .flat_map(|(names, _)| names)
+        .collect()
+}
+
+/// `tooob help COMMAND`, `tooob COMMAND --help`: its entry in the usage text.
+fn command_help(command: &str) -> Option<String> {
+    let (_, lines) = usage_entries()
+        .into_iter()
+        .find(|(names, _)| names.contains(&command))?;
+    let mut help = format!("usage:\n{lines}\n");
+    if lines.contains("NAME") {
+        help.push_str("NAME is a Host Name, what the Host serves, or a Host Key prefix.\n");
+    }
+    Some(help)
+}
+
+/// The options `command`'s usage names, as typed: `-n`, `-f`, `--json`.
+fn options(command: &str) -> Vec<String> {
+    let Some((_, lines)) = usage_entries()
+        .into_iter()
+        .find(|(names, _)| names.contains(&command))
+    else {
+        return Vec::new();
+    };
+    let mut found: Vec<String> = Vec::new();
+    for token in lines.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-')) {
+        let named = token.strip_prefix("--").or_else(|| token.strip_prefix('-'));
+        if named.is_some_and(|n| n.starts_with(|c: char| c.is_ascii_alphabetic()))
+            && !found.iter().any(|f| f == token)
+        {
+            found.push(token.to_string());
+        }
+    }
+    found
+}
+
+/// The one of `candidates` nearest `typed`, if one is near enough to be what was meant: one
+/// letter off a short word, two off a longer one.
+fn nearest<'a>(typed: &str, candidates: impl Iterator<Item = &'a str>) -> Option<&'a str> {
+    let near_enough = if typed.trim_start_matches('-').len() <= 3 {
+        1
+    } else {
+        2
+    };
+    candidates
+        .map(|c| (edit_distance(typed, c), c))
+        .filter(|&(d, _)| d <= near_enough)
+        .min_by_key(|&(d, _)| d)
+        .map(|(_, c)| c)
+}
+
+/// Levenshtein distance.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, &cb) in b.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = (above + 1)
+                .min(row[j] + 1)
+                .min(diagonal + usize::from(ca != cb));
+            diagonal = above;
+        }
+    }
+    row[b.len()]
+}
+
+/// Help asked for (to stdout, never an error), or a command there's no such one of.
+fn help(typed: &Typed) -> Result<Option<String>> {
+    let words = typed.words();
+    let known = |w: &str| NOT_IN_USAGE.contains(&w) || commands().contains(&w);
+    let (command, at) = match words.first() {
+        Some(&"help") => (words.get(1).copied(), 1),
+        Some(&first) if !known(first) => return Err(typed.no_command(typed.words_at[0])),
+        first if typed.asks_for_help() => (first.copied(), 0),
+        _ => return Ok(None),
+    };
+    match command {
+        None | Some("help") => Ok(Some(format!("{USAGE}\n"))),
+        Some(command) => match command_help(command) {
+            Some(help) => Ok(Some(help)),
+            None if known(command) => Ok(Some(format!("{USAGE}\n"))),
+            None => Err(typed.no_command(typed.words_at[at])),
+        },
+    }
+}
+
 /// Words, `--flags` (value flags take the next word), and every `--invite LABEL`: it can repeat.
-fn parse(args: impl Iterator<Item = String>) -> Result<(Vec<String>, Flags, Vec<String>)> {
+fn parse(typed: &Typed) -> Result<(Vec<String>, Flags, Vec<String>)> {
     let (mut words, mut flags, mut invitees) = (Vec::new(), HashMap::new(), Vec::new());
-    let mut args = args.peekable();
+    let command = typed.words().first().map_or("tooob", |w| w).to_string();
+    let mut args = typed.args.iter().cloned().peekable();
     while let Some(a) = args.next() {
         match flag_name(&a) {
             Some("invite") => invitees.push(args.next().context("--invite needs a Label")?),
@@ -1916,9 +2136,9 @@ fn parse(args: impl Iterator<Item = String>) -> Result<(Vec<String>, Flags, Vec<
             }
             Some("bootstrap") => bail!(
                 "--bootstrap is gone: a Relay serves its Bootstrap, so a Host names only its \
-                 Relay (--relay URL)\n{USAGE}"
+                 Relay (--relay URL)"
             ),
-            Some(name) => bail!("unknown option --{name}\n{USAGE}"),
+            Some(name) => return Err(typed.no_option(&command, name)),
             None => words.push(a),
         }
     }
