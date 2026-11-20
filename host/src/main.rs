@@ -2273,4 +2273,21 @@ mod skill {
             ]
         );
     }
+
+    /// The skill checks `tooob --version` against the plugin's version (#152): if they disagree
+    /// on `main`, every agent running the skill from `main` stops there. `release.sh` bumps both.
+    #[test]
+    fn the_plugin_version_is_the_tooob_version() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../agent/.claude-plugin/plugin.json"
+        );
+        let plugin: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(
+            plugin["version"].as_str(),
+            Some(env!("CARGO_PKG_VERSION")),
+            "agent/.claude-plugin/plugin.json's version isn't host/Cargo.toml's"
+        );
+    }
 }

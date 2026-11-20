@@ -3,6 +3,7 @@ deploy/relay/.env
 deploy/relay/image/www/
 spike/vps-host/
 /target/
+agent/evals/results/
 .envrc
 CLAUDE.md
 .claude/
