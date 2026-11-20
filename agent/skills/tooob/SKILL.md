@@ -11,7 +11,7 @@ tooob makes a Host on this box: it serves a file or Shared Folder to the people 
 
 ## First: the version
 
-Run `tooob --version`. If it's older than this plugin's version (in its `plugin.json`), tell the Owner to run `tooob upgrade` before you go on: this skill may name options their `tooob` doesn't have yet.
+Run `tooob --version`. If it's older than this plugin's version (the `version` in `../../.claude-plugin/plugin.json`, relative to this file), tell the Owner to run `tooob upgrade` before you go on: this skill may name options their `tooob` doesn't have yet. If there's no such file, skip this check.
 
 ## Send a file or folder
 
@@ -33,7 +33,7 @@ Run `tooob --version`. If it's older than this plugin's version (in its `plugin.
 4. **Hand over the links.** Give each link to the Owner, or send it to the person the Owner named. Say that each link opens in one browser, within a day.
 5. **Say how it ends.** Give the Owner `tooob rm NAME`, which stops the Host and deletes it. Until then, `-d` keeps it running across logins and reboots.
 
-If `-d` fails (no systemd or launchd here, or no `~/.local/bin/tooob`), run the same `tooob share PATH --expires 1d --no-qr --relay URL` without `-d`, in the background, with stdout in a file. Then make the Invites as above, and tell the Owner that the Host stops when that process stops.
+If `-d` fails (no systemd or launchd here, or no `~/.local/bin/tooob`), run the same `tooob share PATH --expires 1d --no-qr --relay URL` without `-d`, in the background, with its output in a file: read the Host Name from that file. Then make the Invites as above, and tell the Owner that the Host stops when that process stops.
 
 ## Receive files
 
@@ -51,7 +51,8 @@ An Invite Link opens the Bootstrap, a service worker, so `curl` or a fetch tool 
 
 ## Rules
 
-- If `share` prints `tooob: warning:` (a home folder, `.git`, `.env`, `.ssh`), stop the Host (`tooob rm NAME` for one you just made), tell the Owner what it said, and go on only if they say so.
+- With `--uploads`, `share` always warns that Visitors can add files to any folder in DIR: that one is expected on a receive, so go on.
+- If `share` prints any other `tooob: warning:` (a home folder, `.git`, `.env`, `.ssh`), stop the Host (`tooob rm NAME` for one you just made), tell the Owner what it said, and go on only if they say so.
 - Never `tooob rm` or `tooob stop` a Host you didn't make, unless the Owner says to.
 - Never `tooob unblock`, and never make an `--owner` Invite, unless the Owner asks for it: those let someone in without the Owner seeing them first.
 - Send an Invite Link only to the Owner, or to a person the Owner named.

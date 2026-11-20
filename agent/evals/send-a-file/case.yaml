@@ -22,7 +22,7 @@ graders:
   - name: shared-kept-running-for-a-day
     type: tool_used
     tool: Bash
-    input_match: 'tooob share (?=[^"]*\s-d\b)(?=[^"]*--expires 1d)(?=[^"]*--no-qr)'
+    input_match: 'tooob share (?=(?:[^"\\]|\\.)*\s-d\b)(?=(?:[^"\\]|\\.)*--expires 1d)(?=(?:[^"\\]|\\.)*--no-qr)'
   - name: reply-has-the-invite-link
     type: regex
     pattern: 'https?://\S+#invite='

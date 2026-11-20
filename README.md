@@ -77,7 +77,7 @@ A Claude Code plugin teaches an agent to use tooob for you. In Claude Code:
 /plugin install tooob@tooob
 ```
 
-Its skill, `tooob`, fires when you ask the agent to send someone a file or folder, to get files from someone, or to look after your Hosts. It shares through the Relay your Hosts already use (or asks you which), keeps the Host running with `-d`, makes a one-day Invite for each person, and hands you the links and the `tooob rm NAME` that ends it. It asks before going on when `share` warns, and never lets anyone in without you seeing them first. The plugin follows the Releases: it arrives with 0.3.8, and until that Release is out there's nothing to install. See [agent/](agent/README.md).
+Its skill, `tooob`, fires when you ask the agent to send someone a file or folder, to get files from someone, or to look after your Hosts. It shares through the Relay your Hosts already use (or asks you which), keeps the Host running with `-d`, makes a one-day Invite for each person, and hands you the links and the `tooob rm NAME` that ends it. It asks before going on when `share` warns, and never runs `tooob unblock` or makes an `--owner` Invite unless you ask. The plugin follows the Releases: it arrives with 0.3.8 (not out yet). See [agent/](agent/README.md).
 
 ## What you can try
 
