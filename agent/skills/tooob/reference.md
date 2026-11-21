@@ -6,7 +6,7 @@ NAME is a Host Name, what the Host serves, or a Host Key prefix. These commands 
 
 - `tooob ls --json`: every Host on this box, running or stopped: its `name`, `state`, what it `serves`, its `visitors`, and whether its Relay carries it (`enrollment`).
 - `tooob show NAME`: its settings (with its `relay`), Host Key and files.
-- `tooob visitors NAME --json`: its Visitors, when each was last seen, and what was sent to and received from them.
+- `tooob visitors NAME --json`: its Visitors, when each was last seen, and what was sent to and received from them (`sent`, `received`: bytes since they first got in, counting listing pages and retries, not the Bootstrap).
 - `tooob invites NAME --json`: its unused Invites, with their ids.
 - `tooob logs NAME --json`: its log, one object a line (`-n 200` or `-n all` for more; never `-f` from an agent, which follows forever).
 

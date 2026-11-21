@@ -3,15 +3,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const scaffold = join(dirname(fileURLToPath(import.meta.url)), '../agent/evals/send-a-file/scaffold.sh');
+const evals = join(dirname(fileURLToPath(import.meta.url)), '../agent/evals');
 
-/** Runs the scaffold in a fresh folder with only `binDir` (and the system's) on PATH. */
-function run(t, binDir) {
+/** Runs case `name`'s scaffold in a fresh folder with only `binDir` (and the system's) on PATH. */
+function run(t, binDir, name = 'send-a-file') {
+  const scaffold = join(evals, name, 'scaffold.sh');
   const root = mkdtempSync(join(tmpdir(), 'eval-scaffold-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const bin = join(root, binDir);
@@ -35,4 +36,19 @@ test('a run whose tooob is an installed Release is refused, saying how to run it
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /target\/debug/);
   assert.match(r.stderr, /agent\/README\.md/);
+});
+
+test('an-upload-arrived leaves an upload whose content, not its name, holds the marker', (t) => {
+  const r = run(t, 'repo/target/debug', 'an-upload-arrived');
+  assert.equal(r.status, 0, r.stderr);
+  const files = readdirSync(join(r.cwd, 'from-ana'));
+  assert.equal(files.length, 1);
+  assert.doesNotMatch(files[0], /PELICAN|marker/);
+  assert.match(readFileSync(join(r.cwd, 'from-ana', files[0]), 'utf8'), /PELICAN-7731/);
+});
+
+test('an-upload-arrived refuses an installed Release too', (t) => {
+  const r = run(t, 'home/.local/bin', 'an-upload-arrived');
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /target\/debug/);
 });
