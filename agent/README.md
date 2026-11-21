@@ -20,6 +20,8 @@ cargo build --manifest-path host/Cargo.toml
 PATH="$PWD/target/debug:$PATH" claude plugin eval agent --scaffold --allow-tools Bash --no-publish
 ```
 
-The case's scaffold (`evals/send-a-file/scaffold.sh`) refuses a run whose `tooob` isn't a `target/debug/tooob`, so the eval can't quietly test the installed one. Each run's report goes in `evals/results/`, which git ignores.
+Build it again after each change you want the eval to see: the scaffold checks where `tooob` is, not how old it is. It refuses a run whose `tooob` isn't a `target/debug/tooob` (a link to one counts as the link's own path, so it's refused too), so the eval can't quietly test the installed one. Each run's report goes in `evals/results/`, which git ignores.
+
+`tooob share -d` hands the Host to a systemd or launchd service that runs `~/.local/bin/tooob`, and a run's own home folder has none, so there `-d` fails and the skill falls back to a background `share`: that's expected, and the grader still sees the `share … -d` command it tried first.
 
 Each run has a home folder of its own, so its Hosts go in a throwaway `~/.tooob`. Afterwards, check that no Host the eval made is still running (`ps aux | grep 'tooob '`, or `tooob ls` under that home if `--keep-temp` kept it) and stop any that is.

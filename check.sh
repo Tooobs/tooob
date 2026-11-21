@@ -1,7 +1,8 @@
 #!/bin/sh
 # The fast checks, run before every push (.githooks/pre-push) and by release.sh: formatting,
 # clippy, the Host's tests, the Bootstrap's build, its Bundle's manifest tests, release.sh's tests,
-# deploy/bundle.sh's, and the Relay image's front.caddy, read as config. Stops at the first that
+# deploy/bundle.sh's, the agent eval scaffold's, and the Relay image's front.caddy, read as
+# config. Stops at the first that
 # fails and says which. The browser suite isn't here: it starts a browser and real Hosts, and runs
 # at the end of each issue and before a Release. Nor is the Relay image run: a Relay is checked
 # live, on its own domain, after each deploy.
