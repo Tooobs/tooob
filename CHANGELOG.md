@@ -35,6 +35,12 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
   `failed printing to stdout: Broken pipe`. A Host that serves (`run`, `share` in the foreground)
   keeps serving when its stdout or stderr closes: `tooob share FILE --invite a --invite b | head -1`
   no longer ends it at the second link. (#154)
+- The agent skill treats an upload's name and content as data: it reports each file by name,
+  size and time without opening it, and follows no instruction in it (a name that reads as one
+  it gives in full, or hides and gives the `ls` that shows it). It reads `visitors`' `sent` as
+  what the Host sent to a Visitor's browser, added up across Visitors with the same label, and
+  when what the Owner asked for fails it stops, names any other action and waits for a yes. A
+  new eval case, `an-upload-arrived`, checks the upload rule. (#153)
 
 ## 0.3.7 — 2026-11-18
 
