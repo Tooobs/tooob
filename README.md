@@ -208,6 +208,8 @@ AI agents run Hosts for their Owners and visit Sites in a browser like anyone el
 
 - **[#149](https://github.com/Tooobs/tooob/issues/149) An agent shares and receives files with tooob, through a tooob plugin for Claude Code** · 2026-11-20 · 0.3.8 (not out yet)
   - Nothing to install until 0.3.8 is out: the marketplace pins the plugin to that Release. Then, in Claude Code, `/plugin marketplace add Tooobs/tooob` and `/plugin install tooob@tooob`, and ask "send report.pdf to Sam": the agent runs `tooob share report.pdf -d --expires 1d --no-qr` on the Relay your Hosts use, makes Sam a one-day Invite, and gives you the link and the `tooob rm NAME` that ends it. Ask it to get files from someone and it shares a new, empty folder with `--uploads`. Ask it to share a folder that holds a `.env`: it stops the Host and asks you first. Before then, `claude plugin validate agent` checks the plugin in a clone.
+- **[#152](https://github.com/Tooobs/tooob/issues/152) The agent skill no longer stops at its version check between Releases, and its eval tests main's tooob** · 2026-11-20 · 0.3.8 (not out yet)
+  - Nothing new shows for an installed plugin. Underneath: the plugin's version now always matches the `tooob` CLI's, so an agent running the skill from `main` gets past its version check, and the eval runs against the build from `main` (`cargo build --manifest-path host/Cargo.toml`, then `PATH="$PWD/target/debug:$PATH" claude plugin eval agent --scaffold --allow-tools Bash --no-publish`; without the `PATH`, its scaffold refuses the run and says why).
 
 ## Still to come
 

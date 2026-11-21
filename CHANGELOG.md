@@ -23,6 +23,14 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
   suggested, never run. `tooob --help`, `tooob help`, `tooob <cmd> --help` and `tooob help <cmd>`
   print to stdout and exit 0. (#111)
 
+### Fixed
+
+- The agent plugin's version is always the `tooob` CLI's (`host/Cargo.toml`), with a test that
+  fails when they disagree, so the skill's version check no longer stops an agent running it
+  from `main` between Releases. Its eval runs against the `tooob` built from `main`, not an
+  installed Release: build it, put `target/debug` first on `PATH`, and the scaffold refuses any
+  other `tooob` (`agent/README.md`). Eval reports are ignored by git. (#152)
+
 ## 0.3.7 — 2026-11-18
 
 Protocol Version: `tooob/0`. Tested with iroh-relay 1.3.0.
