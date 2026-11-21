@@ -30,6 +30,11 @@ they're `0.x`, expect the commands to change. Add to "Unreleased" as part of eac
   from `main` between Releases. Its eval runs against the `tooob` built from `main`, not an
   installed Release: build it, put `target/debug` first on `PATH`, and the scaffold refuses any
   other `tooob` (`agent/README.md`). Eval reports are ignored by git. (#152)
+- A command whose output pipe closes early (`tooob ls | head -1`, `tooob show NAME | head -1`,
+  `tooob logs NAME | head`) ends quietly, as `ls | head` does, instead of panicking with
+  `failed printing to stdout: Broken pipe`. A Host that serves (`run`, `share` in the foreground)
+  keeps serving when its stdout or stderr closes: `tooob share FILE --invite a --invite b | head -1`
+  no longer ends it at the second link. (#154)
 
 ## 0.3.7 — 2026-11-18
 

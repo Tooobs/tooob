@@ -86,6 +86,7 @@ A home box serving a Site to invited Visitors in ordinary browsers, for technica
 
 - ✅ The Host refuses a header line over 64 KiB however it arrives ([#62](https://github.com/Tooobs/tooob/issues/62)); `tooob rm` survives Owner commands racing it ([#65](https://github.com/Tooobs/tooob/issues/65))
 - ✅ The browser suite runs on Playwright, and can't take over the machine ([#82](https://github.com/Tooobs/tooob/issues/82))
+- ✅ A command whose output pipe closes early (`| head`) ends quietly, and a Host that serves keeps serving ([#154](https://github.com/Tooobs/tooob/issues/154))
 - ⬜ The browser suite's flaky tests: the burst stall ([#19](https://github.com/Tooobs/tooob/issues/19)), the slow exit after the suspend test ([#20](https://github.com/Tooobs/tooob/issues/20)), the renegotiation timeout ([#30](https://github.com/Tooobs/tooob/issues/30))
 
 ## [Agents](https://github.com/Tooobs/tooob/milestone/5)
