@@ -1,4 +1,22 @@
 //! tooob v1: a Host makes one Site reachable to the Visitors its Owner invites.
+
+// std's eprint! and eprintln! panic when stderr can't be written: a Host run by hand whose stderr
+// is a pipe its reader closed (`tooob share FILE 2>&1 | head -3`) would end at its next log line
+// (#154). These write the same and drop the error, so what it says on stderr is best effort; its
+// log holds it all. Defined before the modules, so they're the ones every module here uses.
+macro_rules! eprint {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = write!(std::io::stderr(), $($arg)*);
+    }};
+}
+macro_rules! eprintln {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), $($arg)*);
+    }};
+}
+
 pub mod access;
 pub mod autostart;
 pub mod awake;

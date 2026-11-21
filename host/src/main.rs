@@ -21,6 +21,33 @@ use tooob::log::{self, Log, Logged};
 use tooob::upgrade::{self, Relays, ReleaseNumber, Releases};
 use tooob::{Network, amount, lasting, seconds};
 
+// As in lib.rs (#154): a stderr that can't be written never panics a Host that serves.
+macro_rules! eprint {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = write!(std::io::stderr(), $($arg)*);
+    }};
+}
+macro_rules! eprintln {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), $($arg)*);
+    }};
+}
+
+/// A command that prints and exits ends as `ls | head` does when its stdout's reader is gone:
+/// killed by SIGPIPE, quietly, which Rust's runtime otherwise ignores, so `println!` panics (#154).
+/// Not for a Host that serves (`run`, `share` in the foreground): it keeps SIGPIPE ignored, so a
+/// closed stderr, or a peer closing its control socket, is an error it handles, never its end.
+fn end_quietly_on_a_closed_pipe(words: &[String], flags: &Flags) {
+    let serves = matches!(words.first().map(String::as_str), Some("run" | "share"))
+        && !flags.contains_key("detach");
+    if !serves {
+        // SAFETY: before any thread of ours writes, and SIG_DFL needs no handler.
+        unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+    }
+}
+
 // musl's own allocator costs ~22% more CPU per byte served than glibc's (measured in #59), so
 // Linux Releases, which are static musl builds, use mimalloc.
 #[cfg(target_env = "musl")]
@@ -140,16 +167,19 @@ fn release_and_protocol_version() -> String {
 
 async fn run() -> Result<()> {
     if std::env::args().skip(1).eq(["--version"]) {
+        end_quietly_on_a_closed_pipe(&[], &Flags::new());
         println!("{}", release_and_protocol_version());
         return Ok(());
     }
     let typed = Typed::new(std::env::args().skip(1).collect());
     // Help asked for does only that: `tooob share PATH --help` shares nothing (#111).
     if let Some(help) = help(&typed)? {
+        end_quietly_on_a_closed_pipe(&[], &Flags::new());
         print!("{help}");
         return Ok(());
     }
     let (words, flags, invitees) = parse(&typed)?;
+    end_quietly_on_a_closed_pipe(&words, &flags);
     let home = Home::from_env()?;
     // add, run, ls, show and rm take exactly what they say, nothing more: `run` in particular
     // takes no settings, so a Host runs the same however it's started (ADR 0014).
