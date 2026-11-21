@@ -500,6 +500,21 @@ impl Home {
         }
     }
 
+    /// `tooob ARGS` in the background with its stdout on `stdout`: its log is its stderr only.
+    pub fn spawn_with_stdout(&self, args: &[&str], stdout: std::process::Stdio) -> Running {
+        let log = tempfile::NamedTempFile::new_in(self.0.path()).unwrap();
+        let child = self
+            .command(args)
+            .stdout(stdout)
+            .stderr(log.reopen().unwrap())
+            .spawn()
+            .unwrap();
+        Running {
+            child,
+            log: log.into_temp_path(),
+        }
+    }
+
     /// Wait until Host `name`'s own log, as `tooob logs` shows it, says `what`: where to look for
     /// a Host its service manager runs, which prints nothing.
     pub fn until_logged(&self, name: &str, what: &str) {
@@ -541,6 +556,14 @@ impl Home {
 pub struct Running {
     pub child: Child,
     log: tempfile::TempPath,
+}
+
+/// A `tooob` started by hand, whose output went elsewhere: its log is empty.
+impl From<Child> for Running {
+    fn from(child: Child) -> Running {
+        let log = tempfile::NamedTempFile::new().unwrap().into_temp_path();
+        Running { child, log }
+    }
 }
 
 impl Running {
